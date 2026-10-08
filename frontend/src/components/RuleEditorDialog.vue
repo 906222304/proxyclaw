@@ -1,0 +1,485 @@
+<script setup lang="ts">
+import { ref, watch, computed, useId } from 'vue'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import TagInput from '@/components/TagInput.vue'
+import { getProxyGroups, browseExe as apiBrowseExe } from '@/api/client'
+import type { AutoRule, ProxyTarget, ProxyGroup, TrafficFilter, RuleProtocol } from '@/api/types'
+import {
+  ChevronRight,
+  HelpCircle,
+  FolderOpen,
+  Terminal,
+  Lock,
+  Check,
+  SlidersHorizontal,
+  Trash2,
+} from 'lucide-vue-next'
+
+const props = defineProps<{
+  open: boolean
+  rule: AutoRule | null
+  prefillProcessName?: string
+  prefillWorkDir?: string
+  saving?: boolean
+}>()
+
+const emit = defineEmits<{
+  'update:open': [value: boolean]
+  save: [payload: Omit<AutoRule, 'id' | 'matched_count' | 'excluded_count' | 'matched_pids'>]
+  delete: [id: string]
+}>()
+
+const isEditing = computed(() => props.rule != null)
+
+// a11y: unique ids for label/field association
+const ruleNameId = useId()
+const processNameId = useId()
+const cmdlinePatternId = useId()
+const protocolId = useId()
+const proxyGroupId = useId()
+const excludeCidrsId = useId()
+const includePortsId = useId()
+
+// Form state
+const formName = ref('')
+const formProcessName = ref('')
+const formWorkDir = ref('')
+const formUseWorkDir = ref(false)
+const formCmdlinePattern = ref('')
+// v0.9.0: hack_tree is pinned true at runtime. The form ref stays for
+// schema/PUT compatibility but the user cannot toggle it.
+const formHackTree = ref(true)
+const formProtocol = ref<RuleProtocol>('tcp')
+const proxyGroups = ref<ProxyGroup[]>([])
+const formProxyGroupId = ref('0')
+const isCustomProxy = ref(false)
+const customProxyHost = ref('')
+const formExcludeCidrs = ref<string[]>([])
+const formIncludePorts = ref<string[]>([])
+const advancedOpen = ref(false)
+
+const fileInput = ref<HTMLInputElement | null>(null)
+
+// Reset form when dialog opens
+watch(() => props.open, async (open) => {
+  if (open) {
+    confirmingDelete.value = false
+    try { proxyGroups.value = await getProxyGroups() } catch {}
+    if (props.rule) {
+      formName.value = props.rule.name
+      formProcessName.value = props.rule.process_name
+      formCmdlinePattern.value = props.rule.cmdline_pattern
+      formHackTree.value = true  // v0.9.0: always tree-mode
+      formProtocol.value = props.rule.protocol || 'tcp'
+      formProxyGroupId.value = String(props.rule.proxy_group_id ?? 0)
+      isCustomProxy.value = false
+      customProxyHost.value = ''
+      formExcludeCidrs.value = [...props.rule.dst_filter.exclude_cidrs]
+      formIncludePorts.value = [...props.rule.dst_filter.include_ports]
+      formWorkDir.value = props.rule.image_path_pattern || ''
+      formUseWorkDir.value = !!props.rule.image_path_pattern
+      advancedOpen.value = props.rule.dst_filter.exclude_cidrs.length > 0 || props.rule.dst_filter.include_ports.length > 0
+    } else {
+      const pName = props.prefillProcessName || ''
+      const pDir = props.prefillWorkDir || ''
+      formName.value = pName ? `Rule for ${pName}` : ''
+      formProcessName.value = pName
+      formCmdlinePattern.value = ''
+      formHackTree.value = true
+      formProtocol.value = 'tcp'
+      formProxyGroupId.value = '0'
+      isCustomProxy.value = false
+      customProxyHost.value = ''
+      formExcludeCidrs.value = []
+      formIncludePorts.value = []
+      formWorkDir.value = pDir
+      formUseWorkDir.value = !!pDir
+      advancedOpen.value = false
+    }
+  }
+})
+
+async function browseExe() {
+  try {
+    const data = await apiBrowseExe()
+    if (data.cancelled) return
+    if (data.name) formProcessName.value = data.name
+    if (data.dir) formWorkDir.value = data.dir
+    // Auto-enable: only turn ON, never auto-turn-off (spec §10.3)
+    formUseWorkDir.value = true
+  } catch {
+    // Backend not available, fall back to HTML file picker
+    fileInput.value?.click()
+  }
+}
+
+function onExeSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (target.files && target.files.length > 0) {
+    const file = target.files[0]
+    if (!file) return
+    formProcessName.value = file.name
+    // HTML file picker can't provide full path (browser security)
+    formWorkDir.value = ''
+    formUseWorkDir.value = true
+  }
+  target.value = ''
+}
+
+function onCmdlineInput(event: Event) {
+  const val = (event.target as HTMLInputElement).value
+  if (val) formUseWorkDir.value = true
+}
+
+const selectedGroup = computed(() =>
+  proxyGroups.value.find(g => g.id === Number.parseInt(formProxyGroupId.value))
+)
+const canSave = computed(() => formName.value.trim() && formProcessName.value.trim())
+
+function onSave() {
+  let proxy: ProxyTarget
+  if (isCustomProxy.value && customProxyHost.value) {
+    const parts = customProxyHost.value.split(':')
+    proxy = { type: 'socks5', host: parts[0] || '127.0.0.1', port: Number.parseInt(parts[1] ?? '7890') || 7890 }
+  } else {
+    const group = selectedGroup.value
+    proxy = { type: group?.type ?? 'socks5', host: group?.host ?? '127.0.0.1', port: group?.port ?? 7890 }
+  }
+  const dst_filter: TrafficFilter = {
+    exclude_cidrs: formExcludeCidrs.value,
+    include_cidrs: [],
+    include_ports: formIncludePorts.value,
+    exclude_ports: [],
+  }
+  emit('save', {
+    name: formName.value,
+    enabled: props.rule?.enabled ?? false,
+    process_name: formProcessName.value,
+    cmdline_pattern: formCmdlinePattern.value,
+    image_path_pattern: formUseWorkDir.value ? formWorkDir.value : '',
+    hack_tree: formHackTree.value,
+    protocol: formProtocol.value,
+    proxy_group_id: Number.parseInt(formProxyGroupId.value, 10),
+    proxy,
+    dst_filter,
+  })
+}
+
+const confirmingDelete = ref(false)
+
+function onDelete() {
+  confirmingDelete.value = true
+}
+
+function onDeleteConfirmed() {
+  confirmingDelete.value = false
+  if (props.rule) emit('delete', props.rule.id)
+}
+
+function onClose(value: boolean) {
+  emit('update:open', value)
+}
+</script>
+
+<template>
+  <Dialog :open="open" @update:open="onClose">
+    <DialogContent class="sm:max-w-2xl bg-white dark:bg-[#181f26] border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 p-0 overflow-hidden shadow-2xl rounded-xl"
+      @interact-outside="(e: Event) => e.preventDefault()"
+      @escape-key-down="(e: Event) => e.preventDefault()"
+    >
+      <DialogHeader class="px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#1c242c]">
+        <DialogTitle class="flex items-center gap-3">
+          <div class="bg-blue-600/10 p-2 rounded-lg text-blue-600 dark:text-blue-500">
+            <SlidersHorizontal class="w-6 h-6" />
+          </div>
+          <div>
+            <h2 class="text-xl font-bold tracking-tight text-slate-800 dark:text-white">自动规则编辑器</h2>
+            <p class="text-xs font-medium text-slate-500 dark:text-slate-400">设置进程匹配条件和代理方式</p>
+          </div>
+        </DialogTitle>
+      </DialogHeader>
+
+      <div class="p-6 space-y-8 max-h-[75vh] overflow-y-auto thin-scrollbar">
+
+        <!-- Basic Info Section -->
+        <div class="space-y-4">
+          <div class="flex items-center gap-3">
+            <h3 class="text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider whitespace-nowrap">基本信息</h3>
+            <div class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+          </div>
+          <div class="flex flex-col gap-2">
+            <Label :for="ruleNameId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+              规则名称
+              <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[200px]">规则的显示名称，仅用于识别。</p></TooltipContent></Tooltip>
+            </Label>
+            <Input :id="ruleNameId" v-model="formName" class="h-[42px] bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500" />
+          </div>
+        </div>
+
+        <!-- Process Matching Section -->
+        <div class="space-y-4">
+          <div class="flex items-center gap-3">
+            <h3 class="text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider whitespace-nowrap">进程匹配</h3>
+            <div class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+          </div>
+
+          <div class="space-y-4">
+            <!-- Process Name & Browse -->
+            <div class="flex flex-col gap-2">
+              <div class="flex justify-between items-center">
+                <Label :for="processNameId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  进程名称
+                  <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">匹配可执行文件名，不区分大小写。支持通配符：* 匹配任意内容，? 匹配单个字符。</p></TooltipContent></Tooltip>
+                </Label>
+                <span class="text-xs text-slate-500 dark:text-slate-400">支持通配符（*）</span>
+              </div>
+              <div class="flex gap-2">
+                <div class="relative flex-1">
+                  <svg class="absolute left-3 top-2.5 w-5 h-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+                  <Input :id="processNameId" v-model="formProcessName" class="h-[42px] pl-10 font-mono bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500" />
+                </div>
+                <Button variant="outline" @click="browseExe" class="h-[42px] flex items-center gap-1.5 bg-slate-50 dark:bg-[#1c242c] border-slate-200 dark:border-slate-800 hover:text-blue-600 dark:hover:border-blue-500">
+                  <FolderOpen class="w-4 h-4" /> 浏览
+                </Button>
+                <input type="file" accept=".exe" class="hidden" ref="fileInput" @change="onExeSelected" />
+              </div>
+
+              <!-- Working Dir Row -->
+              <div
+                class="mt-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-[#1c242c]/50 px-3 py-2.5 flex items-center gap-3 transition-opacity"
+                :class="formUseWorkDir ? '' : 'opacity-40'"
+              >
+                <Lock class="w-4 h-4 text-slate-400 flex-shrink-0" />
+                <input readonly class="flex-1 bg-transparent text-xs font-mono text-slate-500 dark:text-slate-400 outline-none select-all" :value="formWorkDir" placeholder="选择程序后自动填写" />
+                <div class="flex items-center gap-2 flex-shrink-0 border-l border-slate-200 dark:border-slate-800 pl-3 ml-1">
+                  <span class="text-xs font-medium text-slate-500 dark:text-slate-400">作为匹配条件</span>
+                  <div
+                    class="w-8 h-4 rounded-full p-[2px] cursor-pointer relative transition-colors"
+                    :class="formUseWorkDir ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'"
+                    @click="formUseWorkDir = !formUseWorkDir"
+                  >
+                    <div class="w-3 h-3 bg-white rounded-full transition-transform absolute" :class="formUseWorkDir ? 'translate-x-4' : 'translate-x-0'" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Command Line Pattern -->
+            <div class="flex flex-col gap-2">
+              <div class="flex justify-between items-center">
+                <Label :for="cmdlinePatternId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  命令行匹配
+                  <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[250px]">选填。无通配符时，所有空格分隔的关键词都须出现，顺序不限；使用 * 或 ? 时，匹配完整命令行。</p></TooltipContent></Tooltip>
+                </Label>
+                <span class="text-xs text-slate-500 dark:text-slate-400">关键词或通配符</span>
+              </div>
+              <div class="relative">
+                <Terminal class="absolute left-3 top-2.5 w-5 h-5 text-slate-400" />
+                <Input
+                  :id="cmdlinePatternId"
+                  v-model="formCmdlinePattern"
+                  @input="onCmdlineInput"
+                  class="h-[42px] pl-10 font-mono bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <!-- Capture Tree — pinned ON in v0.9.0+. Display-only. -->
+            <div
+              class="flex items-start gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-[#1c242c]/50 cursor-not-allowed opacity-60"
+            >
+              <div class="relative flex items-center mt-0.5">
+                <div
+                  class="w-4 h-4 rounded border bg-blue-600 border-blue-600 dark:bg-blue-600 flex items-center justify-center"
+                >
+                  <Check class="w-3 h-3 text-white" stroke-width="3" />
+                </div>
+              </div>
+              <div class="flex flex-col select-none">
+                <span class="text-sm font-medium text-slate-700 dark:text-slate-200">代理整个进程树</span>
+                <span class="text-xs text-slate-500 dark:text-slate-400">v0.9.0 起始终包含子进程，暂不支持单进程模式。</span>
+              </div>
+            </div>
+
+            <!-- Protocol -->
+            <div class="flex flex-col gap-2">
+              <Label :for="protocolId" class="text-slate-700 dark:text-slate-200">协议</Label>
+              <Select v-model="formProtocol">
+                <SelectTrigger :id="protocolId" class="w-full h-9 bg-white dark:bg-[#101922] border-slate-200 dark:border-slate-800">
+                  <SelectValue placeholder="选择协议" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="tcp">仅 TCP</SelectItem>
+                  <SelectItem value="udp">仅 UDP</SelectItem>
+                  <SelectItem value="both">TCP + UDP</SelectItem>
+                </SelectContent>
+              </Select>
+              <p class="text-xs text-slate-500 dark:text-slate-400">选择本条规则需要代理的网络协议。</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Target Proxy Section -->
+        <div class="space-y-4">
+          <div class="flex items-center gap-3">
+            <h3 class="text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider whitespace-nowrap">目标代理</h3>
+            <div class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+          </div>
+          <div class="flex flex-col gap-2">
+            <Label :for="proxyGroupId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+              代理组
+              <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">匹配的流量将通过所选 SOCKS5 代理组转发，可在“代理”页配置。</p></TooltipContent></Tooltip>
+            </Label>
+
+            <!-- Group selector with styled badges -->
+            <Select
+              :model-value="isCustomProxy ? 'custom' : formProxyGroupId"
+              @update:model-value="(v: unknown) => { const s = String(v ?? ''); if (s === 'custom') { isCustomProxy = true } else { isCustomProxy = false; formProxyGroupId = s } }"
+            >
+              <SelectTrigger :id="proxyGroupId" class="h-[42px] bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 focus:ring-1 focus:ring-blue-500">
+                <div class="flex items-center gap-2">
+                  <template v-if="isCustomProxy">
+                    <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white tracking-tight">自定义</span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400 font-mono">{{ customProxyHost || '—' }}</span>
+                  </template>
+                  <template v-else-if="selectedGroup">
+                    <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-slate-800 dark:bg-slate-200 text-slate-100 dark:text-slate-800 tracking-tight shrink-0">
+                      {{ selectedGroup.name }}
+                    </span>
+                    <span class="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                      socks5://<span class="text-slate-700 dark:text-slate-300">{{ selectedGroup.host }}:{{ selectedGroup.port }}</span>
+                    </span>
+                  </template>
+                  <span v-else class="text-slate-400 dark:text-slate-500 text-sm">选择代理组…</span>
+                </div>
+              </SelectTrigger>
+              <SelectContent class="bg-white dark:bg-[#181f26] border-slate-200 dark:border-slate-800">
+                <SelectItem v-for="g in proxyGroups" :key="g.id" :value="String(g.id)" class="py-2">
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-slate-800 dark:bg-slate-200 text-slate-100 dark:text-slate-800 tracking-tight shrink-0">
+                      {{ g.name }}
+                    </span>
+                    <span class="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                      socks5://<span class="text-slate-700 dark:text-slate-300">{{ g.host }}:{{ g.port }}</span>
+                    </span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="custom" class="py-2">
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white tracking-tight">自定义</span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400">手动输入地址…</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+
+            <!-- Custom proxy input -->
+            <div v-if="isCustomProxy" class="flex items-stretch rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500 transition-all">
+              <div class="flex items-center px-3 bg-slate-100 dark:bg-[#1c242c] border-r border-slate-200 dark:border-slate-800 select-none">
+                <span class="text-xs font-mono font-semibold text-slate-500 dark:text-slate-400 tracking-wide">socks5://</span>
+              </div>
+              <input v-model="customProxyHost" class="flex-1 bg-slate-50 dark:bg-[#101922] px-3 py-2.5 text-sm font-mono text-slate-800 dark:text-white outline-none" type="text" spellcheck="false" autocomplete="off" placeholder="127.0.0.1:7890" />
+            </div>
+          </div>
+
+          <!-- Advanced Accordion -->
+          <div class="pt-1">
+            <button
+              class="flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700 transition-colors group select-none"
+              @click="advancedOpen = !advancedOpen"
+            >
+              <ChevronRight class="w-4 h-4 transition-transform" :class="advancedOpen ? 'rotate-90' : ''" />
+              高级设置
+            </button>
+            <div v-show="advancedOpen" class="mt-4 space-y-5 pl-3 border-l-2 border-slate-200 dark:border-slate-800">
+              <!-- Exclude CIDRs -->
+              <div class="flex flex-col gap-2">
+                <Label :for="excludeCidrsId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  直连网段（CIDR）
+                  <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">访问这些网段时使用直连。配置文件中的默认排除网段对所有规则生效。</p></TooltipContent></Tooltip>
+                </Label>
+                <TagInput
+                  :id="excludeCidrsId"
+                  :model-value="formExcludeCidrs"
+                  @update:model-value="formExcludeCidrs = $event"
+                  placeholder="例如 192.168.0.0/16（回车添加）"
+                />
+                <p class="text-xs text-slate-500 dark:text-slate-400">按回车或逗号添加，点击 × 删除。</p>
+              </div>
+
+              <!-- Include Ports -->
+              <div class="flex flex-col gap-2">
+                <Label :for="includePortsId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  代理端口
+                  <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">仅代理这些目标端口，留空则代理所有端口。</p></TooltipContent></Tooltip>
+                </Label>
+                <TagInput
+                  :id="includePortsId"
+                  :model-value="formIncludePorts"
+                  @update:model-value="formIncludePorts = $event"
+                  placeholder="例如 443（回车添加）"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <DialogFooter class="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#1c242c] flex flex-row items-center justify-between sm:justify-between w-full rounded-b-xl">
+        <div v-if="isEditing" class="flex items-center gap-2">
+          <template v-if="!confirmingDelete">
+            <button
+              class="text-sm font-medium text-red-500 hover:text-red-600 dark:hover:text-red-400 transition-colors flex items-center gap-1 opacity-80 hover:opacity-100"
+              @click="onDelete"
+            >
+              <Trash2 class="w-4 h-4" />
+              删除规则
+            </button>
+          </template>
+          <template v-else>
+            <button
+              class="text-sm font-medium text-white bg-red-600 hover:bg-red-700 px-3 py-1 rounded-md transition-colors"
+              @click="onDeleteConfirmed"
+            >
+              确认删除
+            </button>
+            <button
+              class="text-sm font-medium text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+              @click="confirmingDelete = false"
+            >
+              取消
+            </button>
+          </template>
+        </div>
+        <div v-else />
+        <div class="flex gap-3">
+          <Button variant="outline" class="bg-transparent border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200/50 dark:hover:bg-slate-800" @click="onClose(false)">取消</Button>
+          <Button :disabled="!canSave || saving" class="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20" @click="onSave">
+            {{ saving ? '正在保存…' : '保存规则' }}
+          </Button>
+        </div>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+</template>

@@ -1,0 +1,4 @@
+#include <windows.h>
+
+// Application and tray icon.
+1 ICON "proxyclaw.ico"

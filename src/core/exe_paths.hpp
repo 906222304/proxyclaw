@@ -1,0 +1,62 @@
+#pragma once
+
+// All clew resources (proxyclaw.log, proxyclaw.json, dns_state.json, frontend/dist)
+// must resolve against the directory containing proxyclaw.exe — not the process
+// cwd, which is unpredictable (Task Scheduler launches with cwd=system32,
+// Explorer double-click uses the desktop folder, shell uses whatever the
+// user happens to be in). These helpers wrap GetModuleFileNameW once so
+// every consumer goes through the same code path.
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shlobj.h>
+
+#include <filesystem>
+#include <string>
+
+#include "scoped_exit.hpp"
+
+namespace clew {
+
+// Absolute path of the running proxyclaw.exe. Falls back to an empty path in
+// the unlikely case GetModuleFileNameW fails — Windows itself only fails
+// this for invalid module handles, which can't happen for the current
+// process.
+[[nodiscard]] inline std::filesystem::path exe_path() {
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return {};
+    return std::filesystem::path{std::wstring{buf, len}};
+}
+
+// Directory portion of the running proxyclaw.exe path. Falls back to "." if
+// exe_path() failed.
+[[nodiscard]] inline std::filesystem::path exe_directory() {
+    auto p = exe_path();
+    return p.empty() ? std::filesystem::path{L"."} : p.parent_path();
+}
+
+// Resolve a sibling resource of proxyclaw.exe by name. e.g. exe_relative("proxyclaw.log")
+// → "C:\Users\foo\Downloads\clew\proxyclaw.log".
+[[nodiscard]] inline std::filesystem::path exe_relative(std::wstring_view name) {
+    return exe_directory() / name;
+}
+
+[[nodiscard]] inline std::filesystem::path exe_relative(std::string_view name) {
+    return exe_directory() / name;
+}
+
+// %LOCALAPPDATA% via the known-folder API (correct for non-ASCII user names,
+// independent of the environment block). Empty path on failure — callers are
+// expected to fall back to an exe-relative location.
+[[nodiscard]] inline std::filesystem::path local_app_data_directory() {
+    PWSTR raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw)))
+        return {};
+    scoped_exit free_raw{[&] { CoTaskMemFree(raw); }};
+    return std::filesystem::path{raw};
+}
+
+} // namespace clew

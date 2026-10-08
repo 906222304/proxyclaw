@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { hijackProcess, unhijackProcess, getTcpConnections, getUdpConnections } from '@/api/client'
 import { useNotifications } from '@/api/notify'
 import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
+import { createAsyncPoller } from '@/lib/asyncPoller'
 import type { ProcessInfo } from '@/api/types'
 import { Search, Monitor, X } from 'lucide-vue-next'
 import ProcessTreeNode from './ProcessTreeNode.vue'
@@ -29,35 +30,29 @@ const filterTab = ref<'all' | 'proxied' | 'direct'>('all')
 // otherwise. A click always writes here, so collapse works during search.
 const expandedPids = ref<Map<number, boolean>>(new Map())
 const selectedPid = ref<number | null>(null)
-let activityTimer: ReturnType<typeof setInterval> | null = null
 
 // --- Activity tracking ---
 const lastActivityByPid = ref(new Map<number, number>())
 
-async function fetchActivity() {
-  try {
-    // Pull TCP and UDP in parallel — UDP-only processes (Chrome QUIC,
-    // Discord voice, games, anything via the UDP path) wouldn't show as
-    // active otherwise.
-    const [tcp, udp] = await Promise.all([
-      getTcpConnections(),
-      getUdpConnections(),
-    ])
-    const now = Date.now()
-    const map = new Map<number, number>()
-    for (const conn of tcp) map.set(conn.pid, now)
-    for (const conn of udp) map.set(conn.pid, now)
-    // Retain non-expired entries for PIDs with no current connections
-    for (const [pid, ts] of lastActivityByPid.value) {
-      if (!map.has(pid) && now - ts < ACTIVITY_TIMEOUT_MS) {
-        map.set(pid, ts)
-      }
+const activityPoller = createAsyncPoller(10_000, signal => {
+  // Pull TCP and UDP in parallel so UDP-only processes are counted too.
+  return Promise.all([
+    getTcpConnections(undefined, signal),
+    getUdpConnections(undefined, signal),
+  ])
+}, ([tcp, udp]) => {
+  const now = Date.now()
+  const map = new Map<number, number>()
+  for (const conn of tcp) map.set(conn.pid, now)
+  for (const conn of udp) map.set(conn.pid, now)
+  // Retain non-expired entries for PIDs with no current connections.
+  for (const [pid, ts] of lastActivityByPid.value) {
+    if (!map.has(pid) && now - ts < ACTIVITY_TIMEOUT_MS) {
+      map.set(pid, ts)
     }
-    lastActivityByPid.value = map
-  } catch {
-    // Backend not available
   }
-}
+  lastActivityByPid.value = map
+})
 
 function isPidActive(pid: number): boolean {
   const lastSeen = lastActivityByPid.value.get(pid)
@@ -86,30 +81,15 @@ function isSubtreeActive(node: ProcessInfo): boolean {
   return subtreeActivePids.value.has(node.pid)
 }
 
-function startActivityPolling() {
-  if (activityTimer) return
-  fetchActivity()
-  // /api/tcp is still polled (per-connection metadata is high-frequency
-  // and tab-scoped, not part of the tree push payload).
-  activityTimer = setInterval(fetchActivity, 10_000)
-}
-
-function stopActivityPolling() {
-  if (activityTimer) {
-    clearInterval(activityTimer)
-    activityTimer = null
-  }
-}
-
 // Suspend the 10s activity poll while hidden; resume on visible.
-watch(documentVisible, v => v ? startActivityPolling() : stopActivityPolling())
+watch(documentVisible, v => v ? activityPoller.start() : activityPoller.stop())
 
 onMounted(() => {
-  if (documentVisible.value) startActivityPolling()
+  if (documentVisible.value) activityPoller.start()
 })
 
 onUnmounted(() => {
-  stopActivityPolling()
+  activityPoller.stop()
 })
 
 // --- Tree helpers ---

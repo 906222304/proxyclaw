@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "common/process_tree_json.hpp"
+#include "core/log.hpp"
 #include "domain/process_tree_manager.hpp"
 #include "transport/frontend_push_sink.hpp"
 
@@ -33,8 +34,8 @@ process_projection::process_projection(domain::process_tree_manager& mgr, strand
 void process_projection::on_tree_changed(push_urgency urgency) {
     if (!frontend_visible_.load(std::memory_order_relaxed)) {
         // Frontend hidden (window minimized or in tray). Skip both
-        // refresh and push — replay_to_frontend (triggered by the ready
-        // handshake on visible) refreshes on demand and delivers the
+        // refresh and push — replay_to_frontend (triggered on restore)
+        // refreshes on demand and delivers the
         // latest snapshot.
         return;
     }
@@ -66,6 +67,7 @@ void process_projection::replay_to_frontend() {
     // Called from the UI thread (ready-handshake callback). Hop onto the
     // strand to refresh + push consistently.
     asio::post(strand_, [this]() {
+        if (!frontend_visible_.load(std::memory_order_relaxed)) return;
 #ifdef PROXYCLAW_PROJECTION_COALESCE
         std::error_code ignore;
         coalesce_timer_.cancel(ignore);
@@ -100,8 +102,9 @@ void process_projection::schedule_coalesced_push() {
         // Timer was constructed from the strand executor, so this
         // callback runs on the strand — pending_flush_ access stays
         // strand-local.
+        if (ec) return;  // A cancelled old wait must not clear a newly armed flush.
         pending_flush_ = false;
-        if (ec) return;  // cancelled (e.g. an immediate push superseded us)
+        if (!frontend_visible_.load(std::memory_order_relaxed)) return;
         refresh_snapshot();
         push_current_snapshot();
     });

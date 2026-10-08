@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { Search, Moon } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
 import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
+import { createAsyncPoller } from '@/lib/asyncPoller'
 
 const props = defineProps<{
   selectedPid?: number
@@ -175,7 +176,6 @@ const defaultColDef = {
 }
 
 const documentVisible = useDocumentVisibility()
-let timer: ReturnType<typeof setInterval> | null = null
 
 // pid 0 (Idle / orphaned TIME_WAIT sockets) and pid 4 (System / kernel SMB
 // etc.) are not interesting in the firehose "all processes" feed. Hide them
@@ -183,36 +183,23 @@ let timer: ReturnType<typeof setInterval> | null = null
 // whatever it owns, including pid 0/4 if the user really clicked them.
 const SYSTEM_PIDS = new Set([0, 4])
 
-async function fetchConnections() {
-  try {
-    const conns = await getNetworkConnections(props.selectedPid)
-    rowData.value = props.selectedPid == null
-      ? conns.filter(c => !SYSTEM_PIDS.has(c.pid))
-      : conns
-  } catch {
-    // Backend not available
-  }
-}
-
-function startPolling() {
-  stopPolling()
-  fetchConnections()
-  timer = setInterval(fetchConnections, 2000)
-}
-
-function stopPolling() {
-  if (timer !== null) {
-    clearInterval(timer)
-    timer = null
-  }
-}
+const poller = createAsyncPoller(2000, async signal => {
+  const pid = props.selectedPid
+  return { pid, connections: await getNetworkConnections(pid, signal) }
+}, ({ pid, connections }) => {
+  if (pid !== props.selectedPid) return
+  rowData.value = pid == null
+    ? connections.filter(c => !SYSTEM_PIDS.has(c.pid))
+    : connections
+})
 
 function onGridReady(params: { api: GridApi }) {
   gridApi.value = params.api
 }
 
 watch(() => props.selectedPid, () => {
-  if (documentVisible.value) fetchConnections()
+  rowData.value = []
+  poller.refresh()
 })
 
 watch(filterText, (text) => {
@@ -224,14 +211,14 @@ watch(filterText, (text) => {
 // Suspend the 2s /api/tcp poll while hidden. Restart immediately on
 // visible — the table is data-dense so a stale state on restore would
 // be visibly wrong.
-watch(documentVisible, v => v ? startPolling() : stopPolling())
+watch(documentVisible, v => v ? poller.start() : poller.stop())
 
 onMounted(() => {
-  if (documentVisible.value) startPolling()
+  if (documentVisible.value) poller.start()
 })
 
 onUnmounted(() => {
-  stopPolling()
+  poller.stop()
 })
 </script>
 

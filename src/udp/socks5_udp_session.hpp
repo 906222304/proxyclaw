@@ -137,17 +137,17 @@ public:
 
     asio::awaitable<bool> async_send_udp(std::vector<uint8_t> frame) {
         if (!alive_.load(std::memory_order_acquire)) co_return false;
-        asio::error_code local_ec;
-        auto local_ep = udp_data_.local_endpoint(local_ec);
         auto [ec, n] = co_await udp_data_.async_send_to(
             asio::buffer(frame), relay_endpoint_,
             asio::as_tuple(asio::use_awaitable));
         if (!ec) {
             last_active_ = std::chrono::steady_clock::now();
-            PC_LOG_INFO("[SOCKS5-UDP] async_send {} bytes from local:{} -> {}:{}",
-                         n, local_ep.port(),
+            PC_LOG_DEBUG("[SOCKS5-UDP] async_send {} bytes -> {}:{}",
+                         n,
                          relay_endpoint_.address().to_string(), relay_endpoint_.port());
         } else {
+            asio::error_code local_ec;
+            auto local_ep = udp_data_.local_endpoint(local_ec);
             PC_LOG_WARN("[SOCKS5-UDP] async_send failed: code={} error='{}' "
                         "local={}:{} relay={}:{} bytes={}",
                         ec.value(), ec.message(),

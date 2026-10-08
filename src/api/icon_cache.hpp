@@ -123,6 +123,9 @@ public:
     }
 
 private:
+    // UI icons occupy 16 CSS pixels. Keep 64 physical pixels in the cache so
+    // 125-200% monitors (including additional system text scaling) stay sharp.
+    static constexpr int ICON_PIXELS = 64;
     ULONG_PTR gdiplus_token_ = 0;
     CLSID png_clsid_{};
     bool has_png_encoder_ = false;
@@ -188,18 +191,24 @@ private:
         std::wstring wpath(wlen, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, exe_path.data(), src_len, wpath.data(), wlen);
 
-        // Try SHGetFileInfoW first
+        // Request an actual high-resolution resource before falling back to
+        // Shell's normal large icon; scaling a 16px extraction cannot add detail.
         HICON hIcon = nullptr;
+        if (SHDefExtractIconW(wpath.c_str(), 0, 0, &hIcon, nullptr,
+                             MAKELONG(ICON_PIXELS, 0)) != S_OK && hIcon) {
+            DestroyIcon(hIcon);
+            hIcon = nullptr;
+        }
         SHFILEINFOW sfi = {};
-        if (SHGetFileInfoW(wpath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
+        if (!hIcon && SHGetFileInfoW(wpath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON)) {
             hIcon = sfi.hIcon;
         }
 
         // Fallback: ExtractIconExW
         if (!hIcon) {
-            HICON hSmall = nullptr;
-            if (ExtractIconExW(wpath.c_str(), 0, nullptr, &hSmall, 1) > 0) {
-                hIcon = hSmall;
+            HICON hLarge = nullptr;
+            if (ExtractIconExW(wpath.c_str(), 0, &hLarge, nullptr, 1) > 0) {
+                hIcon = hLarge;
             }
         }
 
@@ -218,7 +227,7 @@ private:
         std::unique_ptr<Gdiplus::Bitmap> bmp(Gdiplus::Bitmap::FromHICON(hIcon));
         if (!bmp) return result;
 
-        constexpr int SIZE = 16;
+        constexpr int SIZE = ICON_PIXELS;
         Gdiplus::Bitmap resized(SIZE, SIZE, PixelFormat32bppARGB);
         {
             Gdiplus::Graphics g(&resized);

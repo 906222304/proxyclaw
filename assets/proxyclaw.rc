@@ -2,3 +2,6 @@
 
 // Application and tray icon.
 1 ICON "proxyclaw.ico"
+
+// One manifest for every Windows toolchain: elevation and per-monitor DPI.
+1 RT_MANIFEST "proxyclaw.manifest"

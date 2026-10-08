@@ -15,6 +15,7 @@ import { useNotifications } from '@/api/notify'
 import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
 import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
+import { createAsyncPoller } from '@/lib/asyncPoller'
 import { PROXYCLAW_VERSION } from '@/version'
 import appIcon from '@/assets/proxyclaw-icon.png'
 import type { Stats, ProcessInfo, AutoRule } from '@/api/types'
@@ -162,12 +163,12 @@ const tabs = [
   { key: 'settings', label: '设置', icon: Globe },
 ] as const
 
-async function fetchStatus() {
-  try {
-    stats.value = await getStats()
-  } catch {
-    // Backend not available yet
-  }
+const statusPoller = createAsyncPoller(3000, signal => getStats(signal), data => {
+  stats.value = data
+})
+
+function fetchStatus() {
+  statusPoller.refresh()
 }
 
 async function onSelectProcess(pid: number | undefined) {
@@ -206,32 +207,17 @@ function onCreateRuleFromProcess() {
   openRuleDialog(null, proc.name, workDir)
 }
 
-let statusTimer: ReturnType<typeof setInterval> | null = null
-
-function startStatusPolling() {
-  if (statusTimer) return
-  fetchStatus()
-  statusTimer = setInterval(fetchStatus, 3000)
-}
-
-function stopStatusPolling() {
-  if (statusTimer) {
-    clearInterval(statusTimer)
-    statusTimer = null
-  }
-}
-
 // Gate the /api/stats poll on visibility. While hidden we save 1 HTTP RTT
 // every 3s; on becoming visible we re-fire immediately so the badges in
 // the title bar are not stale by up to 3s after restore.
-watch(documentVisible, v => v ? startStatusPolling() : stopStatusPolling())
+watch(documentVisible, v => v ? statusPoller.start() : statusPoller.stop())
 
 onMounted(() => {
-  if (documentVisible.value) startStatusPolling()
+  if (documentVisible.value) statusPoller.start()
 })
 
 onUnmounted(() => {
-  stopStatusPolling()
+  statusPoller.stop()
 })
 </script>
 

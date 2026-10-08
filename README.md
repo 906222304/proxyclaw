@@ -211,6 +211,27 @@ TCP 阶段的解析代理地址、连接、SOCKS5 握手、发送及接收共享
 
 TCP 封装和 SOCKS5 回复读取分别遵循 [RFC 7766](https://www.rfc-editor.org/rfc/rfc7766.html) 和 [RFC 1928](https://www.rfc-editor.org/rfc/rfc1928.html)。
 
+### 界面加载与后台刷新回归测试
+
+本次优化及后续建议见 [项目优化检查](docs/OPTIMIZATION_REVIEW.md)。设置页的高级 JSON 编辑器按需加载；周期刷新等待上次请求结束，隐藏或切换进程时取消旧请求。窗口恢复后主动同步进程树。
+
+```powershell
+node --test tests/async_poller_test.mjs
+python tests/run_projection_tests.py --cxx path/to/zig.exe --asio-include path/to/asio/include
+```
+
+### 高清屏窗口回归测试
+
+Windows 窗口使用 PerMonitorV2 DPI 适配，WebView2 跟随屏幕和系统文字缩放；切换屏幕时调整窗口、最小尺寸及图标。已保存的窗口位置和大小保持物理像素格式兼容。
+
+进程列表的图标从程序资源提取为 64×64 PNG 缓存，避免把 16×16 图片直接放大到高 DPI 屏幕。
+
+下面的检查仅创建短暂隐藏的测试窗口，验证嵌入的 DPI 声明、屏幕工作区、最小窗口尺寸及 100%/125%/150%/200% 的缩放事件与图标加载，并验证真实图标提取及 PNG 尺寸，不启动代理、不修改 DNS。缩放事件采用模拟消息，多屏实际拖动仍需人工验证。
+
+```powershell
+python tests/run_window_dpi_tests.py --cxx path/to/zig.exe
+```
+
 ### DNS 生命周期与报文解析回归测试
 
 中文路径、后台默认值及旧配置导入可单独验证（仅操作 `build` 内的测试文件，不启动代理）：

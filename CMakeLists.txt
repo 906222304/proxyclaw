@@ -127,6 +127,8 @@ set(PROXYCLAW_SOURCES
 # Embed the ProxyClaw icon via a Win32 resource file.
 if(WIN32)
     list(APPEND PROXYCLAW_SOURCES ${CMAKE_SOURCE_DIR}/assets/proxyclaw.rc)
+    set_source_files_properties(assets/proxyclaw.rc PROPERTIES OBJECT_DEPENDS
+        "${CMAKE_SOURCE_DIR}/assets/proxyclaw.manifest;${CMAKE_SOURCE_DIR}/assets/proxyclaw.ico")
 endif()
 
 # Executable
@@ -142,11 +144,10 @@ if(PROXYCLAW_PROJECTION_COALESCE)
     message(STATUS "PROXYCLAW_PROJECTION_COALESCE=ON — projection arms a 100ms refresh-coalesce timer for batched events")
 endif()
 
-# UAC elevation: embed manifest requesting administrator privileges
-# (WinDivert and SetInterfaceDnsSettings both require elevation)
+# proxyclaw.rc embeds the shared elevation + PerMonitorV2 manifest.
+# Disable MSVC's generated manifest to avoid competing resource ID 1 entries.
 if(MSVC)
-    target_link_options(proxyclaw PRIVATE
-        "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    target_link_options(proxyclaw PRIVATE /MANIFEST:NO)
 
     # Parallel compilation: the Visual Studio generator parallelizes across
     # projects by default but serializes .cpp files inside a single project.

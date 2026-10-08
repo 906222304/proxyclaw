@@ -14,6 +14,7 @@
 #include <WebView2EnvironmentOptions.h>
 #endif
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -43,6 +44,9 @@ class webview_app : public frontend_push_sink {
 private:
 
     HWND hwnd_ = nullptr;
+    HICON large_icon_ = nullptr;
+    HICON small_icon_ = nullptr;
+    UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
     std::wstring url_;
     int width_ = 1200;
     int height_ = 800;
@@ -143,6 +147,15 @@ private:
                                     return result;
                                 }
                                 webview_controller_ = controller;
+
+                                // Bounds below are physical client pixels. Let WebView2
+                                // track the monitor scale itself, including across screens;
+                                // changing ZoomFactor as well would scale the page twice.
+                                Microsoft::WRL::ComPtr<ICoreWebView2Controller3> controller3;
+                                if (SUCCEEDED(webview_controller_.As(&controller3))) {
+                                    controller3->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS);
+                                    controller3->put_ShouldDetectMonitorScaleChanges(TRUE);
+                                }
 
                                 // The controller is created with IsVisible=TRUE by default. If
                                 // we launched with --minimized the host window is already SW_HIDE
@@ -302,6 +315,45 @@ private:
     void resize_webview() {}
 #endif
 
+    void update_window_icons() {
+        HINSTANCE module = GetModuleHandleW(nullptr);
+        HICON large = static_cast<HICON>(LoadImageW(
+            module, MAKEINTRESOURCEW(1), IMAGE_ICON,
+            GetSystemMetricsForDpi(SM_CXICON, dpi_),
+            GetSystemMetricsForDpi(SM_CYICON, dpi_), 0));
+        HICON small = static_cast<HICON>(LoadImageW(
+            module, MAKEINTRESOURCEW(1), IMAGE_ICON,
+            GetSystemMetricsForDpi(SM_CXSMICON, dpi_),
+            GetSystemMetricsForDpi(SM_CYSMICON, dpi_), 0));
+        // Keep existing icons if resource loading fails. These are owned handles;
+        // LR_SHARED can cache the first requested size across later DPI changes.
+        if (!large || !small) {
+            if (large) DestroyIcon(large);
+            if (small) DestroyIcon(small);
+            return;
+        }
+        SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(large));
+        SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small));
+        nid_.hIcon = small;
+        if (tray_created_) Shell_NotifyIconW(NIM_MODIFY, &nid_);
+        if (large_icon_) DestroyIcon(large_icon_);
+        if (small_icon_) DestroyIcon(small_icon_);
+        large_icon_ = large;
+        small_icon_ = small;
+    }
+
+    LRESULT on_dpi_changed(WPARAM wparam, LPARAM lparam) {
+        dpi_ = HIWORD(wparam);
+        const auto& rect = *reinterpret_cast<const RECT*>(lparam);
+        SetWindowPos(hwnd_, nullptr, rect.left, rect.top,
+                     rect.right - rect.left, rect.bottom - rect.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        update_window_icons();
+        resize_webview();
+        PC_LOG_INFO("Window DPI changed: {} ({}%)", dpi_, MulDiv(dpi_, 100, 96));
+        return 0;
+    }
+
     // Idempotent, event-driven WebView2 (re)initialization chokepoint. Replaces
     // eager init at window creation so the controller is built when the shell is
     // ready (first user show, or TaskbarCreated) — avoiding the early-logon
@@ -328,9 +380,7 @@ private:
         nid_.uCallbackMessage = WM_TRAYICON;
         // Load the embedded ProxyClaw icon (resource ID 1 from assets/proxyclaw.rc).
         // Fall back to system default if, for some reason, resource load fails.
-        HINSTANCE hinst = GetModuleHandleW(nullptr);
-        HICON app_icon = LoadIconW(hinst, MAKEINTRESOURCEW(1));
-        nid_.hIcon = app_icon ? app_icon : LoadIcon(nullptr, IDI_APPLICATION);
+        nid_.hIcon = small_icon_ ? small_icon_ : LoadIcon(nullptr, IDI_APPLICATION);
         wcscpy_s(nid_.szTip, L"ProxyClaw · 后台代理运行中");
 
         // NIM_ADD is the normal path. NIM_MODIFY catches the Win10 1903 case
@@ -508,10 +558,17 @@ private:
         return 0;
     }
 
-    static LRESULT on_getminmaxinfo(LPARAM lparam) {
+    static LRESULT on_getminmaxinfo(HWND hwnd, LPARAM lparam) {
         MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
-        mmi->ptMinTrackSize.x = 900;
-        mmi->ptMinTrackSize.y = 600;
+        UINT dpi = GetDpiForWindow(hwnd);
+        if (!dpi) dpi = GetDpiForSystem();
+        mmi->ptMinTrackSize.x = MulDiv(900, dpi, 96);
+        mmi->ptMinTrackSize.y = MulDiv(600, dpi, 96);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+            mmi->ptMinTrackSize.x = std::min(mmi->ptMinTrackSize.x, mi.rcWork.right - mi.rcWork.left);
+            mmi->ptMinTrackSize.y = std::min(mmi->ptMinTrackSize.y, mi.rcWork.bottom - mi.rcWork.top);
+        }
         return 0;
     }
 
@@ -581,6 +638,8 @@ private:
         if (msg == WM_CREATE) {
             auto* cs  = reinterpret_cast<CREATESTRUCT*>(lparam);
             auto* app = static_cast<webview_app*>(cs->lpCreateParams);
+            app->hwnd_ = hwnd;
+            app->dpi_ = GetDpiForWindow(hwnd);
             SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
             // Subscribe to the shell's "TaskbarCreated" broadcast so we can
             // re-register the tray icon if the shell is not yet ready when
@@ -622,9 +681,15 @@ private:
                 break;
             }
             case WM_SIZE:               return app->on_size(wparam);
+            case WM_DPICHANGED:         return app->on_dpi_changed(wparam, lparam);
+            case WM_MOVE:
+#ifdef PROXYCLAW_HAS_WEBVIEW2
+                if (app->webview_controller_) app->webview_controller_->NotifyParentWindowPositionChanged();
+#endif
+                break;
             case WM_CLOSE:              return app->on_close(hwnd);
             case WM_DESTROY:            return app->on_destroy();
-            case WM_GETMINMAXINFO:      return on_getminmaxinfo(lparam);
+            case WM_GETMINMAXINFO:      return on_getminmaxinfo(hwnd, lparam);
             case WM_EXITSIZEMOVE:       return app->on_exitsizemove(hwnd);
             case WM_TRAYICON:           return app->on_trayicon(lparam);
             case WM_COMMAND:            return app->on_command(hwnd, wparam);
@@ -659,6 +724,8 @@ public:
         webview_.Reset();
 #endif
         if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
+        if (large_icon_) DestroyIcon(large_icon_);
+        if (small_icon_) DestroyIcon(small_icon_);
     }
 
     void set_title(std::wstring_view title) { title_ = title; }
@@ -728,14 +795,31 @@ public:
 
         int x;
         int y;
-        if (init_x_ >= 0 && init_y_ >= 0) {
+        // Saved rectangles remain physical pixels for compatibility. Only an
+        // unsaved (centered) initial size is expressed in 96-DPI logical pixels.
+        // Negative coordinates are valid for monitors left/above the primary.
+        if (!(init_x_ == -1 && init_y_ == -1)) {
             x = init_x_;
             y = init_y_;
         } else {
+            UINT dpi = GetDpiForSystem();
+            width_ = MulDiv(width_, dpi, 96);
+            height_ = MulDiv(height_, dpi, 96);
             int screen_width = GetSystemMetrics(SM_CXSCREEN);
             int screen_height = GetSystemMetrics(SM_CYSCREEN);
             x = (screen_width - width_) / 2;
             y = (screen_height - height_) / 2;
+        }
+
+        // A disconnected monitor or a small laptop display must not leave the
+        // title bar off screen. Clamp both new and restored rectangles.
+        RECT desired = {x, y, x + width_, y + height_};
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(MonitorFromRect(&desired, MONITOR_DEFAULTTONEAREST), &mi)) {
+            width_ = std::min(width_, static_cast<int>(mi.rcWork.right - mi.rcWork.left));
+            height_ = std::min(height_, static_cast<int>(mi.rcWork.bottom - mi.rcWork.top));
+            x = std::clamp(x, static_cast<int>(mi.rcWork.left), static_cast<int>(mi.rcWork.right) - width_);
+            y = std::clamp(y, static_cast<int>(mi.rcWork.top), static_cast<int>(mi.rcWork.bottom) - height_);
         }
 
         hwnd_ = CreateWindowExW(
@@ -749,6 +833,8 @@ public:
             PC_LOG_ERROR("Failed to create window: {}", GetLastError());
             return false;
         }
+        dpi_ = GetDpiForWindow(hwnd_);
+        update_window_icons();
 
         // Trigger WM_NCCALCSIZE to apply our frameless layout
         SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
@@ -790,6 +876,7 @@ public:
 
     HWND get_hwnd() const { return hwnd_; }
     bool is_initialized() const { return initialized_; }
+    bool is_visible() const { return currently_visible_; }
 
     void navigate(const std::wstring& url) {
         url_ = url;

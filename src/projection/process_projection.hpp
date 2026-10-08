@@ -22,8 +22,8 @@
 //
 // Visibility gate: set_frontend_visible(false) makes on_tree_changed
 // drop both refresh and push so the strand stays free while the host
-// has the WebView2 controller hidden (minimize / tray). The next ready
-// handshake on visible drives replay_to_frontend which catches up.
+// has the WebView2 controller hidden (minimize / tray). A transition
+// back to visible replays the latest tree even without new ETW events.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -64,10 +64,10 @@ public:
     void set_sink(frontend_push_sink* sink) noexcept { sink_.store(sink); }
 
     // Visibility hand-off from webview_app::set_visible. Hidden -> we drop
-    // on_tree_changed work entirely; replay_to_frontend (triggered by the
-    // ready handshake on visible again) catches the frontend up.
-    void set_frontend_visible(bool v) noexcept {
-        frontend_visible_.store(v, std::memory_order_relaxed);
+    // on_tree_changed work entirely; becoming visible queues a fresh replay.
+    void set_frontend_visible(bool v) {
+        bool previous = frontend_visible_.exchange(v, std::memory_order_relaxed);
+        if (v && !previous) replay_to_frontend();
     }
 
     // tree_change_receiver. Invoked on the strand.

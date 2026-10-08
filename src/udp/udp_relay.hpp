@@ -157,7 +157,7 @@ private:
             auto frame_size = frame.size();
 
             bool sent = co_await socks5->async_send_udp(std::move(frame));
-            PC_LOG_INFO("[UDP-RELAY] UP app_port={} dst_port={} {} bytes sent={}",
+            PC_LOG_DEBUG("[UDP-RELAY] UP app_port={} dst_port={} {} bytes sent={}",
                          app_port, dst_port_host, frame_size, sent);
             if (sent) {
                 upstream_count_.fetch_add(1, std::memory_order_relaxed);
@@ -201,7 +201,7 @@ private:
                 continue;
             }
 
-            PC_LOG_INFO("[UDP-RELAY] DOWN port={} {} bytes", app_port, frame->data_len);
+            PC_LOG_DEBUG("[UDP-RELAY] DOWN port={} {} bytes", app_port, frame->data_len);
             inject_reply(*s, frame->data, frame->data_len);
         }
 

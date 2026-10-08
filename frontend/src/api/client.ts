@@ -82,20 +82,20 @@ export function batchHijack(pids: number[], action: 'hijack' | 'unhijack', group
 
 // -- TCP Connections --
 
-export function getTcpConnections(pid?: number): Promise<TcpConnection[]> {
+export function getTcpConnections(pid?: number, signal?: AbortSignal): Promise<TcpConnection[]> {
   const query = pid == null ? '' : `?pid=${pid}`
-  return request<TcpConnection[]>(`/tcp${query}`)
+  return request<TcpConnection[]>(`/tcp${query}`, { signal })
 }
 
-export function getUdpConnections(pid?: number): Promise<TcpConnection[]> {
+export function getUdpConnections(pid?: number, signal?: AbortSignal): Promise<TcpConnection[]> {
   const query = pid == null ? '' : `?pid=${pid}`
-  return request<TcpConnection[]>(`/udp${query}`)
+  return request<TcpConnection[]>(`/udp${query}`, { signal })
 }
 
-export async function getNetworkConnections(pid?: number): Promise<NetworkConnection[]> {
+export async function getNetworkConnections(pid?: number, signal?: AbortSignal): Promise<NetworkConnection[]> {
   const [tcp, udp] = await Promise.all([
-    getTcpConnections(pid),
-    getUdpConnections(pid),
+    getTcpConnections(pid, signal),
+    getUdpConnections(pid, signal),
   ])
   return [
     ...tcp.map(c => ({ ...c, protocol: 'TCP' as const })),
@@ -196,8 +196,8 @@ export function testProxyGroup(id: number): Promise<ProxyTestResult> {
 
 // -- Stats --
 
-export function getStats(): Promise<Stats> {
-  return request<Stats>('/stats')
+export function getStats(signal?: AbortSignal): Promise<Stats> {
+  return request<Stats>('/stats', { signal })
 }
 
 // -- Shell --

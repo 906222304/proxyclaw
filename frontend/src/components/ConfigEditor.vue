@@ -1,28 +1,6 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed, useId } from 'vue'
-// Load the bundled Chinese strings before Monaco creates its UI/actions.
-import 'monaco-editor/esm/nls.messages.zh-cn.js'
-// JSON-only Monaco build: import the core API + JSON language contribution only,
-// so Vite can tree-shake away the 80+ unused languages.
-import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
-import 'monaco-editor/esm/vs/language/json/monaco.contribution'
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
-import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
-
-// Tell Monaco which worker to spawn per language.
-// Must be set before any `monaco.editor.create` call.
-interface MonacoEnv {
-  MonacoEnvironment?: { getWorker: (workerId: string, label: string) => Worker }
-}
-const globalScope = globalThis as unknown as MonacoEnv
-if (!globalScope.MonacoEnvironment) {
-  globalScope.MonacoEnvironment = {
-    getWorker(_workerId: string, label: string) {
-      if (label === 'json') return new JsonWorker()
-      return new EditorWorker()
-    },
-  }
-}
+import { ref, watch, onMounted, onUnmounted, computed, useId, nextTick } from 'vue'
+import type * as Monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -37,7 +15,11 @@ const { isDark } = useTheme()
 const { pushError } = useStatusBus()
 
 const editorContainer = ref<HTMLDivElement | null>(null)
-let editor: monaco.editor.IStandaloneCodeEditor | null = null
+let editor: Monaco.editor.IStandaloneCodeEditor | null = null
+let monaco: typeof Monaco | null = null
+let editorGeneration = 0
+const editorLoading = ref(false)
+const editorError = ref<string | null>(null)
 
 const savedContent = ref('')
 const currentContent = ref('')
@@ -73,9 +55,10 @@ const hasUnsavedChanges = computed(() => {
   return currentContent.value !== savedContent.value
 })
 
-async function fetchConfig(options: { pushToEditor?: boolean } = {}) {
+async function fetchConfig(options: { pushToEditor?: boolean; generation?: number } = {}) {
   try {
     const config = await getConfig()
+    if (options.generation != null && options.generation !== editorGeneration) return false
     const json = JSON.stringify(config, null, 2)
     const ui = (config as Record<string, unknown>).ui as Record<string, unknown> | undefined
     closeToTray.value = (ui?.close_to_tray as boolean | undefined) ?? true
@@ -96,8 +79,10 @@ async function fetchConfig(options: { pushToEditor?: boolean } = {}) {
       currentContent.value = json
       if (editor) editor.setValue(json)
     }
+    return true
   } catch {
     // Backend not available
+    return false
   }
 }
 
@@ -226,7 +211,7 @@ async function toggleCloseToTray() {
 }
 
 function initEditor() {
-  if (!editorContainer.value || editor) return
+  if (!editorContainer.value || editor || !monaco) return
   editor = monaco.editor.create(editorContainer.value, {
     value: currentContent.value,
     language: 'json',
@@ -239,6 +224,8 @@ function initEditor() {
     tabSize: 2,
     wordWrap: 'on',
     renderLineHighlight: 'line',
+    // JSON configuration needs syntax/validation, not background symbol searches.
+    occurrencesHighlight: 'off',
     padding: { top: 8, bottom: 8 },
   })
 
@@ -254,21 +241,46 @@ function initEditor() {
 }
 
 async function openEditor() {
+  const generation = ++editorGeneration
   editorOpen.value = true
-  await fetchConfig({ pushToEditor: true })
-  // Wait for DOM to render the container, then init
-  setTimeout(() => initEditor(), 0)
+  editorLoading.value = true
+  editorError.value = null
+  try {
+    const [loaded, runtime] = await Promise.all([
+      fetchConfig({ pushToEditor: true, generation }),
+      import('@/lib/monacoRuntime'),
+    ])
+    if (generation !== editorGeneration || !editorOpen.value) return
+    if (!loaded) throw new Error('读取配置失败，请重试')
+    monaco = runtime.monaco
+    await nextTick()
+    if (generation === editorGeneration && editorOpen.value) initEditor()
+  } catch (err) {
+    if (generation === editorGeneration) {
+      editorError.value = err instanceof Error ? err.message : '加载配置编辑器失败'
+    }
+  } finally {
+    if (generation === editorGeneration) editorLoading.value = false
+  }
+}
+
+function disposeEditor() {
+  // Disposing the view does not release its text model. Release both so
+  // repeated opens don't retain old JSON and language-worker models.
+  const model = editor?.getModel()
+  editor?.dispose()
+  model?.dispose()
+  editor = null
 }
 
 function closeEditor() {
   if (hasUnsavedChanges.value) {
     if (!confirm('有尚未保存的修改，确定放弃吗？')) return
   }
+  ++editorGeneration
   editorOpen.value = false
-  if (editor) {
-    editor.dispose()
-    editor = null
-  }
+  editorLoading.value = false
+  disposeEditor()
 }
 
 onMounted(() => {
@@ -278,16 +290,14 @@ onMounted(() => {
 })
 
 watch(isDark, (dark) => {
-  if (editor) {
+  if (editor && monaco) {
     monaco.editor.setTheme(dark ? 'vs-dark' : 'vs')
   }
 })
 
 onUnmounted(() => {
-  if (editor) {
-    editor.dispose()
-    editor = null
-  }
+  ++editorGeneration
+  disposeEditor()
 })
 </script>
 
@@ -493,7 +503,7 @@ onUnmounted(() => {
             <div class="flex items-center gap-2">
               <Button
                 size="sm"
-                :disabled="saving || !hasUnsavedChanges"
+                :disabled="saving || editorLoading || editorError !== null || !hasUnsavedChanges"
                 @click="saveConfig"
               >
                 <Save class="size-4 mr-1" />
@@ -506,6 +516,11 @@ onUnmounted(() => {
           </div>
 
           <!-- Monaco Editor -->
+          <p v-if="editorLoading" role="status" class="text-sm text-slate-500">正在加载配置编辑器…</p>
+          <div v-if="editorError" role="alert" class="flex items-center gap-3 text-sm text-red-500">
+            {{ editorError }}
+            <Button size="sm" variant="outline" @click="openEditor">重试</Button>
+          </div>
           <div
             ref="editorContainer"
             class="flex-1 min-h-[300px] rounded-md border border-slate-200 dark:border-slate-800 overflow-hidden"

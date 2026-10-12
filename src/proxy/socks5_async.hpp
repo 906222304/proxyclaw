@@ -60,12 +60,12 @@ socks5_handshake(tcp::socket& sock, uint32_t dest_ip_host, uint16_t dest_port)
 
     co_await asio::async_write(sock, asio::buffer(connect_req), asio::use_awaitable);
 
-    // Read CONNECT reply (minimum 10 bytes for IPv4)
-    std::array<uint8_t, 10> connect_reply{};
+    // Read the header first: a rejection may arrive without an address tail.
+    std::array<uint8_t, 4> connect_reply{};
     co_await asio::async_read(sock, asio::buffer(connect_reply), asio::use_awaitable);
 
-    if (connect_reply[0] != 0x05) {
-        throw socks5_protocol_error("SOCKS5 connect: invalid version in reply");
+    if (connect_reply[0] != 0x05 || connect_reply[2] != 0x00) {
+        throw socks5_protocol_error("SOCKS5 connect: invalid reply header");
     }
     if (connect_reply[1] != 0x00) {
         PC_LOG_WARN("[SOCKS5] Connect failed: reply code 0x{:02X}", connect_reply[1]);
@@ -73,7 +73,21 @@ socks5_handshake(tcp::socket& sock, uint32_t dest_ip_host, uint16_t dest_port)
                                                  connect_reply[1]));
     }
 
-    // Success — tunnel established, sock is now a transparent pipe
+    // Consume the entire BND endpoint, including IPv6/domain replies. Leaving
+    // address bytes unread corrupts the application's first TLS response.
+    std::array<uint8_t, 257> tail{};
+    size_t length;
+    switch (connect_reply[3]) {
+    case 0x01: length = 6; break;
+    case 0x04: length = 18; break;
+    case 0x03:
+        co_await asio::async_read(sock, asio::buffer(tail.data(), 1), asio::use_awaitable);
+        if (!tail[0]) throw socks5_protocol_error("SOCKS5 connect: empty bound domain");
+        length = static_cast<size_t>(tail[0]) + 2;
+        break;
+    default: throw socks5_protocol_error("SOCKS5 connect: unsupported address type");
+    }
+    co_await asio::async_read(sock, asio::buffer(tail.data(), length), asio::use_awaitable);
 }
 
 } // namespace clew

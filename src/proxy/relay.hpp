@@ -2,7 +2,7 @@
 
 // Bidirectional relay using C++20 coroutines.
 // Replaces thread-per-direction proxy_relay.hpp.
-// Uses awaitable_operators || for any-completes-cancels-other.
+// Preserves TCP half-close; transport failures cancel both directions.
 //
 // 100 connections = 100 coroutines on io_context worker threads.
 // Previous: 100 connections = 200 threads.
@@ -18,6 +18,7 @@
 
 #include "core/port_tracker.hpp"
 #include "proxy/socks5_async.hpp"
+#include "proxy/connection_health.hpp"
 
 // Format host-byte-order IPv4 as dotted string
 inline std::string ip_host_to_string(uint32_t ip) {
@@ -29,7 +30,7 @@ inline std::string ip_host_to_string(uint32_t ip) {
 namespace clew {
 
 using asio::ip::tcp;
-using asio::experimental::awaitable_operators::operator||;
+using asio::experimental::awaitable_operators::operator&&;
 
 // ProxyGroupConfig for relay (matches v3 architecture groups_ map value)
 struct ProxyGroupConfig {
@@ -38,25 +39,43 @@ struct ProxyGroupConfig {
 };
 
 // Unidirectional pipe: read from `from`, write to `to`.
-// On EOF or error, shutdown the write side of `to` so the other pipe sees EOF.
-inline asio::awaitable<void>
-pipe(tcp::socket& from, tcp::socket& to)
+// EOF is a half-close: the opposite direction may still have a response.
+// A transport error is fatal: close both sockets to wake the other read.
+struct RelayPipeResult {
+    uint64_t bytes{};
+    asio::error_code end;
+};
+
+inline asio::awaitable<RelayPipeResult>
+pipe(tcp::socket& from, tcp::socket& to, uint16_t port, const char* direction)
 {
     std::array<char, 32 * 1024> buf{};
+    uint64_t transferred = 0;
     try {
         for (;;) {
             auto n = co_await from.async_read_some(
                 asio::buffer(buf), asio::use_awaitable);
             co_await asio::async_write(
                 to, asio::buffer(buf, n), asio::use_awaitable);
+            transferred += n;
         }
-    } catch (...) {
-        // Any error (EOF, reset, timeout, bad_alloc) → shutdown the peer
-        // direction so the other pipe coroutine sees EOF and exits. The
-        // handling is identical for every exception type, so a catch-all
-        // is correct here by design (not defensive laziness).
+    } catch (const asio::system_error& e) {
         std::error_code ec;
-        to.shutdown(tcp::socket::shutdown_send, ec);
+        if (e.code() == asio::error::eof) {
+            to.shutdown(tcp::socket::shutdown_send, ec);
+        } else {
+            if (e.code() != asio::error::operation_aborted)
+                PC_LOG_WARN("[RELAY] Transport lost port={} direction={} after {} bytes: {}",
+                            port, direction, transferred, e.what());
+            from.close(ec);
+            to.close(ec);
+        }
+        co_return RelayPipeResult{transferred, e.code()};
+    } catch (...) {
+        std::error_code ec;
+        from.close(ec);
+        to.close(ec);
+        throw;
     }
 }
 
@@ -68,12 +87,13 @@ pipe(tcp::socket& from, tcp::socket& to)
 //   tracker:        port tracker to lookup original destination
 //   strand:         strand protecting groups_ map
 //   groups:         proxy group config map (read on strand)
-//   port_cleaner:   callback to clear tracker entry on connection close
+//   setup_timeout:  total resolution/connect/handshake deadline
 inline asio::awaitable<void>
 handle_connection(tcp::socket client_sock,
                   PortTracker& tracker,
                   asio::strand<asio::io_context::executor_type>& strand,
-                  const std::unordered_map<uint32_t, ProxyGroupConfig>& groups)
+                  const std::unordered_map<uint32_t, ProxyGroupConfig>& groups,
+                  std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10))
 {
     auto ex = co_await asio::this_coro::executor;
 
@@ -138,18 +158,19 @@ handle_connection(tcp::socket client_sock,
     try {
         auto t0 = std::chrono::steady_clock::now();
 
-        // Connect to SOCKS5 proxy
+        enable_tcp_keepalive(client_sock);
         tcp::resolver resolver{ex};
-        auto eps = co_await resolver.async_resolve(
-            cfg_opt->host, std::to_string(cfg_opt->port), asio::use_awaitable);
-
         tcp::socket proxy_sock{ex};
-        co_await asio::async_connect(proxy_sock, eps, asio::use_awaitable);
-
-        auto t1 = std::chrono::steady_clock::now();
-
-        // SOCKS5 handshake — establish tunnel to original destination
-        co_await socks5_handshake(proxy_sock, dest_addr, dest_port);
+        auto t1 = t0;
+        auto setup = [&]() -> asio::awaitable<void> {
+            auto eps = co_await resolver.async_resolve(
+                cfg_opt->host, std::to_string(cfg_opt->port), asio::use_awaitable);
+            co_await asio::async_connect(proxy_sock, eps, asio::use_awaitable);
+            enable_tcp_keepalive(proxy_sock);
+            t1 = std::chrono::steady_clock::now();
+            co_await socks5_handshake(proxy_sock, dest_addr, dest_port);
+        };
+        co_await with_setup_deadline(setup(), setup_timeout);
 
         auto t2 = std::chrono::steady_clock::now();
         auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -158,10 +179,12 @@ handle_connection(tcp::socket client_sock,
         PC_LOG_INFO("[RELAY] OK port={} -> {}:{} (proxy connect={}ms, socks5={}ms)",
                      src_port, dest_ip_str, dest_port, connect_ms, handshake_ms);
 
-        // Bidirectional relay: || means any-completes-cancels-other
-        // (parens required — co_await has higher precedence than ||, without them
-        //  the expression parses as `(co_await pipe(a,b)) || pipe(b,a)`)
-        co_await (pipe(client_sock, proxy_sock) || pipe(proxy_sock, client_sock));
+        auto [up, down] = co_await (pipe(client_sock, proxy_sock, src_port, "up") &&
+                                   pipe(proxy_sock, client_sock, src_port, "down"));
+        auto lifetime = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        PC_LOG_INFO("[RELAY] End port={} lifetime={}ms up={} down={} up_end={} down_end={}",
+                    src_port, lifetime, up.bytes, down.bytes, up.end.message(), down.end.message());
 
     } catch (const std::exception& e) {
         PC_LOG_WARN("[RELAY] FAIL port={} -> {}:{} error: {}",

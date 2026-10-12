@@ -86,7 +86,9 @@ private:
             accepted_count_.fetch_add(1);
 
             // Spawn relay coroutine for this connection
-            asio::co_spawn(ioc_,
+            // Socket cancellation, deadline and both pipe completions for one
+            // connection must be serialized even with multiple IO workers.
+            asio::co_spawn(asio::make_strand(ioc_),
                 handle_connection(std::move(sock), tracker_, strand_, groups_),
                 asio::detached);
         }

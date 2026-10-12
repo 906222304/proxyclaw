@@ -46,7 +46,9 @@ public:
         , socks5_mgr_(socks5_mgr)
         , wd_handle_(wd_handle)
         , relay_port_(relay_port)
-        , relay_socket_(ioc)
+        , strand_(asio::make_strand(ioc))
+        , relay_socket_(strand_)
+        , cleanup_timer_(strand_)
     {
         // When a new per-port SOCKS5 session is created, spawn its downstream coroutine
         socks5_mgr_.set_on_session_created(
@@ -66,7 +68,8 @@ public:
             PC_LOG_INFO("[UDP-RELAY] Listening on port {}", relay_port_);
             running_ = true;
 
-            asio::co_spawn(ioc_, upstream_loop(), asio::detached);
+            asio::co_spawn(strand_, upstream_loop(), asio::detached);
+            asio::co_spawn(strand_, cleanup_loop(), asio::detached);
 
             return true;
         } catch (const std::exception& e) {
@@ -78,8 +81,8 @@ public:
     // Shutdown order requirement:
     //   1. socks5_mgr.stop()  — closes sessions, causes downstream coroutines to error out
     //   2. udp_relay->stop()  — clears callback, closes socket, breaks upstream_loop
-    //   3. ioc.stop() + workers.join() — ensures all coroutines have exited
-    //   4. UdpRelay destructor runs safely (all coroutines already completed)
+    //   3. ioc.stop() + workers.join() — no more handlers may execute
+    //   4. UdpRelay destruction; remaining coroutine frames are destroyed by ioc
     void stop() {
         if (stopped_) return;
         stopped_ = true;
@@ -87,8 +90,11 @@ public:
 
         socks5_mgr_.set_on_session_created(nullptr);
 
-        asio::error_code ec;
-        relay_socket_.close(ec);
+        asio::dispatch(strand_, [this] {
+            asio::error_code ec;
+            relay_socket_.close(ec);
+            cleanup_timer_.cancel();
+        });
 
         PC_LOG_INFO("[UDP-RELAY] Stopped (up={}, down={}, injected={})",
                      upstream_count_.load(), downstream_count_.load(), injected_count_.load());
@@ -105,7 +111,9 @@ private:
     HANDLE wd_handle_;
     uint16_t relay_port_;
 
+    asio::strand<asio::io_context::executor_type> strand_;
     asio::ip::udp::socket relay_socket_;
+    asio::steady_timer cleanup_timer_;
     bool stopped_{false};
     std::atomic<bool> running_{false};
 
@@ -115,7 +123,7 @@ private:
 
     // Spawn a downstream coroutine for a newly created per-port session
     void spawn_downstream(uint16_t app_port, std::shared_ptr<Socks5UdpSession> session) {
-        asio::co_spawn(ioc_,
+        asio::co_spawn(strand_,
             downstream_for_session(app_port, std::move(session)),
             asio::detached);
     }
@@ -142,7 +150,7 @@ private:
             if (!session) continue;
 
             // Get or create per-port SOCKS5 session
-            auto socks5 = socks5_mgr_.get_or_create(app_port, session->group_id);
+            auto socks5 = co_await socks5_mgr_.get_or_create(app_port, session->group_id);
             if (!socks5) {
                 PC_LOG_WARN("[UDP-RELAY] No SOCKS5 session for port={} group={}",
                              app_port, session->group_id);
@@ -181,8 +189,7 @@ private:
                 if (session->is_alive() && running_)
                     PC_LOG_DEBUG("[UDP-RELAY] downstream recv error port={}: {}",
                                   app_port, ec.message());
-                if (!session->is_alive()) break;
-                continue;
+                break;
             }
             if (n == 0) continue;
 
@@ -202,10 +209,23 @@ private:
             }
 
             PC_LOG_DEBUG("[UDP-RELAY] DOWN port={} {} bytes", app_port, frame->data_len);
+            session_table_.touch(app_port);
             inject_reply(*s, frame->data, frame->data_len);
         }
 
         PC_LOG_INFO("[UDP-RELAY] Downstream ended for port={}", app_port);
+    }
+
+    asio::awaitable<void> cleanup_loop() {
+        while (running_) {
+            cleanup_timer_.expires_after(std::chrono::seconds(30));
+            auto [ec] = co_await cleanup_timer_.async_wait(asio::as_tuple(asio::use_awaitable));
+            if (ec || !running_) break;
+            auto removed = socks5_mgr_.cleanup_expired();
+            auto routes = session_table_.cleanup_expired();
+            if (removed || routes)
+                PC_LOG_INFO("[UDP-RELAY] Cleaned idle/dead sessions={} routes={}", removed, routes);
+        }
     }
 
     // Construct and inject a spoofed inbound UDP packet

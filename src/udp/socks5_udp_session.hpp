@@ -1,248 +1,216 @@
 #pragma once
 
-// SOCKS5 UDP ASSOCIATE session: owns TCP control + UDP data sockets.
-// Lifecycle: establish() -> async_send_udp()/async_recv_udp() -> close()
-// TCP control connection death = session invalidation (RFC 1928).
-//
-// All IO is async (Asio coroutines). No blocking recv on the UDP socket.
-
+// One strand serializes UDP/TCP operations and cancellation. Control loss
+// closes the data socket too, releasing every pending receive.
 #define ASIO_STANDALONE
 #include <asio.hpp>
-#include <asio/use_awaitable.hpp>
-
-#include <cstdint>
-#include <cstring>
-#include <vector>
-#include <string>
 #include <atomic>
+#include <array>
+#include <future>
+#include <memory>
+#include <string>
+#include <vector>
 #include "core/log.hpp"
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
+#include "proxy/connection_health.hpp"
 
 namespace clew {
-
 using asio::ip::tcp;
 using asio::ip::udp;
 
 class Socks5UdpSession : public std::enable_shared_from_this<Socks5UdpSession> {
 public:
-    Socks5UdpSession(asio::io_context& ioc,
-                     const std::string& proxy_host, uint16_t proxy_port)
-        : ioc_(ioc)
-        , proxy_host_(proxy_host)
-        , proxy_port_(proxy_port)
-        , tcp_control_(ioc)
-        , udp_data_(ioc)
-    {}
+    Socks5UdpSession(asio::io_context& ioc, const std::string& host, uint16_t port)
+        : ioc_(ioc), strand_(asio::make_strand(ioc)), proxy_host_(host), proxy_port_(port),
+          tcp_control_(strand_), udp_data_(strand_) {}
 
-    ~Socks5UdpSession() { close(); }
+    ~Socks5UdpSession() { close_sockets(); }
 
-    // Establish SOCKS5 UDP ASSOCIATE session (blocking, call from dedicated thread).
-    // Returns true on success, after which async_send_udp/async_recv_udp are usable.
-    bool establish() {
-        try {
-            // TCP connect to SOCKS5 proxy
-            tcp::resolver resolver(ioc_);
-            auto endpoints = resolver.resolve(proxy_host_, std::to_string(proxy_port_));
-            asio::connect(tcp_control_, endpoints);
-
-            // Auth handshake (NO_AUTH)
-            uint8_t auth_req[] = {0x05, 0x01, 0x00};
-            asio::write(tcp_control_, asio::buffer(auth_req));
-
-            uint8_t auth_resp[2]{};
-            asio::read(tcp_control_, asio::buffer(auth_resp));
-            if (auth_resp[0] != 0x05 || auth_resp[1] != 0x00) {
-                PC_LOG_ERROR("[SOCKS5-UDP] Auth rejected");
-                return false;
-            }
-
-            // Bind to all local interfaces so the OS can select the source
-            // address that can actually reach the relay. Binding to loopback
-            // makes remote SOCKS5 UDP relays unreachable on Windows.
-            udp_data_.open(udp::v4());
-            udp_data_.bind(udp::endpoint(udp::v4(), 0));
-            auto local_ep = udp_data_.local_endpoint();
-
-            // UDP ASSOCIATE request with wildcard address (0.0.0.0:0)
-            // Same as standard clients (Python, curl, etc.)
-            uint8_t assoc_req[] = {0x05, 0x03, 0x00, 0x01,
-                                   0x00, 0x00, 0x00, 0x00,  // 0.0.0.0
-                                   0x00, 0x00};             // port 0
-            asio::write(tcp_control_, asio::buffer(assoc_req));
-
-            // Parse ASSOCIATE response
-            uint8_t resp[4]{};
-            asio::read(tcp_control_, asio::buffer(resp));
-            if (resp[1] != 0x00) {
-                PC_LOG_ERROR("[SOCKS5-UDP] ASSOCIATE rejected: REP=0x{:02X}", resp[1]);
-                return false;
-            }
-
-            // Parse BND.ADDR:BND.PORT
-            if (resp[3] == 0x01) { // IPv4
-                uint8_t bnd[6];
-                asio::read(tcp_control_, asio::buffer(bnd));
-                uint32_t bnd_ip;
-                std::memcpy(&bnd_ip, bnd, 4);
-                uint16_t bnd_port = (static_cast<uint16_t>(bnd[4]) << 8) | bnd[5];
-                asio::ip::address_v4 bnd_addr(ntohl(bnd_ip));
-                if (bnd_addr == asio::ip::address_v4::any())
-                    bnd_addr = asio::ip::make_address_v4(proxy_host_.c_str());
-                relay_endpoint_ = udp::endpoint(bnd_addr, bnd_port);
-            } else if (resp[3] == 0x04) { // IPv6
-                uint8_t bnd[18];
-                asio::read(tcp_control_, asio::buffer(bnd));
-                uint16_t bnd_port = (static_cast<uint16_t>(bnd[16]) << 8) | bnd[17];
-                relay_endpoint_ = udp::endpoint(
-                    asio::ip::make_address_v4(proxy_host_.c_str()), bnd_port);
-            } else {
-                PC_LOG_ERROR("[SOCKS5-UDP] Unsupported BND ATYP=0x{:02X}", resp[3]);
-                return false;
-            }
-
-            alive_.store(true, std::memory_order_release);
-
-            PC_LOG_INFO("[SOCKS5-UDP] Session established: local={}:{} relay={}:{}",
-                         local_ep.address().to_string(), local_ep.port(),
-                         relay_endpoint_.address().to_string(), relay_endpoint_.port());
-
-            // TCP watchdog: async read on the control socket; when it returns
-            // (EOF / reset / any error), flip alive_ false. Managed by the
-            // io_context that owns tcp_control_, no dedicated thread needed.
-            asio::co_spawn(tcp_control_.get_executor(),
-                [self = shared_from_this()]() -> asio::awaitable<void> {
-                    uint8_t dummy[1];
-                    auto [ec, n] = co_await self->tcp_control_.async_read_some(
-                        asio::buffer(dummy), asio::as_tuple(asio::use_awaitable));
-                    if (ec)
-                        PC_LOG_DEBUG("[SOCKS5-UDP] TCP watchdog detected control loss: {}",
-                                     ec.message());
-                    if (self->alive_.exchange(false))
-                        PC_LOG_WARN("[SOCKS5-UDP] TCP control connection lost");
-                }, asio::detached);
-
-            return true;
-
-        } catch (const std::exception& e) {
-            PC_LOG_ERROR("[SOCKS5-UDP] Establish failed: {}", e.what());
-            return false;
-        }
+    // DNS startup only, before its private io_context worker is started.
+    // The production UDP relay uses async_establish, never blocking IO workers.
+    bool establish(std::chrono::steady_clock::duration timeout = std::chrono::seconds(10)) {
+        if (ioc_.stopped()) ioc_.restart();
+        auto result = asio::co_spawn(strand_, async_establish(timeout), asio::use_future);
+        while (result.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            ioc_.run_one();
+        return result.get();
     }
 
-    // ---- Async IO (the only IO interfaces) ----
+    asio::awaitable<bool> async_establish(
+        std::chrono::steady_clock::duration timeout = std::chrono::seconds(10)) {
+        auto self = shared_from_this();
+        co_return co_await asio::co_spawn(strand_, self->establish_serial(timeout), asio::use_awaitable);
+    }
 
     asio::awaitable<bool> async_send_udp(std::vector<uint8_t> frame) {
-        if (!alive_.load(std::memory_order_acquire)) co_return false;
-        auto [ec, n] = co_await udp_data_.async_send_to(
-            asio::buffer(frame), relay_endpoint_,
-            asio::as_tuple(asio::use_awaitable));
-        if (!ec) {
-            last_active_ = std::chrono::steady_clock::now();
-            PC_LOG_DEBUG("[SOCKS5-UDP] async_send {} bytes -> {}:{}",
-                         n,
-                         relay_endpoint_.address().to_string(), relay_endpoint_.port());
-        } else {
-            asio::error_code local_ec;
-            auto local_ep = udp_data_.local_endpoint(local_ec);
-            PC_LOG_WARN("[SOCKS5-UDP] async_send failed: code={} error='{}' "
-                        "local={}:{} relay={}:{} bytes={}",
-                        ec.value(), ec.message(),
-                        local_ep.address().to_string(), local_ep.port(),
-                        relay_endpoint_.address().to_string(), relay_endpoint_.port(),
-                        frame.size());
-        }
-        co_return !ec;
+        auto self = shared_from_this();
+        co_return co_await asio::co_spawn(strand_, self->send_serial(std::move(frame)), asio::use_awaitable);
     }
 
-    // The data socket is bound to the wildcard address so it can reach a remote
-    // relay, which also means anything on the network can send to this port.
-    // Only the relay's own datagrams may be handed upstream — everything else is
-    // dropped here, before it reaches the SOCKS5 decoder and the hijacked app.
     asio::awaitable<std::pair<size_t, asio::error_code>>
-    async_recv_udp(uint8_t* buf, size_t buf_len) {
-        for (;;) {
-            udp::endpoint from;
-            auto [ec, n] = co_await udp_data_.async_receive_from(
-                asio::buffer(buf, buf_len), from,
-                asio::as_tuple(asio::use_awaitable));
-            if (ec) co_return std::pair{n, ec};
-
-            if (from != relay_endpoint_) {
-                auto dropped = ++foreign_drops_;
-                PC_LOG_DEBUG("[SOCKS5-UDP] Dropped {} bytes from {}:{} "
-                             "(expected relay {}:{}), total dropped={}",
-                             n, from.address().to_string(), from.port(),
-                             relay_endpoint_.address().to_string(),
-                             relay_endpoint_.port(), dropped);
-                continue;
-            }
-
-            last_active_ = std::chrono::steady_clock::now();
-            co_return std::pair{n, ec};
-        }
+    async_recv_udp(uint8_t* buffer, size_t length) {
+        auto self = shared_from_this();
+        co_return co_await asio::co_spawn(strand_, self->recv_serial(buffer, length), asio::use_awaitable);
     }
-
-    // ---- Warmup send (fire-and-forget, called from non-io thread via raw sendto) ----
-
-    bool send_warmup(const std::vector<uint8_t>& frame) {
-        if (!alive_.load(std::memory_order_acquire)) return false;
-        sockaddr_in dest{};
-        dest.sin_family = AF_INET;
-        dest.sin_port = htons(relay_endpoint_.port());
-        dest.sin_addr.s_addr = htonl(relay_endpoint_.address().to_v4().to_uint());
-        int sent = ::sendto(udp_data_.native_handle(),
-                            reinterpret_cast<const char*>(frame.data()),
-                            static_cast<int>(frame.size()), 0,
-                            reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
-        if (sent > 0) {
-            last_active_ = std::chrono::steady_clock::now();
-        } else {
-            int error = WSAGetLastError();
-            asio::error_code local_ec;
-            auto local_ep = udp_data_.local_endpoint(local_ec);
-            PC_LOG_WARN("[SOCKS5-UDP] warmup send failed: code={} "
-                        "local={}:{} relay={}:{} bytes={}",
-                        error,
-                        local_ep.address().to_string(), local_ep.port(),
-                        relay_endpoint_.address().to_string(), relay_endpoint_.port(),
-                        frame.size());
-        }
-        return sent > 0;
-    }
-
-    // ---- Accessors ----
 
     bool is_alive() const { return alive_.load(std::memory_order_acquire); }
     auto last_active() const { return last_active_.load(); }
     const udp::endpoint& relay_endpoint() const { return relay_endpoint_; }
     udp::endpoint local_udp_endpoint() const { return udp_data_.local_endpoint(); }
-    auto native_udp_handle() { return udp_data_.native_handle(); }
 
     void close() {
+        closing_.store(true, std::memory_order_release);
+        alive_.store(false, std::memory_order_release);
+        if (auto self = weak_from_this().lock())
+            asio::dispatch(strand_, [self] { self->close_sockets(); });
+    }
+
+private:
+    asio::io_context& ioc_;
+    asio::strand<asio::io_context::executor_type> strand_;
+    std::string proxy_host_;
+    uint16_t proxy_port_;
+    tcp::socket tcp_control_;
+    udp::socket udp_data_;
+    udp::endpoint relay_endpoint_;
+    std::atomic<bool> alive_{false};
+    std::atomic<bool> closing_{false};
+    std::atomic<std::chrono::steady_clock::time_point> last_active_{std::chrono::steady_clock::now()};
+
+    void close_sockets() {
         alive_.store(false, std::memory_order_release);
         asio::error_code ec;
         tcp_control_.close(ec);
         udp_data_.close(ec);
     }
 
-private:
-    asio::io_context& ioc_;
-    std::string proxy_host_;
-    uint16_t proxy_port_;
+    asio::awaitable<void> setup() {
+        if (closing_) throw asio::system_error(asio::error::operation_aborted);
+        tcp::resolver resolver(strand_);
+        auto endpoints = co_await resolver.async_resolve(
+            proxy_host_, std::to_string(proxy_port_), asio::use_awaitable);
+        if (closing_) throw asio::system_error(asio::error::operation_aborted);
+        co_await asio::async_connect(tcp_control_, endpoints, asio::use_awaitable);
+        enable_tcp_keepalive(tcp_control_);
 
-    tcp::socket tcp_control_;
-    udp::socket udp_data_;
-    udp::endpoint relay_endpoint_;
+        std::array<uint8_t, 3> greeting{5, 1, 0};
+        co_await asio::async_write(tcp_control_, asio::buffer(greeting), asio::use_awaitable);
+        std::array<uint8_t, 2> auth{};
+        co_await asio::async_read(tcp_control_, asio::buffer(auth), asio::use_awaitable);
+        if (auth != std::array<uint8_t, 2>{5, 0})
+            throw std::runtime_error("SOCKS5 UDP auth rejected");
 
-    std::atomic<bool> alive_{false};
-    std::atomic<std::chrono::steady_clock::time_point> last_active_{
-        std::chrono::steady_clock::now()};
-    uint64_t foreign_drops_{0};  // datagrams from someone other than the relay
+        std::array<uint8_t, 10> request{5, 3, 0, 1, 0, 0, 0, 0, 0, 0};
+        co_await asio::async_write(tcp_control_, asio::buffer(request), asio::use_awaitable);
+        std::array<uint8_t, 4> header{};
+        co_await asio::async_read(tcp_control_, asio::buffer(header), asio::use_awaitable);
+        if (header[0] != 5 || header[1] != 0 || header[2] != 0)
+            throw std::runtime_error("SOCKS5 UDP ASSOCIATE rejected or malformed");
 
+        asio::ip::address address;
+        uint16_t port;
+        if (header[3] == 1) {
+            std::array<uint8_t, 6> bound{};
+            co_await asio::async_read(tcp_control_, asio::buffer(bound), asio::use_awaitable);
+            address = asio::ip::address_v4({bound[0], bound[1], bound[2], bound[3]});
+            port = (static_cast<uint16_t>(bound[4]) << 8) | bound[5];
+        } else if (header[3] == 4) {
+            std::array<uint8_t, 18> bound{};
+            co_await asio::async_read(tcp_control_, asio::buffer(bound), asio::use_awaitable);
+            asio::ip::address_v6::bytes_type bytes{};
+            std::copy_n(bound.begin(), 16, bytes.begin());
+            address = asio::ip::address_v6(bytes);
+            port = (static_cast<uint16_t>(bound[16]) << 8) | bound[17];
+        } else if (header[3] == 3) {
+            uint8_t length{};
+            co_await asio::async_read(tcp_control_, asio::buffer(&length, 1), asio::use_awaitable);
+            if (!length) throw std::runtime_error("SOCKS5 UDP empty relay domain");
+            std::vector<uint8_t> bound(static_cast<size_t>(length) + 2);
+            co_await asio::async_read(tcp_control_, asio::buffer(bound), asio::use_awaitable);
+            port = (static_cast<uint16_t>(bound[length]) << 8) | bound[length + 1];
+            udp::resolver udp_resolver(strand_);
+            auto relays = co_await udp_resolver.async_resolve(
+                std::string(bound.begin(), bound.begin() + length), std::to_string(port), asio::use_awaitable);
+            address = relays.begin()->endpoint().address();
+            // Prefer the control connection's family for dual-stack names,
+            // while retaining support for a relay with a different family.
+            for (const auto& relay : relays) {
+                if (relay.endpoint().address().is_v4() == tcp_control_.remote_endpoint().address().is_v4()) {
+                    address = relay.endpoint().address();
+                    break;
+                }
+            }
+        } else {
+            throw std::runtime_error("SOCKS5 UDP unsupported relay address type");
+        }
+        if (address.is_unspecified()) address = tcp_control_.remote_endpoint().address();
+        if (!port) throw std::runtime_error("SOCKS5 UDP zero relay port");
+        if (closing_) throw asio::system_error(asio::error::operation_aborted);
+        relay_endpoint_ = udp::endpoint(address, port);
+        auto protocol = address.is_v4() ? udp::v4() : udp::v6();
+        udp_data_.open(protocol);
+        udp_data_.bind(udp::endpoint(protocol, 0));
+    }
+
+    asio::awaitable<bool> establish_serial(std::chrono::steady_clock::duration timeout) {
+        try {
+            co_await with_setup_deadline(setup(), timeout);
+            if (closing_) { close_sockets(); co_return false; }
+            last_active_ = std::chrono::steady_clock::now();
+            alive_.store(true, std::memory_order_release);
+            PC_LOG_INFO("[SOCKS5-UDP] Session established: relay={}:{}",
+                        relay_endpoint_.address().to_string(), relay_endpoint_.port());
+            asio::co_spawn(strand_, watch_control(shared_from_this()), asio::detached);
+            co_return true;
+        } catch (const std::exception& e) {
+            PC_LOG_WARN("[SOCKS5-UDP] Establish failed: {}", e.what());
+            close_sockets();
+            co_return false;
+        }
+    }
+
+    static asio::awaitable<void> watch_control(std::shared_ptr<Socks5UdpSession> self) {
+        std::array<uint8_t, 64> ignored{};
+        while (self->is_alive()) {
+            auto [ec, n] = co_await self->tcp_control_.async_read_some(
+                asio::buffer(ignored), asio::as_tuple(asio::use_awaitable));
+            (void)n;
+            if (ec) {
+                if (self->is_alive())
+                    PC_LOG_WARN("[SOCKS5-UDP] TCP control connection lost: {}", ec.message());
+                self->close_sockets();
+                break;
+            }
+        }
+    }
+
+    asio::awaitable<bool> send_serial(std::vector<uint8_t> frame) {
+        if (!is_alive()) co_return false;
+        auto [ec, n] = co_await udp_data_.async_send_to(asio::buffer(frame), relay_endpoint_,
+                                                     asio::as_tuple(asio::use_awaitable));
+        (void)n;
+        if (!ec) last_active_ = std::chrono::steady_clock::now();
+        else {
+            if (is_alive()) PC_LOG_WARN("[SOCKS5-UDP] Send failed: {}", ec.message());
+            close_sockets();
+        }
+        co_return !ec;
+    }
+
+    asio::awaitable<std::pair<size_t, asio::error_code>> recv_serial(uint8_t* buffer, size_t length) {
+        while (is_alive()) {
+            udp::endpoint from;
+            auto [ec, n] = co_await udp_data_.async_receive_from(asio::buffer(buffer, length), from,
+                                                              asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                if (is_alive()) PC_LOG_WARN("[SOCKS5-UDP] Receive failed: {}", ec.message());
+                close_sockets();
+                co_return std::pair{n, ec};
+            }
+            if (from != relay_endpoint_) continue;
+            last_active_ = std::chrono::steady_clock::now();
+            co_return std::pair{n, ec};
+        }
+        co_return std::pair<size_t, asio::error_code>{0, asio::error::operation_aborted};
+    }
 };
-
 } // namespace clew

@@ -168,6 +168,7 @@ void app::sync_groups() {
         tcp_groups_[g.id] = {g.host, g.port};
         udp_groups_[g.id] = {g.host, g.port};
     }
+    socks5_udp_mgr_.set_groups(udp_groups_);
     PC_LOG_INFO("Proxy groups synced: {} groups", tcp_groups_.size());
 }
 

@@ -10,6 +10,8 @@ Based on [Clew v0.10.0](https://github.com/ymonster/clew-proxy/tree/v0.10.0), re
 
 On first launch, a sibling legacy `clew.json` is imported into `proxyclaw.json` without modifying the original. An existing new configuration takes precedence; explicitly named custom configurations are not imported. Logs use `proxyclaw.log`; the Windows startup task is `ProxyClawAutoStart`.
 
+Use Settings → Runtime logs → View logs to search recent records, filter warnings/errors, copy the displayed text, or reveal the log file. Automatic refresh runs only while the viewer is open and the app is visible. Snapshots contain at most the latest 1,000 lines or 256 KiB; complete logs remain beside the executable. The About section links to [this project's repository](https://github.com/906222304/proxyclaw).
+
 ![Main UI](docs/images/main_ui.png)
 
 ---

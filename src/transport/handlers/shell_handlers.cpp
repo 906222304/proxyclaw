@@ -26,11 +26,20 @@ void handle_reveal(const httplib::Request& req, httplib::Response& res, const ap
     write_json(res, nlohmann::json{{"success", true}});
 }
 
+void handle_log(const httplib::Request&, httplib::Response& res, const api_context&) {
+    // A concurrent write may end in a partial UTF-8 character. Replace that
+    // fragment rather than failing the entire snapshot; render text, not HTML.
+    auto body = shell_service::read_log();
+    res.set_header("Cache-Control", "no-store");
+    write_json_text(res, body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
 } // namespace
 
 void register_shell_handlers(route_registry& r) {
     r.add({http_method::post, "/api/shell/browse-exe", &handle_browse_exe});
     r.add({http_method::post, "/api/shell/reveal",     &handle_reveal});
+    r.add({http_method::get, "/api/logs",             &handle_log});
 }
 
 } // namespace clew

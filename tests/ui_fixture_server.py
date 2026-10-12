@@ -27,6 +27,8 @@ class Handler(SimpleHTTPRequestHandler):
         if path == '/api/auto-rules': return self.reply(rules)
         if path == '/api/proxy-groups': return self.reply([group])
         if path == '/api/stats': return self.reply({'hijacked_pids': 1, 'auto_rules_count': len(rules)})
+        if path == '/api/logs': return self.reply({'path': 'C:\\ProxyClaw\\proxyclaw.log', 'exists': True, 'truncated': False,
+            'text': '2026-10-09 14:00:00.000 [I] 连接正常\n2026-10-09 14:00:01.000 [W] TCP control connection lost\n2026-10-09 14:00:02.000 [E] 握手超时\n'})
         if path == '/api/tcp': return self.reply([{'pid': 4321, 'local_ip': '127.0.0.1', 'local_port': 51234, 'remote_ip': '104.18.32.7', 'remote_port': 443, 'state': 'ESTABLISHED', 'proxy_status': 'PROXIED', 'pid_alive': True, 'process_name': 'ChatGPT.exe', 'hijacked': True, 'dest': '104.18.32.7:443'}])
         return self.reply([])
     def do_PUT(self):

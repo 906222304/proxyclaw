@@ -10,6 +10,8 @@
 
 首次运行会将程序同目录的旧 `clew.json` 导入为 `proxyclaw.json`，原文件保持完整。新配置优先；显式指定其他名称的配置文件不会自动导入。日志为 `proxyclaw.log`，Windows 自动启动任务名为 `ProxyClawAutoStart`。
 
+在“设置 → 运行日志 → 查看日志”中，可以搜索最近记录、筛选警告和错误、复制当前显示内容或打开日志文件位置。自动刷新仅在日志窗口打开且应用可见时运行；最多读取最近 1000 行或 256 KiB，完整记录保存在程序同目录的日志文件中。“关于”中的源码链接指向 [本项目仓库](https://github.com/906222304/proxyclaw)。
+
 ![ProxyClaw 界面预览](docs/images/main_ui.png)
 
 ---

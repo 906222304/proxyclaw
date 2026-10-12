@@ -19,6 +19,9 @@ public:
     // Launches Explorer with /select on the given UTF-8 path.
     // Throws api_exception{invalid_argument} if path is empty.
     static void reveal(std::string_view path);
+
+    // Only the running application's fixed log path; no caller-supplied path.
+    [[nodiscard]] static nlohmann::json read_log();
 };
 
 } // namespace clew

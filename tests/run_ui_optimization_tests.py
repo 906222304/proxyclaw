@@ -22,7 +22,9 @@ try:
             if server.poll() is not None: raise RuntimeError('isolated preview failed to start')
             time.sleep(.1)
     else: raise RuntimeError('isolated preview timed out')
-    subprocess.run([sys.executable, str(ROOT/'tests/ui_optimization_smoke.py')], cwd=ROOT, env=env, check=True, timeout=90)
+    scripts = ['log_viewer_smoke.py'] if '--logs' in sys.argv else ['ui_optimization_smoke.py']
+    for script in scripts:
+        subprocess.run([sys.executable, str(ROOT/'tests'/script)], cwd=ROOT, env=env, check=True, timeout=90)
 finally:
     server.terminate()
     server.wait(timeout=10)

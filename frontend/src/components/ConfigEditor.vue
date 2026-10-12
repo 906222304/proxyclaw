@@ -10,6 +10,7 @@ import { Save } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
 import { PROXYCLAW_VERSION } from '@/version'
+import LogViewer from '@/components/LogViewer.vue'
 
 const { isDark } = useTheme()
 const { pushError } = useStatusBus()
@@ -441,7 +442,7 @@ onUnmounted(() => {
                 <p class="text-sm font-medium text-slate-700 dark:text-slate-200">日志级别</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                   设置日志详细程度，修改后立即生效。
-                  <code class="font-mono">debug</code> 模式将详细诊断记录写入 <code class="font-mono">proxyclaw.log</code>.
+                  调试模式会记录更多连接细节。
                 </p>
               </div>
               <div class="flex items-center gap-2 ml-4 shrink-0">
@@ -465,6 +466,16 @@ onUnmounted(() => {
       </div>
 
       <!-- Configuration File Section -->
+      <div class="max-w-xl shrink-0 rounded-lg border border-slate-200 dark:border-slate-800">
+        <div class="flex items-center justify-between gap-4 px-4 py-3 bg-white dark:bg-[#18181b] rounded-lg">
+          <div>
+            <p class="text-sm font-medium text-slate-700 dark:text-slate-200">运行日志</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">查看连接、掉线和错误记录，排查代理问题。</p>
+          </div>
+          <LogViewer />
+        </div>
+      </div>
+
       <div
         class="flex flex-col"
         :class="editorOpen ? 'flex-1 min-h-[360px]' : 'max-w-xl shrink-0'"
@@ -537,9 +548,9 @@ onUnmounted(() => {
               ProxyClaw <span class="font-mono text-slate-700 dark:text-slate-300">v{{ PROXYCLAW_VERSION }}</span>
             </p>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Windows 进程级代理与分流 · 基于 Clew ·
-              <a href="https://github.com/ymonster/clew-proxy" target="_blank"
-                 class="text-blue-600 dark:text-blue-400 hover:underline">上游源码</a>
+              ProxyClaw · Windows 进程级代理与分流 ·
+              <a href="https://github.com/906222304/proxyclaw" target="_blank" rel="noopener noreferrer"
+                 class="text-blue-600 dark:text-blue-400 hover:underline">本项目源码</a>
             </p>
           </div>
         </div>

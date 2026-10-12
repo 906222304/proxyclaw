@@ -202,6 +202,17 @@ export function getStats(signal?: AbortSignal): Promise<Stats> {
 
 // -- Shell --
 
+export interface LogSnapshot {
+  path: string
+  text: string
+  exists: boolean
+  truncated: boolean
+}
+
+export function getLog(signal?: AbortSignal): Promise<LogSnapshot> {
+  return request<LogSnapshot>('/logs', { signal, cache: 'no-store' })
+}
+
 export function revealFile(path: string): Promise<void> {
   return requestVoid('/shell/reveal', {
     method: 'POST',

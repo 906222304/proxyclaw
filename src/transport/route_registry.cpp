@@ -17,7 +17,7 @@ namespace {
 
 // DESIGN appendix: mandatory three-tier dispatch in every handler.
 //
-// Every request produces at least one log line at INFO level covering the
+// Requests produce a log line at INFO level (log snapshots at DEBUG) covering the
 // method, path, final status, and duration. Any error path (known
 // api_exception, unexpected std::exception, unknown throw) is logged at
 // WARN/ERROR with the exception message attached so the last seen route +
@@ -35,8 +35,14 @@ void dispatch(route_handler_fn handler,
 
     try {
         handler(req, res, ctx);
-        PC_LOG_INFO("[api] {} {} -> {} ({}us)",
-                    req.method, req.path, res.status, elapsed_us());
+        if (req.path == "/api/logs") {
+            // Reading the log must not continually append visible INFO rows.
+            PC_LOG_DEBUG("[api] {} {} -> {} ({}us)",
+                         req.method, req.path, res.status, elapsed_us());
+        } else {
+            PC_LOG_INFO("[api] {} {} -> {} ({}us)",
+                        req.method, req.path, res.status, elapsed_us());
+        }
     } catch (const api_exception& e) {
         res.status = api_error_to_http_status(e.code());
         nlohmann::json body;

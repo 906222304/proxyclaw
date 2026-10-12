@@ -10,6 +10,8 @@
 #include <shellapi.h>
 
 #include "common/api_exception.hpp"
+#include "core/exe_paths.hpp"
+#include "core/log_tail.hpp"
 
 namespace clew {
 
@@ -54,6 +56,19 @@ nlohmann::json shell_service::browse_exe() {
     j["dir"]  = dir;
     j["name"] = name;
     return j;
+}
+
+nlohmann::json shell_service::read_log() {
+    try {
+        auto path = exe_relative("proxyclaw.log");
+        auto tail = read_log_tail(path);
+        auto utf8 = path.u8string();
+        return {{"path", std::string(utf8.begin(), utf8.end())},
+                {"text", std::move(tail.text)}, {"exists", tail.exists},
+                {"truncated", tail.truncated}};
+    } catch (const std::exception&) {
+        throw api_exception{api_error::io_error, "无法读取运行日志，请稍后重试"};
+    }
 }
 
 void shell_service::reveal(std::string_view path) {

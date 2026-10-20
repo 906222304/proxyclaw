@@ -48,30 +48,19 @@
 
 #include "core/log.hpp"
 #include "core/port_tracker.hpp"
+#include "core/tcp_redirect.hpp"
 
 namespace clew {
 
-// Reflection forward transform, shared by the NETWORK worker (live buffer)
-// and the injector (pool copy): app -> original_dest becomes inbound to the
-// local acceptor. Swaps addresses, rewrites DstPort, flips Outbound,
-// recalculates checksums, sends. Returns false if the packet could not be
-// parsed (then it is sent unchanged) or the send failed.
+// Local TCP handoff, shared by the NETWORK worker and parked-SYN injector.
+// Both paths must use the same tuple rewrite and retain the original adapter.
 inline bool reflect_outbound_packet(HANDLE handle, uint8_t* pkt, UINT len,
-                                    WINDIVERT_ADDRESS* addr, uint16_t redirect_port) {
-    PWINDIVERT_IPHDR  ip  = nullptr;
-    PWINDIVERT_TCPHDR tcp = nullptr;
-    WinDivertHelperParsePacket(pkt, len, &ip, nullptr, nullptr, nullptr, nullptr,
-                               &tcp, nullptr, nullptr, nullptr, nullptr, nullptr);
-    if (!ip || !tcp) {
+                                    WINDIVERT_ADDRESS* addr, uint16_t redirect_port,
+                                    PortTracker& tracker) {
+    if (!redirect_tcp_to_local(pkt, len, addr, redirect_port, tracker)) {
         WinDivertSend(handle, pkt, len, nullptr, addr);
         return false;
     }
-    const uint32_t tmp = ip->SrcAddr;
-    ip->SrcAddr = ip->DstAddr;
-    ip->DstAddr = tmp;
-    tcp->DstPort = htons(redirect_port);
-    addr->Outbound = 0;
-    WinDivertHelperCalcChecksums(pkt, len, addr, 0);
     if (!WinDivertSend(handle, pkt, len, nullptr, addr)) {
         PC_LOG_ERROR("[WD-NETWORK] Send (reflect out) failed: {}", GetLastError());
         return false;
@@ -441,7 +430,7 @@ private:
 
         bool ok;
         if (decision == slot_state::proxied) {
-            ok = reflect_outbound_packet(handle_, pkt, len, &addr, redirect_port_);
+            ok = reflect_outbound_packet(handle_, pkt, len, &addr, redirect_port_, tracker_);
         } else {
             ok = WinDivertSend(handle_, pkt, len, nullptr, &addr) != FALSE;
             if (!ok) PC_LOG_ERROR("[SYN-PARK] release send failed: {}", GetLastError());

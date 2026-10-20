@@ -321,25 +321,25 @@ private:
             module, MAKEINTRESOURCEW(1), IMAGE_ICON,
             GetSystemMetricsForDpi(SM_CXICON, dpi_),
             GetSystemMetricsForDpi(SM_CYICON, dpi_), 0));
-        HICON small = static_cast<HICON>(LoadImageW(
+        HICON small_icon = static_cast<HICON>(LoadImageW(
             module, MAKEINTRESOURCEW(1), IMAGE_ICON,
             GetSystemMetricsForDpi(SM_CXSMICON, dpi_),
             GetSystemMetricsForDpi(SM_CYSMICON, dpi_), 0));
         // Keep existing icons if resource loading fails. These are owned handles;
         // LR_SHARED can cache the first requested size across later DPI changes.
-        if (!large || !small) {
+        if (!large || !small_icon) {
             if (large) DestroyIcon(large);
-            if (small) DestroyIcon(small);
+            if (small_icon) DestroyIcon(small_icon);
             return;
         }
         SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(large));
-        SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small));
-        nid_.hIcon = small;
+        SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small_icon));
+        nid_.hIcon = small_icon;
         if (tray_created_) Shell_NotifyIconW(NIM_MODIFY, &nid_);
         if (large_icon_) DestroyIcon(large_icon_);
         if (small_icon_) DestroyIcon(small_icon_);
         large_icon_ = large;
-        small_icon_ = small;
+        small_icon_ = small_icon;
     }
 
     LRESULT on_dpi_changed(WPARAM wparam, LPARAM lparam) {

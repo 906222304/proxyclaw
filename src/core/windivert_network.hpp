@@ -1,19 +1,17 @@
 #pragma once
 
-// WinDivert NETWORK layer: Reflection mode with batch I/O.
-// Redirects matched TCP traffic to local listener using addr swap + inbound reinject.
-// Pattern matches official WinDivert streamdump.exe example.
+// WinDivert NETWORK layer: local TCP handoff, with original-tuple replies.
+// The acceptor receives a local connection, not a fabricated inbound public peer.
 //
 // Design (from architecture_redesign_v3.md §3.5):
 //   - 2-4 dedicated blocking worker threads (NOT Asio IOCP)
 //   - Batch RecvEx/SendEx for throughput
 //   - Hot path: O(1) PortTracker lookup → passthrough if no match
 //   - Cold path: NAT rewrite + checksum recalc
-//   - All non-loopback outbound TCP is captured; filter: "outbound and tcp and !loopback"
+//   - Capture non-loopback outbound TCP plus local acceptor replies.
 //
-// Reflection (方案 B):
-//   Forward: swap(SrcAddr, DstAddr), DstPort=redirect_port, Outbound=0 → inbound reinject
-//   Reverse: proxy reply is also outbound non-loopback, swap back, Outbound=0 → inbound reinject
+// Forward: DstAddr=SrcAddr, DstPort=redirect_port, outbound local delivery.
+// Reply: restore the remote source tuple and original inbound interface.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -50,9 +48,9 @@ public:
     ~windivert_network() { close(); }
 
     bool open() {
-        const char* filter = "outbound and tcp and !loopback";
+        const auto filter = tcp_redirect_filter(redirect_port_);
 
-        handle_ = WinDivertOpen(filter, WINDIVERT_LAYER_NETWORK, 0, 0);
+        handle_ = WinDivertOpen(filter.c_str(), WINDIVERT_LAYER_NETWORK, 0, 0);
         if (handle_ == INVALID_HANDLE_VALUE) {
             PC_LOG_ERROR("[WD-NETWORK] Open failed: {}", GetLastError());
             return false;
@@ -63,7 +61,7 @@ public:
         WinDivertSetParam(handle_, WINDIVERT_PARAM_QUEUE_TIME, 2000);
         WinDivertSetParam(handle_, WINDIVERT_PARAM_QUEUE_SIZE, 16 * 1024 * 1024);
 
-        PC_LOG_INFO("[WD-NETWORK] Opened (Reflection, filter: {})", filter);
+        PC_LOG_INFO("[WD-NETWORK] Opened (local TCP handoff, filter: {})", filter);
         return true;
     }
 
@@ -111,7 +109,7 @@ private:
     // Act on a decided slot state for this SYN.
     void act(slot_state st, uint8_t* pkt_buf, UINT pkt_len, WINDIVERT_ADDRESS* addr) {
         if (st == slot_state::proxied) {
-            reflect_outbound_packet(handle_, pkt_buf, pkt_len, addr, redirect_port_);
+            reflect_outbound_packet(handle_, pkt_buf, pkt_len, addr, redirect_port_, tracker_);
             nat_count_.fetch_add(1, std::memory_order_relaxed);
         } else {
             passthrough(pkt_buf, pkt_len, addr);
@@ -208,13 +206,11 @@ private:
             }
 
             uint16_t src_port = ntohs(tcp->SrcPort);
-            uint16_t dst_port = ntohs(tcp->DstPort);
 
-            // Reply from the local listener -> app. The listener sends to
-            // orig_dest_ip:app_port as the TCP peer; in Reflection mode that
-            // is also outbound non-loopback, with src_port == redirect_port.
+            // The acceptor sees AppIP:AppPort as its peer. Its local replies
+            // must be restored before they reach the application's TCP stack.
             if (src_port == redirect_port_) {
-                reflect_reply(pkt_buf, pkt_len, ip, tcp, dst_port, &addr);
+                reflect_reply(pkt_buf, pkt_len, &addr);
                 nat_count_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
@@ -233,7 +229,7 @@ private:
             // the original destination (the kernel still thinks it is
             // connected there); their src_port is the app's port.
             if (tracker_.should_reflect(src_port)) {
-                reflect_outbound_packet(handle_, pkt_buf, pkt_len, &addr, redirect_port_);
+                reflect_outbound_packet(handle_, pkt_buf, pkt_len, &addr, redirect_port_, tracker_);
                 nat_count_.fetch_add(1, std::memory_order_relaxed);
             } else {
                 passthrough(pkt_buf, pkt_len, &addr);
@@ -241,35 +237,16 @@ private:
         }
     }
 
-    // Reflection reply: listener → app (appears as outbound to orig dest)
-    // Before: SrcAddr=AppIP, SrcPort=redirect_port, DstAddr=OrigDstIP, DstPort=AppPort
+    // Local listener reply -> app, restored to the original remote tuple.
+    // Before: SrcAddr=AppIP, SrcPort=redirect_port, DstAddr=AppIP, DstPort=AppPort
     // After:  SrcAddr=OrigDstIP, SrcPort=OrigDstPort, DstAddr=AppIP, DstPort=AppPort, Outbound=0
-    void reflect_reply(uint8_t* pkt_buf, UINT pkt_len,
-                       PWINDIVERT_IPHDR ip, PWINDIVERT_TCPHDR tcp,
-                       uint16_t app_port, WINDIVERT_ADDRESS* addr)
+    void reflect_reply(uint8_t* pkt_buf, UINT pkt_len, WINDIVERT_ADDRESS* addr)
     {
-        // Lookup original destination from tracker (entry persists until connection close)
-        if (!tracker_.should_reflect(app_port)) {
+        if (!restore_tcp_from_local(pkt_buf, pkt_len, addr, redirect_port_, tracker_)) {
             // Unknown or already-closed connection — passthrough
             WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, addr);
             return;
         }
-
-        const auto& entry = tracker_.peek(app_port);
-
-        // Swap src/dst addresses
-        uint32_t tmp = ip->SrcAddr;
-        ip->SrcAddr = ip->DstAddr;
-        ip->DstAddr = tmp;
-
-        // Restore SrcPort to original destination port
-        // (app expects replies from OrigDstIP:OrigDstPort)
-        tcp->SrcPort = htons(entry.remote_port);
-
-        // Reinject as inbound
-        addr->Outbound = 0;
-
-        WinDivertHelperCalcChecksums(pkt_buf, pkt_len, addr, 0);
 
         if (!WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, addr)) {
             PC_LOG_ERROR("[WD-NETWORK] Send (reflect reply) failed: {}", GetLastError());

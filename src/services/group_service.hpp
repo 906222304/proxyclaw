@@ -40,7 +40,7 @@ public:
     // missing.
     void migrate_group(std::uint32_t source_id, std::uint32_t target_id);
 
-    // Staged SOCKS5 probe (services/proxy_probe.hpp), 8 s budget, at most 4
+    // Staged SOCKS5 probe (proxy/proxy_probe.hpp), 8 s budget, at most 4
     // at once. Always HTTP 200:
     //   success {latency_ms, total_ms, detail, target, stages:[{name,ms}]}
     //   failure {error, failed_stage, total_ms, target, stages}

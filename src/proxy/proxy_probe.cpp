@@ -1,4 +1,4 @@
-#include "services/proxy_probe.hpp"
+#include "proxy/proxy_probe.hpp"
 
 #ifndef ASIO_STANDALONE
 #define ASIO_STANDALONE

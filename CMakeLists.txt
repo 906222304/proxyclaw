@@ -104,7 +104,7 @@ set(PROXYCLAW_SOURCES
     src/services/config_service.cpp
     src/services/connection_service.cpp
     src/services/group_service.cpp
-    src/services/proxy_probe.cpp
+    src/proxy/proxy_probe.cpp
     src/services/icon_service.cpp
     src/services/process_tree_service.cpp
     src/services/rule_service.cpp
@@ -273,7 +273,7 @@ if(BUILD_TESTING AND WIN32)
         SOURCES tests/test_udp_flow.cpp
         LIBS ws2_32)
     proxyclaw_unit_test(proxy_probe_tests
-        SOURCES tests/test_proxy_probe.cpp src/services/proxy_probe.cpp
+        SOURCES tests/test_proxy_probe.cpp src/proxy/proxy_probe.cpp
         LIBS asio::asio ws2_32 mswsock)
     target_compile_definitions(proxy_probe_tests PRIVATE ASIO_STANDALONE)
     proxyclaw_unit_test(dns_wire_tests

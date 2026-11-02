@@ -34,7 +34,7 @@
 
 ### Proxy speed test
 
-- Rewritten (`src/services/proxy_probe.*`). Runs on its own io_context with an
+- Rewritten (`src/proxy/proxy_probe.*`). Runs on its own io_context with an
   8 s overall deadline; before, a dead proxy could block an API worker in a
   connect with no timeout.
 - Proxy host may be IPv4, IPv6 or a domain name (before: IPv4 literal only).

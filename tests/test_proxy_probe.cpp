@@ -1,4 +1,4 @@
-// Staged proxy speed test (src/services/proxy_probe.*) against a local fake
+// Staged proxy speed test (src/proxy/proxy_probe.*) against a local fake
 // SOCKS5 server. No driver, no admin rights, no internet. Also builds and runs
 // on Linux (asio only).
 
@@ -16,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-#include "services/proxy_probe.hpp"
+#include "proxy/proxy_probe.hpp"
 
 using asio::ip::tcp;
 using namespace std::chrono_literals;

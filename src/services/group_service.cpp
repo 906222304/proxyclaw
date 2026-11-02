@@ -23,7 +23,7 @@
 #include "domain/process_tree_manager.hpp"
 #include "process/flat_tree.hpp"
 #include "rules/rule_engine_v3.hpp"
-#include "services/proxy_probe.hpp"
+#include "proxy/proxy_probe.hpp"
 
 namespace clew {
 

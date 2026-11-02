@@ -42,7 +42,7 @@ proxyclaw-v0.10.1-windows-x64.zip.sha256
 2. `scripts/prepare_release_deps.py` 下载并校验四个固定版本的头文件依赖和
    官方 WinDivert 2.2.2 SDK，解压仓库内已有的 WebView2 SDK。
 3. CMake 生成版本常量；`npm ci` 使用 lockfile 安装并构建前端。
-4. Visual Studio 2022 x64 Release 构建，静态链接 MSVC 运行时；CTest 运行
+4. 当前 `windows-2025` 镜像上的 Visual Studio 2026 x64 Release 构建，静态链接 MSVC 运行时；CTest 运行
    包元组、网卡、FIN/ACK、端口复用及校验和回归，不打开驱动。
 5. `scripts/package_local.py` 校验首页引用的资源并生成完整 ZIP。
 6. 构建任务只有 `contents: read`；发布任务在构建成功后才使用 `contents: write`。
@@ -54,7 +54,7 @@ CI 不执行需要管理员权限的全机透明转发实验。本机的 live �
 
 ```powershell
 python scripts/prepare_release_deps.py
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_PREFIX_PATH="$PWD/build/release-deps/prefix" `
   -DWEBVIEW2_PATH="$PWD/build/release-deps/webview2" `
   -DPROXYCLAW_WINDIVERT_DIR="$PWD/build/release-deps/WinDivert-2.2.2-A/x64" `
@@ -69,4 +69,4 @@ ctest --test-dir build -C Release --output-on-failure
 python scripts/package_local.py --build-dir build/Release --frontend-dist frontend/dist --output-dir dist/proxyclaw-local-windows-x64 --version local
 ```
 
-本机安装 Visual Studio 2026 时，可将生成器替换为 `Visual Studio 18 2026`。
+本机安装 Visual Studio 2022 时，可将生成器替换为 `Visual Studio 17 2022`。

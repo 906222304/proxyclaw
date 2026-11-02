@@ -13,6 +13,9 @@ import pathlib
 import queue
 import re
 import requests
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import api_token  # noqa: F401  (adds the API session token; see tests/api_token.py)
 import shutil
 import subprocess
 import sys
@@ -1090,7 +1093,7 @@ if __name__ == "__main__":
             t()
     finally:
         _remove_probe()
-        # Always restore log_level — verify.sh reuses the same proxyclaw.exe
+        # Always restore log_level — verify.py reuses the same proxyclaw.exe
         # process across phases, and a leftover debug level would persist
         # into proxyclaw.json on disk via config_store::mutate.
         try:

@@ -5,9 +5,9 @@ Contributor-facing technical overview. For the end-user intro see [README.md](..
 ## Tech Stack
 
 - **Language**: C++23 (concepts, C++20 coroutines for relay, `using enum`, fold expressions)
-- **Build**: CMake + vcpkg
+- **Build**: CMake + pinned dependencies (`scripts/prepare_release_deps.py`)
 - **Core deps**: WinDivert (kernel traffic intercept), WebView2 (embedded browser UI)
-- **Backend libs** (vcpkg): `quill` (logging), `nlohmann-json`, `cpp-httplib`, `asio` (standalone)
+- **Backend libs** (pinned, checksum-verified): `quill` (logging), `nlohmann-json`, `cpp-httplib`, `asio` (standalone)
 - **Frontend**: Vue 3 + TypeScript + shadcn-vue (reka-ui) + Tailwind CSS 4 + AG Grid + Monaco (JSON-only, lazy-loaded)
 - **IPC**: HTTP API for CRUD + WebView2 in-process PostMessage for backend → frontend push (replaces the previous SSE channel)
 - **Config**: JSON (`proxyclaw.json`)
@@ -118,7 +118,7 @@ tests/
                                        DELETE roundtrip regression net, no polling
                                        under ETW load
 scripts/
-  verify.sh                          - one-shot: frontend build + cpp build + 7 layering
+  verify.py                          - one-shot: frontend tests/build + cpp build + ctest + layering
                                        grep guards + HTTP e2e + Playwright e2e
 assets/
   clew.svg / clew.ico / clew.rc      - Embedded Windows icon
@@ -242,7 +242,7 @@ backend stops doing tree-snapshot work entirely. Implementation:
 Net effect (measured under sustained 270 ETW events/sec at tree=1200):
 strand utilisation 48% visible → 0.0% hidden, hijack wait_us tail 940 ms →
 92 µs (any user CRUD waiting in the queue still completes; just nothing
-new piling up). See `memory/MEMORY.md` for the v0.8.9 release notes.
+new piling up). See the v0.8.9 release notes on GitHub.
 
 ### Autostart on logon (Task Scheduler, v0.9.0)
 
@@ -258,7 +258,7 @@ Settings → "Start ProxyClaw at logon" registers a Windows Task Scheduler entry
 This is independent of the push-transport switch above — they were two
 separate problems that happened to ship in the same release.
 
-cpp-httplib (as of v0.31, the version pinned by vcpkg) treats DELETE the same
+cpp-httplib (observed on v0.31; the build now pins v0.20.0) treats DELETE the same
 as POST/PUT/PATCH: `expect_content()` returns true and the server's
 `read_content_core` enters an `MSG_PEEK` block whenever the request has neither
 `Content-Length` nor chunked `Transfer-Encoding`. With the default 100 MB
@@ -275,8 +275,7 @@ The fix is on the client side. `frontend/src/api/client.ts` always passes
 0 → return immediately), and the handler runs in <2 ms. The server-side
 alternative (`set_payload_max_length(SIZE_MAX)`) was avoided because it opens
 the server to unbounded payload allocations; a one-line client change is the
-proportional fix. See `memory/lesson_cpp_httplib_delete_5s.md` for the full
-diagnosis trail.
+proportional fix.
 
 ### WinDivert dual-layer
 
@@ -286,7 +285,7 @@ diagnosis trail.
 
 ### TCP SYN parking (v0.10)
 
-Why: the kernel emits the SOCKET CONNECT event *before* the SYN (0 violations in 58, lead p50 17.6 µs), but our SOCKET and NETWORK pipelines are two independent async paths of comparable latency. Before parking, the NETWORK worker released a SYN whose port had no decision yet — which for a freshly spawned process (git, curl, gh: connect ~150 ms after birth, ETW announces it 1–2 s later) was *every* first connection. Measured interception rate for fresh `git ls-remote`: **0/30**. Design record: memory `project/syn_parking/`; PoC + numbers: `win_prox/tools/poc/poc_syn_parking_report.md`.
+Why: the kernel emits the SOCKET CONNECT event *before* the SYN (0 violations in 58, lead p50 17.6 µs), but our SOCKET and NETWORK pipelines are two independent async paths of comparable latency. Before parking, the NETWORK worker released a SYN whose port had no decision yet — which for a freshly spawned process (git, curl, gh: connect ~150 ms after birth, ETW announces it 1–2 s later) was *every* first connection. Measured interception rate for fresh `git ls-remote`: **0/30**. The original design record and PoC measurements were kept outside this repository.
 
 How:
 
@@ -382,7 +381,34 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 
 ## API Endpoints
 
+### Access control (v0.10.2)
+
+The API listens on `127.0.0.1:18080` inside an elevated process, so loopback
+binding alone is not a boundary: a page in the user's browser could otherwise
+send requests to it. `src/transport/api_auth.hpp` (installed as the httplib
+pre-routing handler in `middleware.cpp`) applies three checks to every request:
+
+1. **Host** must be `127.0.0.1:18080` or `localhost:18080` (421 otherwise),
+   which defeats DNS rebinding.
+2. **Origin**, when present, must be the UI's own origin, or the origin of
+   `PROXYCLAW_DEV_URL` in frontend dev mode (403 otherwise).
+3. **Session token** on every `/api/` path: a per-launch random value from
+   `BCryptGenRandom`, sent as the `proxyclaw_session` cookie (`HttpOnly;
+   SameSite=Strict`) or the `X-ProxyClaw-Token` header (401 otherwise).
+
+The host window navigates to `GET /api/session?t=<token>`, which sets the
+cookie and redirects to `/`; the token never appears in static assets and is
+redacted from the navigation log line. No CORS headers are sent and `OPTIONS`
+is no longer answered. WebView2 web messages are accepted only from the origin
+the host navigated to. Test harnesses set `PROXYCLAW_API_TOKEN` (32+ chars)
+for the process they launch and send the header (`tests/api_token.py`).
+Isolation from other local processes of the same user is out of scope; that
+would need an ACL'd named pipe.
+
+### Routes
+
 ```
+GET    /api/session?t=<token>      - Set the session cookie, redirect to /
 GET    /api/processes/:pid         - Single process info
 GET    /api/processes/:pid/detail  - Process detail (cmdline, path)
 GET    /api/hijack                 - List all hijacked PIDs
@@ -471,11 +497,13 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
 
 ## Build
 
-- **Configure**: `cmake --preset windows-vcpkg` (uses `CMakePresets.json`)
+- **Configure**: `python scripts/prepare_release_deps.py`, then `cmake --preset windows` (VS 2022) or `cmake --preset windows-vs2026` (uses `CMakePresets.json`)
 - **Build Release**: `cmake --build build --config Release`
 - **Build Debug**: `cmake --build build --config Debug`
+- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (api_auth, dns_wire, dns_manager, ui_config, config_migration, log_tail, projection, tcp_redirect)
 - **Run** (admin required): `.\build\Release\proxyclaw.exe`
-- **Frontend dev**: `cd frontend && npm run dev`
+- **Frontend dev**: `cd frontend && npm run dev`, then start proxyclaw.exe with `PROXYCLAW_DEV_URL=http://localhost:5173` (the window enters through `/api/session`, proxied by Vite)
+- **Frontend unit tests**: `cd frontend && npm test` (Vitest)
 - **Frontend build**: `cd frontend && npm run build`
 - **Opt-in: refresh-coalesce window** (perf experimentation only, default OFF):
   `cmake -DPROXYCLAW_PROJECTION_COALESCE=ON build` then rebuild. Enables a 100 ms
@@ -502,7 +530,7 @@ The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a sy
 - ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `proxyclaw.exe` before rebuilding (MSVC LNK1104 error otherwise).
-- `bash scripts/verify.sh` runs frontend build + cpp build + 7 layering grep guards + the HTTP e2e suite (`run_all.py`) + the Playwright + WebView2 e2e suite (`run_pw.py`) as a single command, each stage wrapped with a per-stage `timeout` so a single hung step aborts cleanly. Requires an administrator shell (proxyclaw.exe needs elevation), `npm` for the frontend build, and `uv` for the PEP 723 inline-deps Playwright runner.
+- `python scripts/verify.py` runs the frontend unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), the HTTP e2e suite (`run_all.py`) and the Playwright + WebView2 e2e suite (`run_pw.py`), each stage with its own timeout. The e2e stages need an administrator shell and `uv`; `--no-e2e` skips them. The e2e harnesses share a session token with the proxyclaw.exe they launch through `tests/api_token.py`.
 
 ### E2E testing strategy: log-scan over Playwright timing
 
@@ -534,5 +562,5 @@ competes with V8 main-thread push processing under load):
   / restore mid-test via `WM_SYSCOMMAND` and bucket pre / hidden / post
   metrics — useful for verifying the visibility gate.
 
-Neither harness is part of `verify.sh` (they're for ad-hoc characterisation,
+Neither harness is part of `verify.py` (they're for ad-hoc characterisation,
 not regression).

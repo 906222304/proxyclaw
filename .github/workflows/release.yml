@@ -68,6 +68,8 @@ jobs:
           "publish=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "package=proxyclaw-$version-windows-x64" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Check source layering
+        run: python scripts/check_layering.py
       - name: Restore verified build dependencies
         run: python scripts/prepare_release_deps.py
       - name: Configure native build and generate frontend version
@@ -80,14 +82,16 @@ jobs:
             -DPROXYCLAW_ENABLE_WEBVIEW2=ON -DBUILD_TESTING=ON `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build frontend from lockfile
+      - name: Test and build frontend from lockfile
         working-directory: frontend
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build native application and run packet regression
+      - name: Build native application and run unit tests
         run: |
           cmake -S . -B build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

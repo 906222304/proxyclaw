@@ -4,7 +4,7 @@
 // point for HTTP handlers, application services, and cross-cutting observers
 // (rule_engine sync, SSE bridge, auth_middleware, DNS manager, ...).
 //
-// See refactor_docs/DESIGN.md H2 + H5.
+// See docs/ARCHITECTURE.md H2 + H5.
 //
 // Semantics:
 //   - get()            : returns a full ConfigV2 copy (a few KB, microsecond).

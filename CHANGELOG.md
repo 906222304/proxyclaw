@@ -2,6 +2,18 @@
 
 ## v0.11.0 (unreleased)
 
+### UDP
+
+- First-packet parking: a datagram sent right after a socket's implicit bind
+  could reach the NETWORK layer before the BIND decision was published and
+  leave direct. Datagrams from a port with no decision yet are now held until
+  the decision (then proxied or sent direct per the rule), at most 20 ms;
+  past that they go direct and the port is pinned direct until it closes
+  (sockets opened before ProxyClaw started pay this once). The SOCKET layer
+  now records "direct" decisions too, including ProxyClaw's own sockets.
+  Kill switch and tuning: `udp_first_packet.enabled` / `watchdog_ms`
+  (5..50, startup only). The e2e UDP probe no longer waits after binding.
+
 ### CI
 
 - The loopback network suites now run in CI: `proxy_health_harness` (TCP relay

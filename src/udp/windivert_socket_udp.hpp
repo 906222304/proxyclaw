@@ -22,6 +22,8 @@
 #include <format>
 #include <atomic>
 #include <functional>
+#include <string>
+#include <thread>
 #include "core/log.hpp"
 
 #include "process/flat_tree.hpp"
@@ -52,9 +54,11 @@ public:
     bool open() {
         DWORD self_pid = GetCurrentProcessId();
 
-        auto filter = std::format(
-            "udp and !loopback and processId != {}",
-            self_pid);
+        // Our own sockets are observed too (and decided direct below), so
+        // the NETWORK layer's first-packet parking never holds the relay's
+        // datagrams waiting for a decision that would never come.
+        self_pid_ = self_pid;
+        auto filter = std::string("udp and !loopback");
 
         handle_ = WinDivertOpen(filter.c_str(), WINDIVERT_LAYER_SOCKET, 0,
                                 WINDIVERT_FLAG_SNIFF | WINDIVERT_FLAG_RECV_ONLY);
@@ -104,6 +108,10 @@ public:
         PC_LOG_INFO("[WD-SOCKET-UDP] Closed (events={}, matches={})", event_count_, match_count_);
     }
 
+    // Called on the strand after a port's decision is stored or cleared, so
+    // datagrams the NETWORK layer parked for it are sent.
+    void set_decision_listener(std::function<void(uint16_t)> fn) { on_decided_ = std::move(fn); }
+
     uint64_t event_count() const { return event_count_; }
     uint64_t match_count() const { return match_count_; }
 
@@ -114,6 +122,8 @@ private:
     rule_engine_v3& rules_;
     UdpPortTracker& tracker_;
     std::function<bool(DWORD)> resolve_unknown_pid_;
+    std::function<void(uint16_t)> on_decided_;
+    DWORD self_pid_{0};
 
     HANDLE handle_{INVALID_HANDLE_VALUE};
     bool use_iocp_{true};
@@ -176,6 +186,26 @@ private:
 
     // ---- Event handler (runs on strand) ----
 
+    void notify(uint16_t port) {
+        if (on_decided_) on_decided_(port);
+    }
+
+    void decide_direct(uint16_t port) {
+        tracker_.put_direct(port);
+        notify(port);
+    }
+
+    void log_excluded_connect(const WINDIVERT_ADDRESS& addr, DWORD pid, uint16_t src_port) {
+        const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
+        const auto dest_port = static_cast<uint16_t>(addr.Socket.RemotePort);
+        const auto reason = rules_.ip_exclude_reason(tree_, pid, dest_ip, dest_port);
+        if (reason != IpExcludeReason::none) {
+            PC_LOG_DEBUG("[WD-SOCKET-UDP] Direct PID={} port={} -> {}:{} reason={} (per packet)",
+                          pid, src_port, CidrRange::uint_to_ip(dest_ip), dest_port,
+                          ip_exclude_reason_name(reason));
+        }
+    }
+
     void on_socket_event(const WINDIVERT_ADDRESS& addr) {
         // Accept both BIND and CONNECT for UDP
         if (addr.Event != WINDIVERT_EVENT_SOCKET_BIND &&
@@ -184,6 +214,7 @@ private:
             if (addr.Event == WINDIVERT_EVENT_SOCKET_CLOSE) {
                 uint16_t port = static_cast<uint16_t>(addr.Socket.LocalPort);
                 tracker_.clear(port);
+                notify(port);   // anything still parked for a closed socket goes direct
             }
             return;
         }
@@ -194,44 +225,40 @@ private:
         const uint16_t src_port = static_cast<uint16_t>(addr.Socket.LocalPort);
         const bool is_connect = (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT);
 
+        // A CONNECT on a port already proxied (from its BIND) carries nothing
+        // new: per-destination excludes are evaluated per packet by the
+        // NETWORK workers. A port decided direct is re-evaluated, as before,
+        // so a rule enabled after the socket was bound still takes effect.
+        if (is_connect && tracker_.is_active(src_port)) {
+            log_excluded_connect(addr, pid, src_port);
+            return;
+        }
+        if (pid == self_pid_) { decide_direct(src_port); return; }
+
         // Resolve before the rule gate, not after: should_proxy_protocol looks
         // the PID up in the tree itself and answers false for anything it
         // doesn't know, so a process younger than the ETW ProcessStart latency
         // would be dropped here before ever reaching the lookup below. Called
         // for known PIDs too: it verifies the entry against the live PSN, so
         // a PID recycled before its ETW STOP arrived is re-resolved.
-        if (resolve_unknown_pid_ && !resolve_unknown_pid_(pid)) return;
+        if (resolve_unknown_pid_ && !resolve_unknown_pid_(pid)) { decide_direct(src_port); return; }
 
         // Check if this PID should be proxied for UDP protocol
-        if (!rules_.should_proxy_protocol(tree_, pid, "udp")) return;
+        if (!rules_.should_proxy_protocol(tree_, pid, "udp")) { decide_direct(src_port); return; }
 
         // Lookup group_id from flat_tree
         uint32_t idx = tree_.find_by_pid(pid);
-        if (idx == INVALID_IDX) return;
+        if (idx == INVALID_IDX) { decide_direct(src_port); return; }
         const auto& entry = tree_.at(idx);
 
-        if (is_connect) {
-            // WFP raises a CONNECT event for an explicit connect() AND for each
-            // new remote an unconnected socket sendto()s, so a CONNECT names
-            // one destination, not the socket's only one. Clearing the slot on
-            // an excluded destination would also stop proxying every other
-            // destination of that socket (seen in CI: DNS to 1.1.1.1 went
-            // direct after the same socket sent to an excluded 8.8.8.8).
-            // The NETWORK workers already evaluate excludes per packet, so
-            // only log here.
-            const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
-            const auto dest_port = static_cast<uint16_t>(addr.Socket.RemotePort);
-            const auto reason = rules_.ip_exclude_reason(tree_, pid, dest_ip, dest_port);
-            if (reason != IpExcludeReason::none) {
-                PC_LOG_DEBUG("[WD-SOCKET-UDP] Direct PID={} port={} -> {}:{} reason={} (per packet)",
-                              pid, src_port, CidrRange::uint_to_ip(dest_ip), dest_port,
-                              ip_exclude_reason_name(reason));
-            }
-            // BIND already published this slot and CONNECT carries nothing new
-            // to store. Writing it again would overwrite an entry the NETWORK
-            // workers are likely already reading.
-            if (tracker_.is_active(src_port)) return;
-        }
+        // WFP raises a CONNECT event for an explicit connect() AND for each
+        // new remote an unconnected socket sendto()s, so a CONNECT names one
+        // destination, not the socket's only one. Clearing the slot on an
+        // excluded destination would also stop proxying every other
+        // destination of that socket (seen in CI: DNS to 1.1.1.1 went direct
+        // after the same socket sent to an excluded 8.8.8.8). Excludes are
+        // evaluated per packet by the NETWORK workers.
+        if (is_connect) log_excluded_connect(addr, pid, src_port);
 
         // Write to UdpPortTracker (release semantics for NETWORK workers)
         UdpTrackerEntry te{};
@@ -241,6 +268,7 @@ private:
 
         tracker_.put(src_port, te);
         match_count_++;
+        notify(src_port);
 
         PC_LOG_DEBUG("[WD-SOCKET-UDP] Match PID={} port={} event={} group={} policy={}",
                       pid, src_port, is_connect ? "CONNECT" : "BIND",

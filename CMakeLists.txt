@@ -272,6 +272,8 @@ if(BUILD_TESTING AND WIN32)
     proxyclaw_unit_test(udp_flow_tests
         SOURCES tests/test_udp_flow.cpp
         LIBS ws2_32)
+    proxyclaw_unit_test(udp_first_packet_tests
+        SOURCES tests/test_udp_first_packet.cpp)
     proxyclaw_unit_test(proxy_probe_tests
         SOURCES tests/test_proxy_probe.cpp src/proxy/proxy_probe.cpp
         LIBS asio::asio ws2_32 mswsock)

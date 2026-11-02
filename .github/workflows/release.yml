@@ -1,0 +1,142 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing vMAJOR.MINOR.PATCH tag; leave empty for a snapshot'
+        type: string
+        default: ''
+      publish_release:
+        description: 'Publish a Release for the existing tag'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      publish: ${{ steps.metadata.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate release metadata
+        id: metadata
+        shell: pwsh
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          REQUESTED_PUBLISH: ${{ inputs.publish_release }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:REQUESTED_TAG
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $tag = $env:GITHUB_REF_NAME }
+          $publish = ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF_TYPE -eq 'tag') -or $env:REQUESTED_PUBLISH -eq 'true'
+          if ($tag -and $tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw 'Tag must be vMAJOR.MINOR.PATCH with optional prerelease suffix' }
+          if ($publish -and -not $tag) { throw 'Publishing requires an existing version tag' }
+          $sha = git rev-parse HEAD
+          if ($tag) {
+            $tagSha = git rev-parse --verify "refs/tags/$tag^{commit}"
+            if ($LASTEXITCODE -ne 0 -or $tagSha -ne $sha) { throw 'Requested tag does not identify the checked-out commit' }
+          }
+          $version = if ($tag) { $tag } else { "snapshot-$($sha.Substring(0, 8))" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "publish=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "package=proxyclaw-$version-windows-x64" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Restore verified build dependencies
+        run: python scripts/prepare_release_deps.py
+      - name: Configure native build and generate frontend version
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="$PWD/build/release-deps/prefix" `
+            -DWEBVIEW2_PATH="$PWD/build/release-deps/webview2" `
+            -DPROXYCLAW_WINDIVERT_DIR="$PWD/build/release-deps/WinDivert-2.2.2-A/x64" `
+            -DPROXYCLAW_ENABLE_WEBVIEW2=ON -DBUILD_TESTING=ON `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build frontend from lockfile
+        working-directory: frontend
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build native application and run packet regression
+        run: |
+          cmake -S . -B build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package complete portable application
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          python scripts/package_local.py --build-dir build/Release --frontend-dist frontend/dist --output-dir "dist/$env:PACKAGE_NAME" --version "$env:PACKAGE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $archive = "dist/$env:PACKAGE_NAME.zip"
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:PACKAGE_NAME.zip" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-x64
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-x64
+          path: dist
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.zip dist/*.sha256 --clobber
+          else
+            args=(--verify-tag --title "ProxyClaw $RELEASE_TAG" --generate-notes)
+            if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 "${args[@]}"
+          fi

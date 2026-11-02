@@ -55,6 +55,8 @@ endif()
 
 # Option to enable WebView2 GUI support
 option(PROXYCLAW_ENABLE_WEBVIEW2 "Enable WebView2 GUI support" OFF)
+set(PROXYCLAW_WINDIVERT_DIR "${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64" CACHE PATH
+    "WinDivert runtime and import library directory")
 
 # 100ms refresh-coalesce window in process_projection for batched events.
 # Default ON since SYN parking: the SOCKET handler resolves unknown PIDs
@@ -85,7 +87,7 @@ include_directories(
 
 # Link directories
 link_directories(
-    ${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64
+    ${PROXYCLAW_WINDIVERT_DIR}
 )
 
 # Source files. Historically header-only, but the three-layer refactor
@@ -210,10 +212,10 @@ target_link_libraries(proxyclaw ${PROXYCLAW_LIBRARIES})
 # Copy WinDivert DLL to output directory
 add_custom_command(TARGET proxyclaw POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64/WinDivert.dll"
+    "${PROXYCLAW_WINDIVERT_DIR}/WinDivert.dll"
     "$<TARGET_FILE_DIR:proxyclaw>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64/WinDivert64.sys"
+    "${PROXYCLAW_WINDIVERT_DIR}/WinDivert64.sys"
     "$<TARGET_FILE_DIR:proxyclaw>"
 )
 
@@ -230,4 +232,15 @@ if(PROXYCLAW_ENABLE_WEBVIEW2)
     else()
         message(WARNING "GUI assets missing: build frontend/dist or set PROXYCLAW_FRONTEND_DIST before packaging")
     endif()
+endif()
+
+include(CTest)
+if(BUILD_TESTING AND WIN32)
+    add_executable(tcp_redirect_tests tests/test_tcp_redirect.cpp)
+    target_link_libraries(tcp_redirect_tests PRIVATE WinDivert ws2_32)
+    add_custom_command(TARGET tcp_redirect_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROXYCLAW_WINDIVERT_DIR}/WinDivert.dll" "$<TARGET_FILE_DIR:tcp_redirect_tests>"
+    )
+    add_test(NAME tcp_redirect COMMAND tcp_redirect_tests)
 endif()

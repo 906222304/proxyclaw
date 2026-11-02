@@ -44,6 +44,7 @@ def main():
     parser.add_argument('--frontend-dist', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--version', default='local')
     args = parser.parse_args()
     references = validate_frontend(args.frontend_dist)
     required = ['proxyclaw.exe', 'WinDivert.dll', 'WinDivert64.sys']
@@ -61,13 +62,20 @@ def main():
     shutil.copytree(ROOT / 'assets', args.output_dir / 'assets')
     for name in ['LICENSE', 'THIRD_PARTY_NOTICES.md']:
         shutil.copy2(ROOT / name, args.output_dir / name)
+    for name in ['README.md', 'README.en.md']:
+        shutil.copy2(ROOT / name, args.output_dir / name)
+    licenses = args.output_dir / 'licenses'
+    licenses.mkdir()
+    shutil.copy2(ROOT / 'WinDivert-2.2.2-A/LICENSE', licenses / 'WinDivert-LICENSE.txt')
+    shutil.copy2(ROOT / 'src/ui/third_party/WebView2/LICENSE.txt', licenses / 'WebView2-LICENSE.txt')
     if args.config:
         json.loads(args.config.read_text(encoding='utf-8-sig'))
         shutil.copy2(args.config, args.output_dir / 'proxyclaw.json')
     validate_frontend(args.output_dir / 'frontend/dist')
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-    metadata = {'build': 'localhost-handoff-fix', 'frontend_references': references,
-                'sha256': {str(p.relative_to(args.output_dir)): digest(p)
+    metadata = {'application': 'ProxyClaw', 'version': args.version,
+                'architecture': 'x64', 'frontend_references': references,
+                'sha256': {p.relative_to(args.output_dir).as_posix(): digest(p)
                            for p in args.output_dir.rglob('*') if p.is_file()}}
     (args.output_dir / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
     archive = args.output_dir.parent / (args.output_dir.name + '.zip')

@@ -6,6 +6,9 @@
 
 **Languages**: [简体中文](README.md) · [English](README.en.md)
 
+**下载与发布**：[Release 安装包](https://github.com/906222304/proxyclaw/releases) ·
+[自动构建和发布说明](docs/RELEASE.md)。推送 `v*` 版本标签可自动构建 Windows x64 完整包并发布 Release；`main` 和 PR 构建只上传测试产物。
+
 基于 [Clew v0.10.0](https://github.com/ymonster/clew-proxy/tree/v0.10.0) 开发，保留原作者版权及 [MIT 许可证](LICENSE)。本项目加入中文界面、默认后台运行、DNS 生命周期修复和 UDP 超时后的 TCP 回退。
 
 首次运行会将程序同目录的旧 `clew.json` 导入为 `proxyclaw.json`，原文件保持完整。新配置优先；显式指定其他名称的配置文件不会自动导入。日志为 `proxyclaw.log`，Windows 自动启动任务名为 `ProxyClawAutoStart`。

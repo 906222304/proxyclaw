@@ -6,6 +6,9 @@
 
 **Languages**: [简体中文](README.md) · [English](README.en.md)
 
+**Downloads and releases**: [Release packages](https://github.com/906222304/proxyclaw/releases) ·
+[Build and release guide](docs/RELEASE.md). Pushing a `v*` version tag builds the complete Windows x64 package and publishes a Release. Main/PR builds upload artifacts only.
+
 Based on [Clew v0.10.0](https://github.com/ymonster/clew-proxy/tree/v0.10.0), retaining the original copyright and [MIT license](LICENSE). This fork adds Chinese localization, background operation by default, safer DNS lifecycle handling, and TCP fallback after a DNS UDP timeout.
 
 On first launch, a sibling legacy `clew.json` is imported into `proxyclaw.json` without modifying the original. An existing new configuration takes precedence; explicitly named custom configurations are not imported. Logs use `proxyclaw.log`; the Windows startup task is `ProxyClawAutoStart`.

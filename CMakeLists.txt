@@ -276,6 +276,18 @@ if(BUILD_TESTING AND WIN32)
         SOURCES tests/test_proxy_probe.cpp src/proxy/proxy_probe.cpp
         LIBS asio::asio ws2_32 mswsock)
     target_compile_definitions(proxy_probe_tests PRIVATE ASIO_STANDALONE)
+    # Loopback integration hosts driven by tests/run_proxy_health_tests.py and
+    # tests/run_dns_network_tests.py (--exe). Built here so CI compiles them
+    # with the release toolchain; not CTest entries because Python drives them.
+    foreach(harness proxy_health_harness dns_forwarder_harness)
+        add_executable(${harness} tests/${harness}.cpp)
+        target_include_directories(${harness} BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/tests/network_fakes)
+        target_link_libraries(${harness} PRIVATE asio::asio ws2_32 mswsock)
+        target_compile_definitions(${harness} PRIVATE ASIO_STANDALONE)
+        if(MSVC)
+            target_compile_options(${harness} PRIVATE /EHsc)
+        endif()
+    endforeach()
     proxyclaw_unit_test(dns_wire_tests
         SOURCES tests/test_dns_wire.cpp
         FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)

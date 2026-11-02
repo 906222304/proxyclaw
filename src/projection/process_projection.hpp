@@ -34,6 +34,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <asio.hpp>
@@ -93,9 +94,19 @@ private:
 #endif
 
     std::atomic<frontend_push_sink*>                sink_{nullptr};
-    // The shared_ptr atomic free functions also support standard libraries
-    // that do not yet implement atomic<shared_ptr<T>>.
-    std::shared_ptr<const std::string> snapshot_;
+    // Guarded by a mutex instead of atomic<shared_ptr<T>> (not in libc++,
+    // which the Zig test builds use) or the deprecated atomic_load/store
+    // free functions. Held only for a pointer copy.
+    std::shared_ptr<const std::string>              snapshot_;
+    mutable std::mutex                              snapshot_mu_;
+    void set_snapshot(std::shared_ptr<const std::string> s) {
+        std::lock_guard lock(snapshot_mu_);
+        snapshot_ = std::move(s);
+    }
+    std::shared_ptr<const std::string> get_snapshot() const {
+        std::lock_guard lock(snapshot_mu_);
+        return snapshot_;
+    }
     std::atomic<bool>                               frontend_visible_{true};
 };
 

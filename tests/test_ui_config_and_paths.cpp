@@ -3,8 +3,12 @@
 // Example (Zig; nlohmann/json.hpp must exist under build/test-deps):
 // zig c++ -std=c++23 -Isrc -Ibuild/test-deps tests/test_ui_config_and_paths.cpp
 //     src/common/api_exception.cpp -lshell32 -lws2_32 -o build/test_ui_config_and_paths.exe
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <windows.h>
 #include <commdlg.h>

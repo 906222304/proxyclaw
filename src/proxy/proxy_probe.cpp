@@ -10,6 +10,8 @@
 #include <cctype>
 #include <charconv>
 #include <exception>
+#include <functional>
+#include <memory>
 #include <random>
 
 namespace clew::probe {
@@ -44,6 +46,120 @@ struct failure : std::exception {
     const char* what() const noexcept override { return why.c_str(); }
 };
 
+// Happy-eyeballs style connect (RFC 8305, simplified): addresses are
+// interleaved by family, a new attempt starts every 250 ms or as soon as the
+// previous one fails, and the first socket to connect wins. Without this a
+// host such as "localhost" waits ~2 s on Windows, which retries a refused
+// SYN to ::1 before falling back to 127.0.0.1.
+class connect_race : public std::enable_shared_from_this<connect_race> {
+public:
+    static constexpr std::chrono::milliseconds kStagger{250};
+
+    connect_race(asio::io_context& ioc, std::vector<tcp::endpoint> eps)
+        : ioc_(ioc), eps_(std::move(eps)), stagger_(ioc), signal_(ioc) {
+        signal_.expires_at(asio::steady_timer::time_point::max());
+    }
+
+    asio::awaitable<tcp::socket> run() {
+        launch_next();
+        asio::error_code ignored;
+        co_await signal_.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+        if (winner_ < 0) {
+            throw asio::system_error(last_ ? last_ : asio::error::host_unreachable);
+        }
+        co_return std::move(*socks_[static_cast<std::size_t>(winner_)]);
+    }
+
+    void abort() {
+        aborted_ = true;
+        stop_all();
+        last_ = asio::error::timed_out;
+        signal_.cancel();
+    }
+
+private:
+    asio::io_context& ioc_;
+    std::vector<tcp::endpoint> eps_;
+    std::vector<std::unique_ptr<tcp::socket>> socks_;
+    asio::steady_timer stagger_;
+    asio::steady_timer signal_;
+    std::size_t next_{0};
+    std::size_t failed_{0};
+    bool stagger_armed_{false};
+    bool finished_{false};
+    bool aborted_{false};
+    int winner_{-1};
+    asio::error_code last_;
+
+    void stop_all() {
+        finished_ = true;
+        stagger_.cancel();
+        for (std::size_t i = 0; i < socks_.size(); ++i) {
+            if (static_cast<int>(i) == winner_) continue;
+            asio::error_code ignored;
+            socks_[i]->close(ignored);
+        }
+    }
+
+    void launch_next() {
+        if (finished_ || next_ >= eps_.size()) return;
+        const std::size_t idx = next_++;
+        socks_.push_back(std::make_unique<tcp::socket>(ioc_));
+        auto self = shared_from_this();
+        socks_.back()->async_connect(eps_[idx], [self, idx](const asio::error_code& ec) {
+            self->on_connect(idx, ec);
+        });
+        if (next_ < eps_.size()) {
+            stagger_armed_ = true;
+            stagger_.expires_after(kStagger);
+            stagger_.async_wait([self](const asio::error_code&) {
+                self->stagger_armed_ = false;
+                self->launch_next();
+            });
+        }
+    }
+
+    void on_connect(std::size_t idx, const asio::error_code& ec) {
+        if (finished_) return;
+        if (!ec) {
+            winner_ = static_cast<int>(idx);
+            stop_all();
+            signal_.cancel();
+            return;
+        }
+        last_ = ec;
+        ++failed_;
+        if (failed_ == eps_.size()) {
+            finished_ = true;
+            signal_.cancel();
+            return;
+        }
+        // Failed early: start the next address now instead of waiting.
+        if (stagger_armed_) stagger_.cancel();
+        else launch_next();
+    }
+};
+
+// Interleaves IPv6 and IPv4 results (keeping the resolver's order inside each
+// family) and drops duplicates.
+std::vector<tcp::endpoint> interleave(const tcp::resolver::results_type& results) {
+    std::vector<tcp::endpoint> first, second;
+    bool first_is_v6 = true;
+    bool seen_any = false;
+    for (const auto& r : results) {
+        const tcp::endpoint ep = r.endpoint();
+        if (!seen_any) { first_is_v6 = ep.address().is_v6(); seen_any = true; }
+        auto& bucket = (ep.address().is_v6() == first_is_v6) ? first : second;
+        if (std::find(bucket.begin(), bucket.end(), ep) == bucket.end()) bucket.push_back(ep);
+    }
+    std::vector<tcp::endpoint> out;
+    for (std::size_t i = 0; i < std::max(first.size(), second.size()); ++i) {
+        if (i < first.size()) out.push_back(first[i]);
+        if (i < second.size()) out.push_back(second[i]);
+    }
+    return out;
+}
+
 class session {
 public:
     session(asio::io_context& ioc, const std::string& host, std::uint16_t port,
@@ -59,6 +175,7 @@ public:
             if (ec) return;
             timed_out_ = true;
             resolver_.cancel();
+            if (race_) race_->abort();
             asio::error_code ignored;
             socket_.close(ignored);
         });
@@ -91,6 +208,7 @@ private:
     target            target_;
     std::chrono::milliseconds budget_;
     bool              timed_out_{false};
+    std::shared_ptr<connect_race> race_;
     clock::time_point start_, mark_;
     std::string       current_ = "resolve";
     result            out_;
@@ -122,7 +240,9 @@ private:
         done("connect");
 
         // connect
-        co_await asio::async_connect(socket_, endpoints, asio::use_awaitable);
+        race_ = std::make_shared<connect_race>(ioc_, interleave(endpoints));
+        socket_ = co_await race_->run();
+        race_.reset();
         socket_.set_option(tcp::no_delay(true));
         done("handshake");
 

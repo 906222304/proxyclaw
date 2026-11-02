@@ -155,6 +155,12 @@ void success_ipv6_and_domain_proxy() {
         fake_proxy p(mode::ok_http);
         auto r = probe::run("localhost", p.port(), http_target(), 3000ms);
         check(r.ok, "domain proxy ok: " + r.error);
+        // IPv4-only listener: the refused ::1 attempt must not stall the
+        // connect stage (Windows retries a refused SYN for ~2 s).
+        std::int64_t connect_ms = -1;
+        for (const auto& st : r.stages) if (st.name == "connect") connect_ms = st.ms;
+        check(connect_ms >= 0 && connect_ms < 1000,
+              "localhost connect stage under 1 s, got " + std::to_string(connect_ms));
     }
 }
 

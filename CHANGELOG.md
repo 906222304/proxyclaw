@@ -38,6 +38,9 @@
   8 s overall deadline; before, a dead proxy could block an API worker in a
   connect with no timeout.
 - Proxy host may be IPv4, IPv6 or a domain name (before: IPv4 literal only).
+  A domain with several addresses is connected happy-eyeballs style (IPv6 and
+  IPv4 interleaved, next attempt after 250 ms or on failure), so `localhost`
+  no longer waits ~2 s on a refused `::1`.
 - The test URL's scheme and port are honoured: https uses 443 and waits for a
   TLS ServerHello instead of sending plain HTTP to port 80.
 - The SOCKS5 CONNECT reply is read in full for every address type.

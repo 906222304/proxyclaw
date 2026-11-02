@@ -100,6 +100,7 @@ src/
     windivert_socket_udp.hpp / windivert_network_udp.hpp
     udp_port_tracker.hpp / udp_session_table.hpp / udp_relay.hpp
     udp_flow.hpp                     - per-datagram handoff type, peer set, queue limits
+    udp_first_packet.hpp             - first-packet parking (datagrams of undecided ports)
     socks5_udp_manager.hpp / socks5_udp_session.hpp / socks5_udp_codec.hpp
 
   api/
@@ -306,7 +307,7 @@ Rules that keep it correct (numbers are the design-record item ids):
 - **Pool full → pass + pin** (8), never evict; a duplicate SYN while `pending` is dropped without allocating (19). The leak signal is `pool_in_use` not returning to 0 between bursts (12).
 - **Kill switch** `tcp_syn_parking.enabled = false` (14): no pool, no injector thread, no synchronous PID resolve, SOCKET publishes only `proxied`, NETWORK passes every undecided SYN — the pre-v0.10 code paths, for when the new code itself is what broke. Resolve and parking are a pair: resolve without parking publishes the decision ~100 µs after the SYN left, mid-flow, and the NETWORK layer then reflects an established direct connection (measured: 20/20 TLS timeouts). Startup-only; logged as `[SYN-PARK] enabled/disabled`.
 - **PID recycling at connect time**: ETW STOP is delivered as late as START, so a spawn loop hands a new process a PID whose dead predecessor is still in the tree (seen 1 in 30). `resolve_pid_now` therefore verifies every known PID against the live PSN (one `OpenProcess` + `NtQueryInformationProcess`, ~10–30 µs) and re-resolves on mismatch; the insert tombstones the stale entry and the late STOP becomes a no-op.
-- **UDP is unchanged** (11): per-packet policy table since v0.9.5; the BIND/CONNECT → first datagram lead is 5–10× TCP's and a miss costs one datagram.
+- **UDP** (11): per-packet policy table since v0.9.5; since v0.11 the first datagrams of an undecided port are parked too (see "UDP interception").
 - Build: `PROXYCLAW_PROJECTION_COALESCE` is now ON (option default + `CMakePresets.json`). `resolve_pid_now` triggers a tree change on the strand; without coalescing that is an immediate full refresh + ~35 KB serialize, which would hold the next CONNECT decisions past the watchdog. If you reuse an old `build/` cache, reconfigure via the preset.
 
 Counters (`GET /api/stats` → `tcp_syn_parking`, and a `[SYN-PARK]` INFO line every 60 s when they change): `parking.released_by_watchdog` and `socket.late_rejected_proxied` are the two that mean "proxy missed a flow"; `parking.pool_in_use` must drop back to 0; `gen_mismatch`, `oversize`, `send_failures` must stay 0.
@@ -382,6 +383,7 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 ### UDP interception (mirrors TCP, per-port sessions)
 
 - Same dual-layer architecture as TCP: `windivert_socket_udp` + `windivert_network_udp`
+- First-packet parking (v0.11): `UdpPortTracker` slots are empty / direct / proxied. The SOCKET layer writes direct or proxied for every BIND it sees (its own process included) and clears on CLOSE, then calls `windivert_network_udp::release(port)`. A NETWORK worker that meets an empty slot parks the datagram (`udp_first_packet_parker`, 1024 total / 64 per port, decision re-checked under the lock so none is stranded); release sends it per the decision; a watchdog sends anything older than `udp_first_packet.watchdog_ms` (default 20) direct and pins the port direct. Config `udp_first_packet.enabled=false` restores the old behavior.
 - Each app-level UDP port gets its own SOCKS5 UDP ASSOCIATE session (RFC 1928)
 - **Per-packet addressing** (v0.10.3): the NETWORK worker does not reflect a proxied datagram. It hands `UdpOutbound{app_port, group_id, dst, payload}` to the relay (`UdpOutboundSink::submit`, a non-blocking post onto the relay strand) and consumes the original packet. Each datagram therefore keeps its own destination, so one socket that talks to several peers (DNS to two resolvers, STUN/WebRTC, games, QUIC) no longer has its packets sent to whichever destination was seen last. Before v0.10.3 the destination came from a per-port table entry that every packet overwrote.
 - Upstream queues per app port; each port has one `flush_port` coroutine, so a slow SOCKS5 handshake for one socket only delays that socket. Limits (`UdpQueueLimits`): 8192 datagrams / 32 MB in flight overall, 512 per port; excess is dropped and counted (`[UDP-RELAY] Dropped datagram`). If the session cannot be created, that port's queue is dropped instead of paying the handshake timeout per datagram.

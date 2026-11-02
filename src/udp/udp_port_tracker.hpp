@@ -41,8 +41,13 @@ struct UdpTrackerEntry {
 static_assert(std::is_trivially_copyable_v<UdpTrackerEntry>,
               "UdpTrackerEntry must stay trivially copyable — see the comment above");
 
+// A port is empty (no decision seen since its last CLOSE), direct (BIND seen,
+// not proxied, or pinned direct by the first-packet watchdog) or proxied.
+// The NETWORK layer parks datagrams of empty ports (udp_first_packet.hpp).
+enum class udp_slot_state : uint8_t { empty = 0, direct = 1, proxied = 2 };
+
 struct alignas(64) UdpTrackerSlot {
-    std::atomic<bool> active{false};
+    std::atomic<udp_slot_state> state{udp_slot_state::empty};
     UdpTrackerEntry entry{};
 };
 
@@ -52,12 +57,31 @@ public:
     void put(uint16_t src_port, const UdpTrackerEntry& e) {
         auto& slot = slots_[src_port];
         slot.entry = e;
-        slot.active.store(true, std::memory_order_release);
+        slot.state.store(udp_slot_state::proxied, std::memory_order_release);
     }
 
-    // Check if port has active entry (called from UDP NETWORK workers)
+    // Decision "not proxied" (called from UDP SOCKET handler on strand).
+    void put_direct(uint16_t src_port) {
+        slots_[src_port].state.store(udp_slot_state::direct, std::memory_order_release);
+    }
+
+    // First-packet watchdog: a port still without a decision is pinned direct
+    // so its later datagrams are not parked again. Loses to a real decision.
+    bool pin_direct_if_empty(uint16_t src_port) {
+        auto expected = udp_slot_state::empty;
+        return slots_[src_port].state.compare_exchange_strong(
+            expected, udp_slot_state::direct, std::memory_order_acq_rel);
+    }
+
+    udp_slot_state state(uint16_t port) const {
+        return slots_[port].state.load(std::memory_order_acquire);
+    }
+
+    bool decided(uint16_t port) const { return state(port) != udp_slot_state::empty; }
+
+    // Proxied entry present (called from UDP NETWORK workers and the UI)
     bool is_active(uint16_t port) const {
-        return slots_[port].active.load(std::memory_order_acquire);
+        return state(port) == udp_slot_state::proxied;
     }
 
     // Read entry without consuming (called from UDP NETWORK workers)
@@ -68,7 +92,7 @@ public:
     // Read entry if active
     std::optional<UdpTrackerEntry> get(uint16_t port) const {
         auto& slot = slots_[port];
-        if (slot.active.load(std::memory_order_acquire))
+        if (slot.state.load(std::memory_order_acquire) == udp_slot_state::proxied)
             return slot.entry;
         return std::nullopt;
     }
@@ -76,7 +100,7 @@ public:
     // Clear entry (called when UDP socket closes or session expires)
     void clear(uint16_t port) {
         auto& slot = slots_[port];
-        slot.active.store(false, std::memory_order_release);
+        slot.state.store(udp_slot_state::empty, std::memory_order_release);
         slot.entry = UdpTrackerEntry{};
     }
 

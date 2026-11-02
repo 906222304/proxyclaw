@@ -225,11 +225,10 @@ import random, socket, struct, sys, time
 servers = sys.argv[1:]
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.settimeout(1.0)
-# Bind explicitly and give the SOCKET layer's BIND event time to publish the
-# tracker slot: UDP has no SYN parking, so a datagram sent within the first
-# ~1 ms of a socket's life can still leave direct (known gap, see roadmap).
-s.bind(("0.0.0.0", 0))
-time.sleep(0.5)
+# No bind, no wait: the first sendto() binds implicitly and goes out at once,
+# before the SOCKET layer has handled the BIND. First-packet parking must hold
+# it for the decision; a direct leak shows up as a resolver missing at the
+# relay (the direct reply still arrives, so the probe itself would pass).
 def query(txid, name):
     q = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
     for part in name.split("."):

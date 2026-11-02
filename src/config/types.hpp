@@ -286,6 +286,20 @@ struct TcpSynParkingConfig {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TcpSynParkingConfig, enabled, watchdog_ms, pool_size)
 
+// UDP first-packet parking: datagrams from a port whose BIND decision has not
+// been published yet wait for it instead of leaving direct. Startup only.
+//   enabled      kill switch. false = pre-v0.11 behavior (a datagram sent in
+//                the first ~1 ms of a socket's life can leave direct).
+//   watchdog_ms  longest wait before a datagram is sent direct and its port
+//                pinned direct (clamped 5..50). Sockets opened before
+//                ProxyClaw started pay this once per port.
+struct UdpFirstPacketConfig {
+    bool enabled = true;
+    int  watchdog_ms = 20;
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UdpFirstPacketConfig, enabled, watchdog_ms)
+
 struct ConfigV2 {
     int version = 2;
     ProxyTarget default_proxy;
@@ -304,8 +318,9 @@ struct ConfigV2 {
     std::string log_level = "info";             // Runtime log level: debug/info/warning/error
     DnsConfig dns;                              // NEW: DNS proxy configuration
     TcpSynParkingConfig tcp_syn_parking;        // SYN parking switch + tuning (startup only)
+    UdpFirstPacketConfig udp_first_packet;      // UDP first-packet parking (startup only)
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, udp_first_packet)
 
 } // namespace clew

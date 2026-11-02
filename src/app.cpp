@@ -115,8 +115,18 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_,
                                                               resolve_unknown_pid);
-    wd_network_udp_ = std::make_unique<windivert_network_udp>(*udp_port_tracker_,
-                                                               udp_session_table_, policy_pub_);
+    {
+        const auto& up = config_.get_v2().udp_first_packet;
+        const auto park_ms = up.enabled ? std::clamp(up.watchdog_ms, 5, 50) : 0;
+        if (!up.enabled)
+            PC_LOG_WARN("[WD-NET-UDP] first-packet parking disabled by config "
+                        "(udp_first_packet.enabled=false)");
+        wd_network_udp_ = std::make_unique<windivert_network_udp>(
+            *udp_port_tracker_, udp_session_table_, policy_pub_, std::chrono::milliseconds{park_ms});
+    }
+    wd_socket_udp_->set_decision_listener([this](uint16_t port) {
+        if (wd_network_udp_) wd_network_udp_->release(port);
+    });
 
     icons_.init();
 

@@ -1,7 +1,7 @@
 #pragma once
 
 // Error model for all HTTP API / service boundaries.
-// See refactor_docs/DESIGN.md appendix for rationale.
+// See docs/ARCHITECTURE.md appendix for rationale.
 //
 // Flow:
 //   service method throws api_exception{code, message, details}

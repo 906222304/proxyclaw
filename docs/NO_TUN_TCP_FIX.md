@@ -1,6 +1,6 @@
 # 关闭 TUN 后 TCP 零字节断流修复
 
-本次修改基于 `fix/dns-proxy-lifecycle` 的 `0c0c25a`，保留此前 TCP 半关闭、SOCKS5 回复解析、UDP 生命周期和日志界面修复。
+本次修改基于 `fix/dns-proxy-lifecycle` 分支（原文记录的 `0c0c25a` 在历史整理后已不存在，对应 main 上的 `427f5a6`），保留此前 TCP 半关闭、SOCKS5 回复解析、UDP 生命周期和日志界面修复。
 
 ## 已验证的触发路径
 

@@ -2,8 +2,50 @@
   "version": 3,
   "configurePresets": [
     {
+      "name": "release-deps-base",
+      "hidden": true,
+      "description": "Pinned, checksum-verified dependencies from scripts/prepare_release_deps.py (same as CI).",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "${sourceDir}/build/release-deps/prefix",
+        "WEBVIEW2_PATH": "${sourceDir}/build/release-deps/webview2",
+        "PROXYCLAW_WINDIVERT_DIR": "${sourceDir}/build/release-deps/WinDivert-2.2.2-A/x64",
+        "PROXYCLAW_ENABLE_WEBVIEW2": "ON",
+        "PROXYCLAW_PROJECTION_COALESCE": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows x64, Visual Studio 2022, pinned deps",
+      "inherits": "release-deps-base",
+      "generator": "Visual Studio 17 2022"
+    },
+    {
+      "name": "windows-vs2026",
+      "displayName": "Windows x64, Visual Studio 2026, pinned deps (CI)",
+      "inherits": "release-deps-base",
+      "generator": "Visual Studio 18 2026",
+      "cacheVariables": {
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+      }
+    },
+    {
+      "name": "windows-clangd",
+      "displayName": "compile_commands.json for clangd (Ninja, configure-only)",
+      "inherits": "release-deps-base",
+      "generator": "Ninja",
+      "architecture": { "strategy": "external", "value": "x64" },
+      "binaryDir": "${sourceDir}/build-clangd",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
       "name": "windows-vcpkg",
-      "displayName": "Windows x64 with Vcpkg",
+      "displayName": "Windows x64 with a classic-mode vcpkg (install quill 7.x, nlohmann-json, cpp-httplib, asio yourself)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
@@ -13,20 +55,16 @@
         "PROXYCLAW_ENABLE_WEBVIEW2": "ON",
         "PROXYCLAW_PROJECTION_COALESCE": "ON"
       }
-    },
-    {
-      "name": "windows-vcpkg-clangd",
-      "displayName": "Clangd compile_commands.json (Ninja, configure-only)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-clangd",
-      "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows",
-        "PROXYCLAW_ENABLE_WEBVIEW2": "ON",
-        "PROXYCLAW_PROJECTION_COALESCE": "ON",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
     }
+  ],
+  "buildPresets": [
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release" },
+    { "name": "windows-vs2026", "configurePreset": "windows-vs2026", "configuration": "Release" }
+  ],
+  "testPresets": [
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release",
+      "output": { "outputOnFailure": true } },
+    { "name": "windows-vs2026", "configurePreset": "windows-vs2026", "configuration": "Release",
+      "output": { "outputOnFailure": true } }
   ]
 }

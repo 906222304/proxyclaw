@@ -256,6 +256,10 @@ std::unique_ptr<webview_app> app::create_gui() {
     PC_LOG_INFO("Launching WebView2 GUI...");
     if (!is_webview2_available()) {
         PC_LOG_WARN("WebView2 not available, falling back to console mode");
+        // Without the embedded host nothing can set the session cookie, so
+        // print the one-time entry URL for a desktop browser.
+        PC_LOG_WARN("Open the UI in a browser at http://127.0.0.1:{}{}",
+                    API_PORT, api_server_.bootstrap_path());
         return nullptr;
     }
 
@@ -276,6 +280,14 @@ std::unique_ptr<webview_app> app::create_gui() {
     }
     if (url.empty()) {
         url = std::format(L"http://127.0.0.1:{}/", API_PORT);
+    }
+    // Enter through the session bootstrap so the API's HttpOnly cookie is set
+    // before the UI loads. The dev server proxies /api, so the same path works
+    // there. The resulting URL carries the token and must not be logged.
+    {
+        while (!url.empty() && url.back() == L'/') url.pop_back();
+        const std::string boot = api_server_.bootstrap_path();
+        url.append(boot.begin(), boot.end());
     }
     auto gui = std::make_unique<webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
     gui->set_title(L"ProxyClaw");

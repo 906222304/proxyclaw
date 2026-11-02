@@ -17,9 +17,9 @@
 //     manager debounces and re-issues capture_state.
 //
 // PoC verification report:
-//   F:/projects/remote_projects/win_prox/tools/poc/poc_etw_kernel_process_v2_report.md
+//   (ETW kernel-process PoC report, kept outside this repository)
 // Schema reference (field names, InTypes, sentinel values):
-//   ~/.claude/projects/F--projects-remote-projects-win-prox/memory/reference/etw_kernel_process.md
+//   Microsoft-Windows-Kernel-Process manifest (wevtutil gp Microsoft-Windows-Kernel-Process /ge /gm)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

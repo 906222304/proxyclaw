@@ -29,7 +29,7 @@
 3. **进程命中但流量不走代理**：
    - 检查 `Protocol` 字段——如果设了只 TCP，UDP 流量不会走代理；想全代理就选 Both。
    - 是否在访问内网/loopback。按设计 `default_exclude_cidrs` 排除了 127/8 + 10/8 + 172.16/12 + 192.168/16 + 169.254/16，访问这些范围不会走代理（避免本地服务被代理坏掉）。要让某段内网走代理需手动改这个字段。
-4. **短命进程（git / curl / gh）时灵时不灵**：v0.10 之前这类进程的第一条连接基本都漏（进程启动后 150ms 就连出去了，而 ETW 通知晚 1–2 秒）。v0.10 起 SOCKET 层会同步补进程树，NETWORK 层把连接的第一个 SYN 扣住等判定（"SYN 停车"）。看 `GET http://127.0.0.1:18080/api/stats` 里的 `tcp_syn_parking`：
+4. **短命进程（git / curl / gh）时灵时不灵**：v0.10 之前这类进程的第一条连接基本都漏（进程启动后 150ms 就连出去了，而 ETW 通知晚 1–2 秒）。v0.10 起 SOCKET 层会同步补进程树，NETWORK 层把连接的第一个 SYN 扣住等判定（"SYN 停车"）。看 `GET http://127.0.0.1:18080/api/stats` 里的 `tcp_syn_parking`（v0.10.2 起 API 需要会话凭证：用 `PROXYCLAW_API_TOKEN=<至少 32 位随机串>` 启动 ProxyClaw，再执行 `curl -H "X-ProxyClaw-Token: <同一串>" http://127.0.0.1:18080/api/stats`）：
    - `parking.released_by_watchdog` 和 `socket.late_rejected_proxied` 持续增长 = 判定来不及，代理漏了。把 `log_level` 改成 `debug`，看 `[SYN-PARK] watchdog released` 前后的 `[TreeMgr] Sync-resolved … in Nus` 耗时。
    - `parking.pool_in_use` 在没有新连接时不回到 0 = 池泄漏，请带日志反馈。
    - 怀疑是停车本身把连接搞坏了：在 `proxyclaw.json` 里加 `"tcp_syn_parking": { "enabled": false }` 后重启，回到旧行为（会重新漏短命进程，但排除了新代码）。日志里会有 `[SYN-PARK] disabled by config`。

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <algorithm>
 #include <chrono>
+#include <cwctype>
 #include <functional>
 #include <memory>
 #include <string>
@@ -209,6 +210,11 @@ private:
                                 webview_->add_WebMessageReceived(
                                     Microsoft::WRL::Callback<ICoreWebView2WebMessageReceivedEventHandler>(
                                         [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                                            // Only the page we navigated to may drive the host window.
+                                            if (!message_source_trusted(args)) {
+                                                PC_LOG_WARN("[push] ignored web message from untrusted source");
+                                                return S_OK;
+                                            }
                                             // Plain-string path first.
                                             LPWSTR str_msg = nullptr;
                                             if (SUCCEEDED(args->TryGetWebMessageAsString(&str_msg)) && str_msg) {
@@ -243,9 +249,11 @@ private:
 
                                 webview_->Navigate(url_.c_str());
                                 {
-                                    int len = WideCharToMultiByte(CP_UTF8, 0, url_.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                                    // The query string carries the API session token; log only the origin/path.
+                                    const std::wstring shown = url_.substr(0, url_.find(L'?'));
+                                    int len = WideCharToMultiByte(CP_UTF8, 0, shown.c_str(), -1, nullptr, 0, nullptr, nullptr);
                                     std::string url_utf8(len - 1, 0);
-                                    WideCharToMultiByte(CP_UTF8, 0, url_.c_str(), -1, url_utf8.data(), len, nullptr, nullptr);
+                                    WideCharToMultiByte(CP_UTF8, 0, shown.c_str(), -1, url_utf8.data(), len, nullptr, nullptr);
                                     PC_LOG_INFO("WebView2 initialized, navigating to {}", url_utf8);
                                 }
                                 initialized_ = true;
@@ -309,6 +317,8 @@ private:
         int size_needed = WideCharToMultiByte(CP_UTF8, 0, url_.c_str(), -1, nullptr, 0, nullptr, nullptr);
         std::string url_narrow(size_needed - 1, 0);
         WideCharToMultiByte(CP_UTF8, 0, url_.c_str(), -1, url_narrow.data(), size_needed, nullptr, nullptr);
+        // Console builds have no embedded host to set the session cookie, so
+        // the bootstrap URL (with its token) is printed for the developer.
         PC_LOG_INFO("Please access the UI at: {}", url_narrow);
     }
 
@@ -877,6 +887,27 @@ public:
     HWND get_hwnd() const { return hwnd_; }
     bool is_initialized() const { return initialized_; }
     bool is_visible() const { return currently_visible_; }
+
+#ifdef PROXYCLAW_HAS_WEBVIEW2
+    // Compares the message's source origin ("scheme://host:port") with the
+    // origin of url_. Sub-frames or a page navigated elsewhere are rejected.
+    static std::wstring origin_of_url(const std::wstring& url) {
+        const auto scheme = url.find(L"://");
+        if (scheme == std::wstring::npos) return {};
+        std::wstring o = url.substr(0, url.find_first_of(L"/?#", scheme + 3));
+        for (auto& c : o) c = static_cast<wchar_t>(towlower(c));
+        return o;
+    }
+
+    bool message_source_trusted(ICoreWebView2WebMessageReceivedEventArgs* args) const {
+        LPWSTR source = nullptr;
+        if (FAILED(args->get_Source(&source)) || !source) return false;
+        const std::wstring src(source);
+        CoTaskMemFree(source);
+        const auto expected = origin_of_url(url_);
+        return !expected.empty() && origin_of_url(src) == expected;
+    }
+#endif
 
     void navigate(const std::wstring& url) {
         url_ = url;

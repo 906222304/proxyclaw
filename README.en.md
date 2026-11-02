@@ -146,7 +146,7 @@ Rules tab → `Add Rule`. **New rules default to OFF; flip the toggle to activat
 | Name | Rule name |
 | Process name | Glob wildcards such as `curl*` or `python.exe`, or pick a specific exe path |
 | Cmdline pattern | Command-line keywords, space-separated, case-insensitive, order-independent |
-| Hack tree | Child processes are proxied too |
+| Hack tree | Always on: child processes are proxied too |
 | Protocol | TCP / UDP / Both |
 | Proxy group | Which proxy group to route through |
 
@@ -258,49 +258,56 @@ By default every ETW process event triggers an immediate refresh and push, with 
 ### Toolchain
 
 - Visual Studio 2022 or 2026 (C++23)
-- CMake 3.20+, vcpkg
+- CMake 3.20+
+- Python 3.12+ (fetches pinned dependencies)
 - Node.js 20+
-- WebView2 SDK
 
 ### Steps
 
-```bash
-# Configure
-cmake --preset windows-vcpkg
+```powershell
+# Fetch and verify pinned dependencies (same as CI: quill, nlohmann/json, cpp-httplib, asio, WinDivert, WebView2 SDK)
+python scripts/prepare_release_deps.py
 
-# Backend (~30 translation units; CMakeLists enables /MP for parallel builds)
-cmake --build build --config Release
+# Configure (use windows-vs2026 for Visual Studio 2026)
+cmake --preset windows
 
 # Frontend
 cd frontend
-npm install
+npm ci
+npm test
 npm run build
 cd ..
+
+# Backend (~30 translation units, built with /MP) and unit tests
+cmake --build --preset windows
+ctest --preset windows
 
 # Run
 ./build/Release/proxyclaw.exe
 ```
+
+One-shot verification (frontend tests and build, native build, ctest, layering checks, e2e): `python scripts/verify.py`; add `--no-e2e` outside an administrator shell.
 
 To reuse CI's pinned dependencies and build a package identical to a release, see the [build and release guide](docs/RELEASE.md). Pushing a `v*` tag builds the full Windows x64 package and publishes a Release; `main` and PR builds upload artifacts only.
 
 <details>
 <summary><b>clangd / LSP setup (optional)</b></summary>
 
-The repo ships a `.clangd` file and a `windows-vcpkg-clangd` preset. You don't need them to build and run a release.
+The repo ships a `.clangd` file and a `windows-clangd` preset. You don't need them to build and run a release.
 
-CMake's Visual Studio generator doesn't emit `compile_commands.json`, so clangd can't find the vcpkg / WebView2 / asio headers. To enable clangd navigation and completion (requires Ninja on PATH):
+CMake's Visual Studio generator doesn't emit `compile_commands.json`, so clangd can't find the dependency / WebView2 / asio headers. To enable clangd navigation and completion (requires Ninja on PATH):
 
 ```bash
-cmake --preset windows-vcpkg-clangd
+cmake --preset windows-clangd
 ```
 
-This writes `compile_commands.json` into `build-clangd/` (gitignored). Re-run after changing `vcpkg.json`, adding source files, or adding include directories.
+This writes `compile_commands.json` into `build-clangd/` (gitignored). Re-run after dependency pins change, or after adding source files or include directories.
 
 </details>
 
 ## Testing
 
-None of these regression tests start the proxy or change system DNS. Background: [optimization review](docs/OPTIMIZATION_REVIEW.md) (Chinese).
+`ctest --preset windows` runs every native unit test (API access control, DNS wire and lifecycle, config and Unicode paths, log tailing, process-tree push, TCP redirect), and CI runs it on every commit. The sections below give background and standalone commands; none of them start the proxy or change system DNS. Background: [optimization review](docs/OPTIMIZATION_REVIEW.md) (Chinese).
 
 <details>
 <summary><b>UI loading and background refresh</b></summary>
@@ -308,7 +315,7 @@ None of these regression tests start the proxy or change system DNS. Background:
 The advanced JSON editor loads on demand; periodic refresh waits for the previous request and cancels stale ones when hidden or switching processes; the process tree resyncs when the window is restored.
 
 ```powershell
-node --test tests/async_poller_test.mjs
+cd frontend; npm test; cd ..
 python tests/run_projection_tests.py --cxx path/to/zig.exe --asio-include path/to/asio/include
 ```
 

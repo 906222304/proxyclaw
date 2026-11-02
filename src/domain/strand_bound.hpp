@@ -1,7 +1,7 @@
 #pragma once
 
 // Cross-strand dispatch wrapper for strand-owned domain objects.
-// See refactor_docs/DESIGN.md H1.
+// See docs/ARCHITECTURE.md H1.
 //
 // strand_bound<Owner> exposes query(Fn) / command(Fn), concept-constrained
 // to accept (const Owner&) / (Owner&) respectively. Both post the lambda to

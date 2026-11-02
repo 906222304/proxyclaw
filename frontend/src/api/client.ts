@@ -15,6 +15,14 @@ function mergeHeaders(init?: RequestInit): HeadersInit {
   }
 }
 
+// The backend rejects /api requests without the per-launch session cookie
+// (set by /api/session when the window opens). A 401 therefore means the page
+// outlived its session, e.g. after ProxyClaw restarted.
+function failureMessage(status: number, text: string): string {
+  if (status === 401) return '会话已失效，请从托盘重新打开 ProxyClaw 窗口'
+  return `请求失败（${status}）：${text}`
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {
     ...options,
@@ -22,7 +30,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(`请求失败（${res.status}）：${text}`)
+    throw new Error(failureMessage(res.status, text))
   }
   const text = await res.text()
   if (!text) {
@@ -38,7 +46,7 @@ async function requestVoid(url: string, options?: RequestInit): Promise<void> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(`请求失败（${res.status}）：${text}`)
+    throw new Error(failureMessage(res.status, text))
   }
 }
 

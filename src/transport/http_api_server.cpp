@@ -1,6 +1,7 @@
 #include "transport/http_api_server.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -10,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <bcrypt.h>
 
 #include "common/api_context.hpp"
 #include "core/log.hpp"
@@ -31,10 +33,41 @@ void register_stats_handlers(route_registry&);
 
 namespace clew::transport {
 
+namespace {
+
+// 32 random bytes as 64 hex chars. Falls back to a launch-unique value only if
+// the system RNG is unavailable, which would also break TLS on the machine.
+std::string generate_session_token() {
+    unsigned char bytes[32]{};
+    if (BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        PC_LOG_ERROR("[api] BCryptGenRandom failed; using a weak session token");
+        LARGE_INTEGER qpc{};
+        QueryPerformanceCounter(&qpc);
+        const auto seed = static_cast<unsigned long long>(qpc.QuadPart) ^ GetCurrentProcessId();
+        for (size_t i = 0; i < sizeof(bytes); ++i) {
+            bytes[i] = static_cast<unsigned char>((seed >> ((i % 8) * 8)) ^ (i * 131));
+        }
+    }
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(sizeof(bytes) * 2);
+    for (unsigned char b : bytes) {
+        out.push_back(hex[b >> 4]);
+        out.push_back(hex[b & 0x0F]);
+    }
+    return out;
+}
+
+} // namespace
+
 http_api_server::http_api_server(int port, api_context& ctx, std::string static_dir)
     : port_(port)
     , static_dir_(std::move(static_dir))
-    , ctx_(ctx) {
+    , ctx_(ctx)
+    , auth_(port, token_from_env_or(generate_session_token())) {
+    if (const char* dev = std::getenv("PROXYCLAW_DEV_URL"); dev && *dev) {
+        auth_.allow_origin(dev);
+    }
     // Thread pool sized for our actual load: 3 polling endpoints
     // (stats/tcp/udp) + occasional CRUD + icon fetches. Default would
     // be std::thread::hardware_concurrency(); 8 is a safe fixed cap
@@ -42,9 +75,9 @@ http_api_server::http_api_server(int port, api_context& ctx, std::string static_
     // for SSE long-lived connections, which the project no longer has.
     server_.new_task_queue = [] { return new httplib::ThreadPool(8); };
 
+    install_auth_gate(server_, auth_);
     install_default_headers(server_);
-    install_options_handler(server_);
-    install_cache_headers(server_);
+    install_session_route(server_, auth_);
 
     clew::route_registry reg(server_, ctx_);
     clew::register_autostart_handlers(reg);

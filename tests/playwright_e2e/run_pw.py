@@ -50,6 +50,9 @@ import tempfile
 import time
 
 import requests
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import api_token  # noqa: F401  (adds the API session token; see tests/api_token.py)
 from playwright.sync_api import Page, sync_playwright
 
 

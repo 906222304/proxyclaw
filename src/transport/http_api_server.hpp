@@ -19,6 +19,8 @@
 
 #include <httplib.h>
 
+#include "transport/api_auth.hpp"
+
 namespace clew {
 struct api_context;
 }  // namespace clew
@@ -38,6 +40,10 @@ public:
 
     [[nodiscard]] int port() const noexcept { return port_; }
 
+    // Path that hands the session cookie to a UI host ("/api/session?t=...").
+    // Never log the returned value: it carries the session token.
+    [[nodiscard]] std::string bootstrap_path() const { return auth_.bootstrap_path(); }
+
 private:
     void setup_static_files();
     [[nodiscard]] static std::string get_executable_dir();
@@ -45,6 +51,7 @@ private:
     int                 port_;
     std::string         static_dir_;
     api_context&        ctx_;
+    api_auth            auth_;
     httplib::Server     server_;
     std::jthread        server_thread_;
     std::atomic<bool>   running_{false};

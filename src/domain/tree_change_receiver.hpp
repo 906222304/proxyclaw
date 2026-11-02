@@ -1,7 +1,7 @@
 #pragma once
 
 // Named interface replacing the old std::function<void()> callback slot on
-// process_tree_manager. See refactor_docs/DESIGN.md H3.
+// process_tree_manager. See docs/ARCHITECTURE.md H3.
 //
 // Lifetime: listener pointers are registered via process_tree_manager::add_listener
 // and are expected to outlive the manager (main.cpp owns both).

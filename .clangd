@@ -1,14 +1,15 @@
 # clangd configuration. Shared by all clangd consumers in this repo:
 # Claude Code's clangd plugin, VS2022's clangd, vim/nvim, etc. — all read
-# the same compile_commands.json so vcpkg / WebView2 / asio / quill / cpp-httplib
+# the same compile_commands.json so the pinned deps / WebView2 / asio / quill / cpp-httplib
 # include paths resolve identically everywhere.
 #
 # Generate / refresh with:
-#   cmake --preset windows-vcpkg-clangd
+#   python scripts/prepare_release_deps.py
+#   cmake --preset windows-clangd
 # (configure-only — no build needed; compile_commands.json lands in build-clangd/)
 #
-# Re-run after vcpkg.json changes, new source files, or new include dirs.
-# Requires VCPKG_ROOT env var pointing at your vcpkg checkout.
+# Re-run after dependency pins change, new source files, or new include dirs.
+# Run from a Visual Studio developer shell with Ninja on PATH.
 
 CompileFlags:
   CompilationDatabase: build-clangd

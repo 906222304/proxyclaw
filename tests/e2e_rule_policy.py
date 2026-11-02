@@ -225,6 +225,11 @@ import random, socket, struct, sys, time
 servers = sys.argv[1:]
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.settimeout(1.0)
+# Bind explicitly and give the SOCKET layer's BIND event time to publish the
+# tracker slot: UDP has no SYN parking, so a datagram sent within the first
+# ~1 ms of a socket's life can still leave direct (known gap, see roadmap).
+s.bind(("0.0.0.0", 0))
+time.sleep(0.5)
 def query(txid, name):
     q = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
     for part in name.split("."):

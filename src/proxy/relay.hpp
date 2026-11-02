@@ -113,11 +113,11 @@ handle_connection(tcp::socket client_sock,
     const TrackerEntry* entry = &taken->entry;
     const int64_t flow_ts = taken->connect_ts;
 
-    // All tracker clears happen on the strand (single writer for state
+    // All tracker retirements happen on the strand (single writer for state
     // transitions out of a decided slot); the relay only asks for one.
     auto release_slot = [&tracker, &strand, src_port, flow_ts]() {
         asio::post(strand, [&tracker, src_port, flow_ts]() {
-            tracker.clear_if(src_port, flow_ts);
+            tracker.retire_if(src_port, flow_ts);
         });
     };
 
@@ -191,7 +191,7 @@ handle_connection(tcp::socket client_sock,
                      src_port, dest_ip_str, dest_port, e.what());
     }
 
-    // Cleanup tracker entry (on the strand, guarded by this flow's timestamp)
+    // Retire the relay entry while preserving queued FIN/ACK translation.
     release_slot();
     PC_LOG_DEBUG("[RELAY] Closed port={} ({}:{})", src_port, dest_ip_str, dest_port);
 }

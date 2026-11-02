@@ -216,3 +216,18 @@ add_custom_command(TARGET proxyclaw POST_BUILD
     "${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64/WinDivert64.sys"
     "$<TARGET_FILE_DIR:proxyclaw>"
 )
+
+# A GUI executable alone cannot serve the embedded browser. Allow a pinned
+# prebuilt frontend for offline builds, and keep the build directory runnable.
+set(PROXYCLAW_FRONTEND_DIST "${CMAKE_SOURCE_DIR}/frontend/dist" CACHE PATH
+    "Prebuilt frontend directory containing index.html")
+if(PROXYCLAW_ENABLE_WEBVIEW2)
+    if(EXISTS "${PROXYCLAW_FRONTEND_DIST}/index.html")
+        add_custom_command(TARGET proxyclaw POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${PROXYCLAW_FRONTEND_DIST}" "$<TARGET_FILE_DIR:proxyclaw>/frontend/dist"
+        )
+    else()
+        message(WARNING "GUI assets missing: build frontend/dist or set PROXYCLAW_FRONTEND_DIST before packaging")
+    endif()
+endif()

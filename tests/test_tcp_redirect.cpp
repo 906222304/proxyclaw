@@ -44,10 +44,12 @@ void round_trip(uint32_t local, uint32_t interface_index) {
     request.address.Network.SubIfIdx = 7;
     check(clew::redirect_tcp_to_local(request.bytes.data(), UINT(request.bytes.size()),
           &request.address, listener_port, *tracker), "forward rejected");
-    check(request.ip()->SrcAddr == htonl(local) && request.ip()->DstAddr == htonl(local), "forward must stay local");
+    check(request.ip()->SrcAddr == htonl(INADDR_LOOPBACK) && request.ip()->DstAddr == htonl(INADDR_LOOPBACK), "both forward addresses must be localhost");
     check(ntohs(request.tcp()->DstPort) == listener_port && request.address.Outbound, "wrong forward port/direction");
+    check(request.address.Loopback, "localhost metadata must be explicit");
+    check(tracker->redirect_route(app_port).local_addr == htonl(local), "original application address lost");
     request.unchanged_payload();
-    Packet reply(local, listener_port, local, app_port);
+    Packet reply(INADDR_LOOPBACK, listener_port, INADDR_LOOPBACK, app_port);
     reply.address.Loopback = 1; reply.address.Network.IfIdx = 1;
     check(clew::restore_tcp_from_local(reply.bytes.data(), UINT(reply.bytes.size()),
           &reply.address, listener_port, *tracker), "reply rejected");
@@ -57,9 +59,36 @@ void round_trip(uint32_t local, uint32_t interface_index) {
     check(reply.address.Network.IfIdx == interface_index && reply.address.Network.SubIfIdx == 7, "original interface lost");
     reply.unchanged_payload();
 
+    check(tracker->retire_if(app_port, 1), "relay retirement rejected");
+    check(!tracker->take(app_port), "retired flow offered to a new relay");
+    tracker->on_close(app_port, 2);
+    Packet final_fin(INADDR_LOOPBACK, listener_port, INADDR_LOOPBACK, app_port);
+    final_fin.tcp()->Fin = 1;
+    check(clew::restore_tcp_from_local(final_fin.bytes.data(), UINT(final_fin.bytes.size()),
+          &final_fin.address, listener_port, *tracker), "queued final FIN lost its mapping");
+    check(final_fin.ip()->DstAddr == htonl(local), "final FIN lost application address");
+    Packet reused_syn(local, app_port, remote, 443);
+    reused_syn.tcp()->Syn = 1; reused_syn.tcp()->Ack = 0;
+    check(!clew::redirect_tcp_to_local(reused_syn.bytes.data(), UINT(reused_syn.bytes.size()),
+          &reused_syn.address, listener_port, *tracker), "new SYN inherited retired flow");
+    Packet final_ack(local, app_port, remote, 443);
+    check(clew::redirect_tcp_to_local(final_ack.bytes.data(), UINT(final_ack.bytes.size()),
+          &final_ack.address, listener_port, *tracker), "final ACK lost its mapping");
+    LARGE_INTEGER future{};
+    QueryPerformanceCounter(&future);
+    final_ack.address.Timestamp = future.QuadPart + tracker->ms_to_ticks(120'001);
+    Packet expired(INADDR_LOOPBACK, listener_port, INADDR_LOOPBACK, app_port);
+    expired.address.Timestamp = final_ack.address.Timestamp;
+    check(!clew::restore_tcp_from_local(expired.bytes.data(), UINT(expired.bytes.size()),
+          &expired.address, listener_port, *tracker), "expired NAT tombstone still routed");
+
+    // Physical-address replies must never re-enter the previous handoff path.
+    Packet physical_reply(local, listener_port, local, app_port);
+    check(!clew::restore_tcp_from_local(physical_reply.bytes.data(), UINT(physical_reply.bytes.size()),
+          &physical_reply.address, listener_port, *tracker), "physical-address reply accepted");
     tracker->publish(app_port, clew::slot_state::proxied, entry, 2);
     check(tracker->redirect_route(app_port).if_index == 0, "reused port retained old interface");
-    Packet old_reply(local, listener_port, local, app_port);
+    Packet old_reply(INADDR_LOOPBACK, listener_port, INADDR_LOOPBACK, app_port);
     check(!clew::restore_tcp_from_local(old_reply.bytes.data(), UINT(old_reply.bytes.size()),
           &old_reply.address, listener_port, *tracker), "old reply reused a new flow route");
     Packet wrong_request(local, app_port, remote, 80);
@@ -84,7 +113,7 @@ int main() {
         check(!WinDivertHelperEvalFilter(filter.c_str(), reply.bytes.data(), UINT(reply.bytes.size()), &reply.address), "ordinary loopback traffic captured");
         reply.address.Loopback = 0;
         check(WinDivertHelperEvalFilter(filter.c_str(), reply.bytes.data(), UINT(reply.bytes.size()), &reply.address), "non-loopback traffic omitted");
-        std::cout << "PASS local TCP handoff: physical/TUN tuples, interface, checksums, payload, port reuse, exclusions, filter\n";
+        std::cout << "PASS localhost TCP handoff: physical/TUN tuples, both localhost addresses, original app address, interface, checksums, payload, port reuse, exclusions, filter\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

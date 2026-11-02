@@ -2,7 +2,7 @@
 
 // PortTracker: 65536 fixed-size array for O(1) lock-free port -> decision mapping.
 //
-// Each local TCP port has one slot holding a four-state word:
+// Each local TCP port has one slot holding a decision word:
 //   empty      no flow on this port that we know about
 //   pending    the NETWORK worker parked this flow's SYN in the pool and is
 //              waiting for the SOCKET side to publish a decision
@@ -10,6 +10,7 @@
 //   direct     decided: leave the flow alone
 //   abandoned  no decision arrived in time; the watchdog released the SYN
 //              and pinned the port so a late decision cannot hijack the flow
+//   draining   relay ended; retain the old tuple for bounded FIN/ACK delivery
 //
 // `direct` and `abandoned` behave the same on the wire. They are kept apart
 // because one is a decision and the other is the absence of one, and the
@@ -18,7 +19,8 @@
 //
 // The word packs {state:8 | pool generation:24 | pool index:32} into one
 // 64-bit atomic so every transition is a single CAS and the CAS winner owns
-// the pool index. Decided states always carry generation 0 / NO_POOL_IDX.
+// the pool index. Draining uses the low 56 bits for its QPC deadline, so
+// retirement does not race a SYN worker over the abandoned state's pinned_ts.
 //
 // Who writes what (see docs/ARCHITECTURE.md, "SYN parking"):
 //   strand (SOCKET handler, relay teardown posted to it)
@@ -61,6 +63,7 @@ enum class slot_state : uint8_t {
     proxied   = 2,
     direct    = 3,
     abandoned = 4,
+    draining  = 5, // relay ended; keep NAT for FIN/ACK and retransmissions
 };
 
 inline const char* slot_state_name(slot_state s) {
@@ -70,6 +73,7 @@ inline const char* slot_state_name(slot_state s) {
     case slot_state::proxied:   return "proxied";
     case slot_state::direct:    return "direct";
     case slot_state::abandoned: return "abandoned";
+    case slot_state::draining:  return "draining";
     }
     return "?";
 }
@@ -86,6 +90,16 @@ constexpr uint32_t   word_gen(uint64_t w)   { return static_cast<uint32_t>((w >>
 constexpr uint32_t   word_idx(uint64_t w)   { return static_cast<uint32_t>(w & 0xFFFFFFFFu); }
 constexpr uint64_t   decided_word(slot_state st) { return pack_word(st, 0, NO_POOL_IDX); }
 constexpr uint64_t   EMPTY_WORD = decided_word(slot_state::empty);
+constexpr uint64_t DRAIN_CLOCK_MASK = (uint64_t{1} << 56) - 1;
+constexpr uint64_t draining_word(int64_t deadline) {
+    return (static_cast<uint64_t>(slot_state::draining) << 56) |
+           (static_cast<uint64_t>(deadline) & DRAIN_CLOCK_MASK);
+}
+constexpr bool drain_not_expired(uint64_t word, int64_t timestamp) {
+    // Modular comparison also covers a wrap of the 56-bit QPC clock.
+    return ((word - static_cast<uint64_t>(timestamp)) & DRAIN_CLOCK_MASK) <
+           (uint64_t{1} << 55);
+}
 
 struct TrackerEntry {
     uint32_t remote_addr[4]{};  // host byte order (WinDivert SOCKET layer native); IPv4 in [0]
@@ -162,7 +176,14 @@ public:
 
     // Non-SYN outbound packet on this port: reflect it?
     bool should_reflect(uint16_t port) const {
-        return word_state(slots_[port].word.load(std::memory_order_acquire)) == slot_state::proxied;
+        const auto& slot = slots_[port];
+        const auto word = slot.word.load(std::memory_order_acquire);
+        const auto state = word_state(word);
+        if (state == slot_state::proxied) return true;
+        if (state != slot_state::draining) return false;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        return drain_not_expired(word, now.QuadPart);
     }
 
     // Entry for the reflect_reply path. Only meaningful after should_reflect.
@@ -297,7 +318,7 @@ public:
             const auto st = word_state(w);
             if (st == slot_state::empty) return std::nullopt;
             if (s.connect_ts > close_ts) return std::nullopt;   // CLOSE of a previous flow on this port
-            if (st == slot_state::proxied) return std::nullopt;
+            if (st == slot_state::proxied || st == slot_state::draining) return std::nullopt;
             if (st == slot_state::pending) {
                 const uint32_t idx = word_idx(w);
                 if (s.word.compare_exchange_strong(w, EMPTY_WORD,
@@ -346,6 +367,32 @@ public:
         if (word_state(s.word.load(std::memory_order_acquire)) != slot_state::proxied) {
             return std::nullopt;
         }
+        return taken{s.entry, s.connect_ts};
+    }
+
+    // Relay completion is not TCP completion: its final FIN may still be in
+    // the WinDivert queue. Keep a bounded tombstone for late wire packets,
+    // while take() stops offering this flow to new accepted connections.
+    bool retire_if(uint16_t port, int64_t connect_ts) {
+        auto& s = slots_[port];
+        uint64_t expected = s.word.load(std::memory_order_acquire);
+        if (word_state(expected) != slot_state::proxied || s.connect_ts != connect_ts)
+            return false;
+        if (!redirect_route(port).if_index) return clear_if(port, connect_ts);
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        return s.word.compare_exchange_strong(expected, draining_word(now.QuadPart + ms_to_ticks(120'000)),
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire);
+    }
+
+    std::optional<taken> take_for_packet(uint16_t port, int64_t packet_ts) const {
+        const auto& s = slots_[port];
+        const auto word = s.word.load(std::memory_order_acquire);
+        const auto state = word_state(word);
+        if (state != slot_state::proxied &&
+            (state != slot_state::draining || !drain_not_expired(word, packet_ts)))
+            return std::nullopt;
         return taken{s.entry, s.connect_ts};
     }
 

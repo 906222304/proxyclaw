@@ -10,8 +10,8 @@
 //   - Cold path: NAT rewrite + checksum recalc
 //   - Capture non-loopback outbound TCP plus local acceptor replies.
 //
-// Forward: DstAddr=SrcAddr, DstPort=redirect_port, outbound local delivery.
-// Reply: restore the remote source tuple and original inbound interface.
+// Forward: SrcAddr=DstAddr=127.0.0.1, outbound localhost delivery.
+// Reply: restore both original addresses and the original inbound interface.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -61,7 +61,7 @@ public:
         WinDivertSetParam(handle_, WINDIVERT_PARAM_QUEUE_TIME, 2000);
         WinDivertSetParam(handle_, WINDIVERT_PARAM_QUEUE_SIZE, 16 * 1024 * 1024);
 
-        PC_LOG_INFO("[WD-NETWORK] Opened (local TCP handoff, filter: {})", filter);
+        PC_LOG_INFO("[WD-NETWORK] Opened (127.0.0.1 TCP handoff, filter: {})", filter);
         return true;
     }
 
@@ -207,7 +207,7 @@ private:
 
             uint16_t src_port = ntohs(tcp->SrcPort);
 
-            // The acceptor sees AppIP:AppPort as its peer. Its local replies
+            // The acceptor sees 127.0.0.1:AppPort as its peer. Its local replies
             // must be restored before they reach the application's TCP stack.
             if (src_port == redirect_port_) {
                 reflect_reply(pkt_buf, pkt_len, &addr);
@@ -238,7 +238,7 @@ private:
     }
 
     // Local listener reply -> app, restored to the original remote tuple.
-    // Before: SrcAddr=AppIP, SrcPort=redirect_port, DstAddr=AppIP, DstPort=AppPort
+    // Before: SrcAddr=127.0.0.1, SrcPort=redirect_port, DstAddr=127.0.0.1, DstPort=AppPort
     // After:  SrcAddr=OrigDstIP, SrcPort=OrigDstPort, DstAddr=AppIP, DstPort=AppPort, Outbound=0
     void reflect_reply(uint8_t* pkt_buf, UINT pkt_len, WINDIVERT_ADDRESS* addr)
     {

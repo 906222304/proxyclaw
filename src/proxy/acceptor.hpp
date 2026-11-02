@@ -2,7 +2,7 @@
 
 // Asio-based TCP acceptor for redirected connections.
 // Replaces blocking local_listener.hpp.
-// Binds to 0.0.0.0:0 (INADDR_ANY, ephemeral port) and accepts
+// Binds to 127.0.0.1:0 (localhost, ephemeral port) and accepts
 // connections redirected by the NETWORK layer.
 
 #define ASIO_STANDALONE
@@ -37,7 +37,7 @@ public:
     // Start listening. Returns the bound port.
     uint16_t start() {
         auto ex = ioc_.get_executor();
-        tcp::endpoint ep(asio::ip::make_address("0.0.0.0"), 0);
+        tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
         acceptor_ = std::make_unique<tcp::acceptor>(ex, ep);
 
         port_ = acceptor_->local_endpoint().port();

@@ -12,13 +12,14 @@ import os
 import pathlib
 import queue
 import re
+import sys
+
 import requests
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import api_token  # noqa: F401  (adds the API session token; see tests/api_token.py)
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time

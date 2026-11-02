@@ -99,6 +99,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Live rule-policy test (WinDivert, elevated runner)
+        run: |
+          python tests/e2e_rule_policy.py --exe build/Release/proxyclaw.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package complete portable application
         shell: pwsh
         env:

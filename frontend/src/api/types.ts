@@ -60,9 +60,24 @@ export interface GroupInUseError {
   manual_hijack_count: number
 }
 
+export type ProxyTestStageName = 'resolve' | 'connect' | 'handshake' | 'remote' | 'first_byte'
+
+export interface ProxyTestStage {
+  name: ProxyTestStageName | string
+  ms: number
+}
+
 export interface ProxyTestResult {
+  /** Present only on success (legacy contract). */
   latency_ms?: number
   error?: string
+  /** Stage that failed: one of the stage names, or 'config' / 'queue'. */
+  failed_stage?: string
+  /** e.g. "HTTP 204", "TLS handshake". */
+  detail?: string
+  total_ms?: number
+  target?: string
+  stages?: ProxyTestStage[]
 }
 
 export interface TcpConnection {

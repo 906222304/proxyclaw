@@ -271,6 +271,21 @@ def api_get(path: str, token: str) -> object:
         return json.loads(resp.read())
 
 
+def api_post(path: str, token: str, timeout: float = 15) -> object:
+    req = urllib.request.Request(API + path, data=b"", method="POST",
+                                 headers={"X-ProxyClaw-Token": token})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+# (group id, expect ok, expected failed_stage, expected detail prefix)
+SPEED_CASES = [
+    (0, True, None, "HTTP "),
+    (1, True, None, "TLS"),
+    (2, False, "connect", None),
+]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", required=True, type=pathlib.Path)
@@ -289,9 +304,16 @@ def main() -> int:
     config = {
         "version": 2,
         "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": socks.port},
-        "proxy_groups": [{"id": 0, "name": "default", "host": "127.0.0.1",
-                          "port": socks.port, "type": "socks5"}],
-        "next_group_id": 1,
+        "proxy_groups": [
+            {"id": 0, "name": "default", "host": "127.0.0.1", "port": socks.port,
+             "type": "socks5", "test_url": "http://1.1.1.1/"},
+            # speed-test cases: domain proxy host + https target, and a dead proxy
+            {"id": 1, "name": "bydomain", "host": "localhost", "port": socks.port,
+             "type": "socks5", "test_url": "https://1.1.1.1/"},
+            {"id": 2, "name": "dead", "host": "127.0.0.1", "port": 1,
+             "type": "socks5", "test_url": "http://1.1.1.1/"},
+        ],
+        "next_group_id": 3,
         "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES],
         "log_level": "debug",
         "dns": {"enabled": False},
@@ -354,6 +376,21 @@ def main() -> int:
                       f" got={'proxy' if proxied else 'direct'} curl_rc={res.returncode} http={res.stdout}")
                 if not ok:
                     failures.append(f"{r['id']} {url}")
+        for gid, want_ok, want_stage, want_detail in SPEED_CASES:
+            try:
+                res = api_post(f"/proxy-groups/{gid}/test", token)
+            except Exception as e:  # noqa: BLE001
+                res = {"error": repr(e)}
+            ok = ("latency_ms" in res) == want_ok
+            if want_ok:
+                ok = ok and len(res.get("stages", [])) == 5 and str(res.get("detail", "")).startswith(want_detail)
+            else:
+                ok = ok and res.get("failed_stage") == want_stage
+            verdict = "PASS" if ok else "FAIL"
+            print(f"{verdict} speedtest g{gid} {json.dumps(res, ensure_ascii=False)}")
+            if not ok:
+                failures.append(f"speedtest g{gid}")
+
         for r, servers, expect_relayed in UDP_CASES:
             socks.take_udp()
             res = subprocess.run([str(udp_probes[r["id"]]), str(udp_script), *servers],
@@ -383,7 +420,7 @@ def main() -> int:
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
-    total = sum(len(c[1]) for c in CASES) + len(UDP_CASES)
+    total = sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(SPEED_CASES)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 

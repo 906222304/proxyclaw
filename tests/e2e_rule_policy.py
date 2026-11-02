@@ -24,6 +24,7 @@ import json
 import os
 import pathlib
 import secrets
+import select
 import shutil
 import socket
 import struct
@@ -107,42 +108,47 @@ class Socks5Server:
             conn.close()
 
     def _udp_associate(self, conn: socket.socket) -> None:
-        """RFC 1928 UDP ASSOCIATE: relay datagrams while the TCP control lives."""
+        """RFC 1928 UDP ASSOCIATE: relay datagrams while the TCP control lives.
+
+        `relay` faces proxyclaw on loopback; `out` faces the internet (a
+        loopback-bound socket cannot send to a public address)."""
         relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         relay.bind(("127.0.0.1", 0))
-        relay.settimeout(0.2)
+        out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        out.bind(("0.0.0.0", 0))
         bnd_port = relay.getsockname()[1]
         conn.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("127.0.0.1") + struct.pack("!H", bnd_port))
         client = None
-        conn.settimeout(0.2)
         try:
             while True:
-                try:
-                    if conn.recv(1) == b"":
-                        return  # control closed
-                except socket.timeout:
-                    pass
-                while True:
+                readable, _, _ = select.select([conn, relay, out], [], [], 0.5)
+                for sock in readable:
                     try:
-                        data, src = relay.recvfrom(65535)
-                    except socket.timeout:
-                        break
-                    if src[0] == "127.0.0.1" and len(data) >= 10 and data[:3] == b"\x00\x00\x00":
-                        if data[3] != 1:
-                            continue
-                        client = src
-                        host = socket.inet_ntoa(data[4:8])
-                        port = struct.unpack("!H", data[8:10])[0]
-                        with self.lock:
-                            self.seen_udp.append((host, port))
-                        relay.sendto(data[10:], (host, port))
-                    elif client is not None:
-                        header = b"\x00\x00\x00\x01" + socket.inet_aton(src[0]) + struct.pack("!H", src[1])
-                        relay.sendto(header + data, client)
-        except OSError:
-            pass
+                        if sock is conn:
+                            if conn.recv(1) == b"":
+                                return  # control closed
+                        elif sock is relay:
+                            data, src = relay.recvfrom(65535)
+                            if len(data) < 10 or data[:3] != b"\x00\x00\x00" or data[3] != 1:
+                                continue
+                            client = src
+                            host = socket.inet_ntoa(data[4:8])
+                            port = struct.unpack("!H", data[8:10])[0]
+                            with self.lock:
+                                self.seen_udp.append((host, port))
+                            out.sendto(data[10:], (host, port))
+                        else:
+                            data, src = out.recvfrom(65535)
+                            if client is not None:
+                                header = b"\x00\x00\x00\x01" + socket.inet_aton(src[0]) + struct.pack("!H", src[1])
+                                relay.sendto(header + data, client)
+                    except ConnectionResetError:
+                        continue  # ICMP unreachable reported on a UDP socket
+        except OSError as e:
+            print(f"socks5 udp associate ended: {e!r}", file=sys.stderr)
         finally:
             relay.close()
+            out.close()
 
     def take_udp(self) -> list[tuple[str, int]]:
         with self.lock:

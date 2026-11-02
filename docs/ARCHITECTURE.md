@@ -389,7 +389,7 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 - `UdpSessionTable` (keyed by app port) now holds app-side metadata only for injection (app address, interface, pid, group) plus the most recent destination for the connection list and the DNS 10 s idle rule. Peer sets are dropped by the relay's 30 s cleanup once the route expires.
 - Response routing stays per app port — no cross-process bleed
 - `UdpTrackerEntry` is `{group_id, pid, policy_id}` — trivially copyable, `policy_id` indexes the published `PolicyTable`
-- Dst excludes: a `connect()`ed socket has one fixed destination, so the exclude is decided once on the strand at CONNECT (excluded → no tracker entry, direct). A bind-then-`sendto` socket (e.g. a DNS client) hits many destinations, so its packets are evaluated per-packet in the NETWORK worker via a `PolicyReader` (one generation compare per packet).
+- Dst excludes are evaluated per packet in the NETWORK worker via a `PolicyReader` (one generation compare per packet), for connected and unconnected sockets alike. WFP raises a SOCKET CONNECT event for each new remote an unconnected socket `sendto()`s, not only for `connect()`, so the SOCKET layer cannot tell a socket's only destination from one of many; before v0.10.3 it cleared the tracker slot on an excluded CONNECT, which also sent the socket's other destinations direct.
 - The SOCKS5 UDP data socket binds the wildcard address (to reach a remote relay), so downstream drops any datagram whose sender is not the relay endpoint.
 - See `src/udp/` for all UDP-specific files
 

@@ -28,6 +28,9 @@
 - A slow proxy handshake for one socket no longer stalls every other UDP
   socket; the relay queues per socket with fixed limits and drops (and counts)
   the excess. The relay no longer binds local UDP port 19999.
+- Fix: a UDP socket that sent to one excluded destination (e.g. a LAN
+  resolver) stopped proxying all of its other destinations too. Excludes are
+  now decided per packet only.
 
 ### Tests
 

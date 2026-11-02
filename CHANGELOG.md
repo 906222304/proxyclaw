@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.3 (unreleased)
+
+### Rules
+
+- One destination verdict for TCP, UDP and the UI. `include_cidrs`,
+  `include_ports` and `exclude_ports` in a rule's `dst_filter` now take effect
+  on the data path; before, only `exclude_cidrs` did, so "proxy ports" in the
+  rule editor changed the UI label but not the traffic.
+- TCP honours the rule's `protocol`: a UDP-only rule no longer proxies the
+  process's TCP connections.
+- The connection list reports what the data path decided, including global
+  excludes for manual hijacks, and returns a `route_reason`; the UI shows it on
+  hover over "Ignored".
+- The rule editor exposes all four filter fields. Saving a rule no longer wipes
+  `include_cidrs` / `exclude_ports` set in the config file.
+
+### Tests
+
+- New `route_policy_tests` under CTest.
+
 ## v0.10.2 (unreleased)
 
 Engineering and security cleanup. No change to traffic forwarding.

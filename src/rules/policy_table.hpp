@@ -1,6 +1,6 @@
 #pragma once
 
-// PolicyTable: destination-IP exclude policy, published once globally instead
+// PolicyTable: destination exclude/include policy, published once globally instead
 // of being snapshotted into every tracker slot.
 //
 // Why: a policy's content depends only on (global config, matched rule). It has
@@ -35,11 +35,12 @@ struct PolicyTable {
     std::vector<IpExcludePolicy> rows;  // rows[0] always exists
 
     [[nodiscard]] IpExcludeReason evaluate(uint32_t policy_id,
-                                           uint32_t host_order_ip) const noexcept {
+                                           uint32_t host_order_ip,
+                                           uint16_t host_order_port) const noexcept {
         if (rows.empty()) return IpExcludeReason::none;
         const auto& row = (policy_id < rows.size()) ? rows[policy_id]
                                                     : rows[GLOBAL_ONLY_POLICY];
-        return row.evaluate(host_order_ip);
+        return row.evaluate(host_order_ip, host_order_port);
     }
 };
 
@@ -85,9 +86,10 @@ public:
         refresh();
     }
 
-    [[nodiscard]] IpExcludeReason evaluate(uint32_t policy_id, uint32_t host_order_ip) {
+    [[nodiscard]] IpExcludeReason evaluate(uint32_t policy_id, uint32_t host_order_ip,
+                                           uint16_t host_order_port) {
         if (publisher_.generation() != seen_generation_) refresh();
-        return table_->evaluate(policy_id, host_order_ip);
+        return table_->evaluate(policy_id, host_order_ip, host_order_port);
     }
 
 private:

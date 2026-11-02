@@ -264,6 +264,10 @@ if(BUILD_TESTING AND WIN32)
     endfunction()
 
     proxyclaw_unit_test(api_auth_tests SOURCES tests/test_api_auth.cpp)
+    proxyclaw_unit_test(route_policy_tests
+        SOURCES tests/test_route_policy.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes
+        LIBS nlohmann_json::nlohmann_json ws2_32)
     proxyclaw_unit_test(dns_wire_tests
         SOURCES tests/test_dns_wire.cpp
         FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)

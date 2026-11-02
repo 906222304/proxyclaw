@@ -149,14 +149,14 @@ private:
             const auto& te = *tracked;
 
             const uint32_t dest_ip = ntohl(ip->DstAddr);
-            const auto exclude_reason = policies.evaluate(te.policy_id, dest_ip);
+            const uint16_t dest_port = ntohs(udp->DstPort);
+            const auto exclude_reason = policies.evaluate(te.policy_id, dest_ip, dest_port);
             if (exclude_reason != IpExcludeReason::none) {
                 WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, &addr);
                 pass_count_.fetch_add(1, std::memory_order_relaxed);
                 PC_LOG_DEBUG("[WD-NET-UDP] Direct PID={} port={} -> {}:{} reason={}",
                              te.pid, src_port,
-                             CidrRange::uint_to_ip(dest_ip),
-                             ntohs(udp->DstPort),
+                             CidrRange::uint_to_ip(dest_ip), dest_port,
                              ip_exclude_reason_name(exclude_reason));
                 continue;
             }

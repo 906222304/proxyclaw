@@ -329,6 +329,25 @@ Counters (`GET /api/stats` → `tcp_syn_parking`, and a `[SYN-PARK]` INFO line e
 2. **Auto rule** (process name / cmdline match, config order) — sets `group_id`
 3. **Default**: DIRECT (`group_id = 0`, no flags)
 
+### Destination policy (v0.10.3)
+
+One verdict, `rule_engine_v3::route_reason()` / `evaluate_destination()` in
+`rules/traffic_filter.hpp`, is shared by the TCP SOCKET layer, the UDP SOCKET
+layer (connected sockets), the UDP NETWORK layer (per packet, through the
+published `PolicyTable`) and the connection list API. Order:
+
+1. `rule.protocol` must cover the transport (auto rules only)
+2. `default_exclude_cidrs` (global)
+3. `dst_filter.exclude_cidrs`, then `dst_filter.exclude_ports`
+4. `dst_filter.include_cidrs` (when non-empty, must match)
+5. `dst_filter.include_ports` (when non-empty, must match)
+
+Manual hijacks skip 1 and 3–5. `/api/connections/*` returns the verdict as
+`proxy_status` plus `route_reason` (`none`, `global_exclude`, `rule_exclude`,
+`rule_exclude_port`, `rule_include_cidr_miss`, `rule_include_port_miss`,
+`rule_protocol`). Before v0.10.3 only the CIDR excludes reached the data path,
+TCP ignored `protocol`, and the UI evaluated the full filter on its own.
+
 ### Auto rule matching
 
 - **`process_name`**: glob match (`*` any sequence, `?` single char, case-insensitive). Examples: `python.exe`, `curl*`

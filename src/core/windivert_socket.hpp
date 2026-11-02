@@ -348,7 +348,9 @@ private:
         }
 
         const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
-        const auto exclude_reason = rules_.ip_exclude_reason(tree_, pid, dest_ip);
+        const auto dest_port = static_cast<uint16_t>(addr.Socket.RemotePort);
+        const auto exclude_reason =
+            rules_.route_reason(tree_, pid, /*is_udp=*/false, dest_ip, dest_port);
         if (exclude_reason != IpExcludeReason::none) {
             why = ip_exclude_reason_name(exclude_reason);
             return slot_state::direct;

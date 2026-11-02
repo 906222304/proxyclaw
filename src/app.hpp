@@ -100,7 +100,6 @@ private:
     [[nodiscard]] nlohmann::json                   traffic_stats() const;
 
     static constexpr int      API_PORT       = 18080;
-    static constexpr uint16_t UDP_RELAY_PORT = 19999;
 
     // ---- Members in declaration / construction order ----
 

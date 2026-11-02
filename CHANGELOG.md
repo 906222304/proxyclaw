@@ -16,9 +16,28 @@
 - The rule editor exposes all four filter fields. Saving a rule no longer wipes
   `include_cidrs` / `exclude_ports` set in the config file.
 
+### UDP
+
+- Per-packet addressing. A proxied datagram now travels to the relay with its
+  own destination instead of a per-socket entry that every packet overwrote, so
+  a socket that sends to several peers (DNS to two resolvers, STUN/WebRTC,
+  games, QUIC) no longer has datagrams sent to the wrong peer.
+- Replies are injected with the real responder's address from the SOCKS5
+  header (before: the last destination), and only from peers the socket sent
+  to.
+- A slow proxy handshake for one socket no longer stalls every other UDP
+  socket; the relay queues per socket with fixed limits and drops (and counts)
+  the excess. The relay no longer binds local UDP port 19999.
+- Fix: a UDP socket that sent to one excluded destination (e.g. a LAN
+  resolver) stopped proxying all of its other destinations too. Excludes are
+  now decided per packet only.
+
 ### Tests
 
-- New `route_policy_tests` under CTest.
+- New `route_policy_tests` and `udp_flow_tests` under CTest.
+- `tests/e2e_rule_policy.py` runs in CI on the elevated Windows runner with the
+  real WinDivert driver: rule filters over TCP, and UDP from one socket to two
+  destinations through a SOCKS5 UDP relay.
 
 ## v0.10.2 (unreleased)
 

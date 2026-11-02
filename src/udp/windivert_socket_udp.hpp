@@ -211,19 +211,21 @@ private:
         const auto& entry = tree_.at(idx);
 
         if (is_connect) {
-            // A connected socket has one fixed destination, so the exclude
-            // decision can be made once here instead of on every packet. When
-            // it is excluded the slot goes away and the traffic never enters
-            // the reflect/relay path at all.
+            // WFP raises a CONNECT event for an explicit connect() AND for each
+            // new remote an unconnected socket sendto()s, so a CONNECT names
+            // one destination, not the socket's only one. Clearing the slot on
+            // an excluded destination would also stop proxying every other
+            // destination of that socket (seen in CI: DNS to 1.1.1.1 went
+            // direct after the same socket sent to an excluded 8.8.8.8).
+            // The NETWORK workers already evaluate excludes per packet, so
+            // only log here.
             const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
             const auto dest_port = static_cast<uint16_t>(addr.Socket.RemotePort);
             const auto reason = rules_.ip_exclude_reason(tree_, pid, dest_ip, dest_port);
             if (reason != IpExcludeReason::none) {
-                tracker_.clear(src_port);
-                PC_LOG_DEBUG("[WD-SOCKET-UDP] Direct PID={} port={} -> {}:{} reason={}",
+                PC_LOG_DEBUG("[WD-SOCKET-UDP] Direct PID={} port={} -> {}:{} reason={} (per packet)",
                               pid, src_port, CidrRange::uint_to_ip(dest_ip), dest_port,
                               ip_exclude_reason_name(reason));
-                return;
             }
             // BIND already published this slot and CONNECT carries nothing new
             // to store. Writing it again would overwrite an entry the NETWORK

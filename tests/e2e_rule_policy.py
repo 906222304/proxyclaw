@@ -6,8 +6,12 @@ private copy of System32 curl.exe under a unique name, so exactly one rule
 matches it, and checks whether the connection went through the SOCKS5 server
 (proxied) or not (direct). Both paths must still complete the request.
 
-Destinations are public anycast addresses (1.1.1.1 / 1.0.0.1), so the runner
-needs outbound internet. No other proxy or service is needed.
+UDP cases send DNS queries from one socket to two resolvers (1.1.1.1 and
+8.8.8.8) through the SOCKS5 server's UDP ASSOCIATE relay and check each reply
+comes back from the resolver it was sent to (per-packet addressing).
+
+Destinations are public anycast addresses (1.1.1.1 / 1.0.0.1 / 8.8.8.8), so
+the runner needs outbound internet. No other proxy or service is needed.
 
 Usage (elevated):
     python tests/e2e_rule_policy.py --exe build/Release/proxyclaw.exe
@@ -20,6 +24,7 @@ import json
 import os
 import pathlib
 import secrets
+import select
 import shutil
 import socket
 import struct
@@ -40,6 +45,7 @@ class Socks5Server:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.seen: list[tuple[str, int]] = []
+        self.seen_udp: list[tuple[str, int]] = []
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(64)
@@ -87,6 +93,9 @@ class Socks5Server:
             port = struct.unpack("!H", self._exact(conn, 2))[0]
             with self.lock:
                 self.seen.append((host, port))
+            if cmd == 3:
+                self._udp_associate(conn)
+                return
             if cmd != 1:
                 conn.sendall(b"\x05\x07\x00\x01" + b"\x00" * 6)
                 return
@@ -97,6 +106,54 @@ class Socks5Server:
             pass
         finally:
             conn.close()
+
+    def _udp_associate(self, conn: socket.socket) -> None:
+        """RFC 1928 UDP ASSOCIATE: relay datagrams while the TCP control lives.
+
+        `relay` faces proxyclaw on loopback; `out` faces the internet (a
+        loopback-bound socket cannot send to a public address)."""
+        relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        relay.bind(("127.0.0.1", 0))
+        out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        out.bind(("0.0.0.0", 0))
+        bnd_port = relay.getsockname()[1]
+        conn.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("127.0.0.1") + struct.pack("!H", bnd_port))
+        client = None
+        try:
+            while True:
+                readable, _, _ = select.select([conn, relay, out], [], [], 0.5)
+                for sock in readable:
+                    try:
+                        if sock is conn:
+                            if conn.recv(1) == b"":
+                                return  # control closed
+                        elif sock is relay:
+                            data, src = relay.recvfrom(65535)
+                            if len(data) < 10 or data[:3] != b"\x00\x00\x00" or data[3] != 1:
+                                continue
+                            client = src
+                            host = socket.inet_ntoa(data[4:8])
+                            port = struct.unpack("!H", data[8:10])[0]
+                            with self.lock:
+                                self.seen_udp.append((host, port))
+                            out.sendto(data[10:], (host, port))
+                        else:
+                            data, src = out.recvfrom(65535)
+                            if client is not None:
+                                header = b"\x00\x00\x00\x01" + socket.inet_aton(src[0]) + struct.pack("!H", src[1])
+                                relay.sendto(header + data, client)
+                    except ConnectionResetError:
+                        continue  # ICMP unreachable reported on a UDP socket
+        except OSError as e:
+            print(f"socks5 udp associate ended: {e!r}", file=sys.stderr)
+        finally:
+            relay.close()
+            out.close()
+
+    def take_udp(self) -> list[tuple[str, int]]:
+        with self.lock:
+            out, self.seen_udp = self.seen_udp, []
+        return out
 
     @staticmethod
     def _pump(a: socket.socket, b: socket.socket) -> None:
@@ -153,6 +210,61 @@ CASES = [
 ]
 
 
+# UDP cases: a copy of python.exe (named so one rule matches it) runs
+# UDP_PROBE, which sends DNS queries to two resolvers from ONE socket and
+# checks every reply comes back from the resolver it asked, with its id.
+# (rule, resolvers, expected resolvers seen at the SOCKS5 UDP relay)
+UDP_CASES = [
+    (rule("udp2dst", "udp"), ["1.1.1.1", "8.8.8.8"], {"1.1.1.1", "8.8.8.8"}),
+    (rule("udpexc", "udp", exclude_cidrs=["8.8.8.0/24"]), ["1.1.1.1", "8.8.8.8"], {"1.1.1.1"}),
+    (rule("udpport", "udp", include_ports=["5353"]), ["1.1.1.1"], set()),
+]
+
+UDP_PROBE = r"""
+import random, socket, struct, sys, time
+servers = sys.argv[1:]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(1.0)
+# Bind explicitly and give the SOCKET layer's BIND event time to publish the
+# tracker slot: UDP has no SYN parking, so a datagram sent within the first
+# ~1 ms of a socket's life can still leave direct (known gap, see roadmap).
+s.bind(("0.0.0.0", 0))
+time.sleep(0.5)
+def query(txid, name):
+    q = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
+    for part in name.split("."):
+        q += bytes([len(part)]) + part.encode()
+    return q + b"\0" + struct.pack("!HH", 1, 1)
+want = {}
+for attempt in range(3):
+    for i, srv in enumerate(servers):
+        if srv in want.values() and attempt == 0:
+            continue
+        txid = random.randint(1, 65535)
+        want[txid] = srv
+        s.sendto(query(txid, "example.com"), (srv, 53))   # back to back, same socket
+    got = {}
+    deadline = time.time() + 3
+    while time.time() < deadline and len(got) < len(servers):
+        try:
+            data, src = s.recvfrom(4096)
+        except socket.timeout:
+            continue
+        txid = struct.unpack("!H", data[:2])[0]
+        if txid not in want:
+            continue
+        if src[0] != want[txid] or src[1] != 53:
+            print(f"WRONG-SOURCE txid={txid} asked={want[txid]} got={src[0]}:{src[1]}")
+            sys.exit(3)
+        got[src[0]] = txid
+    if len(got) == len(servers):
+        print("OK " + " ".join(sorted(got)))
+        sys.exit(0)
+print("TIMEOUT got=" + ",".join(sorted(got)))
+sys.exit(4)
+"""
+
+
 def api_get(path: str, token: str) -> object:
     req = urllib.request.Request(API + path, headers={"X-ProxyClaw-Token": token})
     with urllib.request.urlopen(req, timeout=3) as resp:
@@ -180,7 +292,7 @@ def main() -> int:
         "proxy_groups": [{"id": 0, "name": "default", "host": "127.0.0.1",
                           "port": socks.port, "type": "socks5"}],
         "next_group_id": 1,
-        "auto_rules": [c[0] for c in CASES],
+        "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES],
         "log_level": "debug",
         "dns": {"enabled": False},
     }
@@ -193,6 +305,17 @@ def main() -> int:
         shutil.copy2(SYSTEM_CURL, dst)
         probes[r["id"]] = dst
 
+    # python.exe finds its DLL next to itself, so the renamed copy lives in
+    # the interpreter's own directory.
+    py_dir = pathlib.Path(sys.executable).resolve().parent
+    udp_script = work / "udp_probe.py"
+    udp_script.write_text(UDP_PROBE, encoding="utf-8")
+    udp_probes = {}
+    for r, _, _ in UDP_CASES:
+        dst = py_dir / r["process_name"]
+        shutil.copy2(sys.executable, dst)
+        udp_probes[r["id"]] = dst
+
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
     proc = subprocess.Popen([str(exe), "--minimized", "--config", str(cfg_path)],
                             cwd=exe.parent, env=env)
@@ -204,7 +327,7 @@ def main() -> int:
                 raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
             try:
                 rules = api_get("/auto-rules", token)
-                if len(rules) >= len(CASES):
+                if len(rules) >= len(CASES) + len(UDP_CASES):
                     break
             except Exception:
                 pass
@@ -231,6 +354,18 @@ def main() -> int:
                       f" got={'proxy' if proxied else 'direct'} curl_rc={res.returncode} http={res.stdout}")
                 if not ok:
                     failures.append(f"{r['id']} {url}")
+        for r, servers, expect_relayed in UDP_CASES:
+            socks.take_udp()
+            res = subprocess.run([str(udp_probes[r["id"]]), str(udp_script), *servers],
+                                 capture_output=True, text=True, timeout=30)
+            time.sleep(0.3)
+            relayed = {host for host, port in socks.take_udp() if port == 53}
+            ok = res.returncode == 0 and relayed == expect_relayed
+            verdict = "PASS" if ok else "FAIL"
+            print(f"{verdict} {r['id']:<12} udp {','.join(servers):<17} expect_relayed={sorted(expect_relayed)}"
+                  f" got_relayed={sorted(relayed)} probe_rc={res.returncode} {res.stdout.strip()} {res.stderr.strip()[-200:]}")
+            if not ok:
+                failures.append(f"{r['id']} udp")
     finally:
         proc.terminate()
         try:
@@ -241,12 +376,14 @@ def main() -> int:
         if failures and log.exists():
             print("---- proxyclaw.log (WD-SOCKET / RULE lines, last 80) ----")
             lines = [l for l in log.read_text(encoding="utf-8", errors="replace").splitlines()
-                     if "WD-SOCKET" in l or "[RULE]" in l or "[E]" in l]
+                     if "WD-SOCKET" in l or "[RULE]" in l or "[E]" in l or "UDP" in l]
             print("\n".join(lines[-80:]))
+        for path in udp_probes.values():
+            path.unlink(missing_ok=True)
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
-    total = sum(len(c[1]) for c in CASES)
+    total = sum(len(c[1]) for c in CASES) + len(UDP_CASES)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 

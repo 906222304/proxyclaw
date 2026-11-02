@@ -115,7 +115,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_,
                                                               resolve_unknown_pid);
-    wd_network_udp_ = std::make_unique<windivert_network_udp>(*udp_port_tracker_, UDP_RELAY_PORT,
+    wd_network_udp_ = std::make_unique<windivert_network_udp>(*udp_port_tracker_,
                                                                udp_session_table_, policy_pub_);
 
     icons_.init();
@@ -379,15 +379,16 @@ void app::start_traffic_layers() {
     }
 
     if (wd_network_udp_->open()) {
+        // Relay first, so the workers never see proxied datagrams without a
+        // receiver.
+        udp_relay_ = std::make_unique<UdpRelay>(
+            ioc_, udp_session_table_, socks5_udp_mgr_, wd_network_udp_->handle());
+        if (udp_relay_->start()) {
+            wd_network_udp_->set_sink(udp_relay_.get());
+            PC_LOG_INFO("UDP Relay started");
+        }
         wd_network_udp_->start(2);
         PC_LOG_INFO("WinDivert UDP NETWORK layer started");
-
-        udp_relay_ = std::make_unique<UdpRelay>(
-            ioc_, udp_session_table_, socks5_udp_mgr_,
-            wd_network_udp_->handle(), UDP_RELAY_PORT);
-        if (udp_relay_->start()) {
-            PC_LOG_INFO("UDP Relay started on port {}", UDP_RELAY_PORT);
-        }
     }
 }
 
@@ -409,6 +410,7 @@ void app::shutdown() noexcept {
     dns_mgr_.stop();
 
     socks5_udp_mgr_.stop();
+    if (wd_network_udp_) wd_network_udp_->set_sink(nullptr);
     if (udp_relay_)      udp_relay_->stop();
     if (wd_network_udp_) wd_network_udp_->close();
     if (wd_socket_udp_)  wd_socket_udp_->close();

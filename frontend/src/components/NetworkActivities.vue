@@ -66,6 +66,14 @@ const connectionStates: Record<string, string> = {
   CLOSED: '已关闭', DELETE_TCB: '已删除', UNKNOWN: '未知',
 }
 const proxyStates: Record<string, string> = { PROXIED: '已代理', IGNORED: '已忽略', DIRECT: '直连' }
+const routeReasons: Record<string, string> = {
+  global_exclude: '命中全局排除网段',
+  rule_exclude: '命中规则的直连网段',
+  rule_exclude_port: '命中规则的直连端口',
+  rule_include_cidr_miss: '不在规则的仅代理网段内',
+  rule_include_port_miss: '不在规则的代理端口内',
+  rule_protocol: '规则未启用该协议',
+}
 const gridLocale = {
   noRowsToShow: '暂无连接', loadingOoo: '正在加载…',
   sortAscending: '升序', sortDescending: '降序', sortUnSort: '取消排序',
@@ -146,6 +154,8 @@ const columnDefs = computed<ColDef<NetworkConnection>[]>(() => {
       field: 'proxy_status',
       width: 100,
       valueFormatter: params => proxyStates[params.value] ?? params.value,
+      tooltipValueGetter: (params: { data?: { route_reason?: string } }) =>
+        routeReasons[params.data?.route_reason ?? ''] ?? undefined,
       cellRenderer: (params: { value: string }) => {
         const value = params.value
         if (value === 'PROXIED') {

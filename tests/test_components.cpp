@@ -992,18 +992,18 @@ TEST(filter_exclude_port) {
 TEST(ip_exclude_policy_global_precedes_rule) {
     IpExcludePolicy policy;
     policy.global_cidrs = {CidrRange::parse("192.0.2.0/24")};
-    policy.rule_cidrs = {CidrRange::parse("192.0.2.0/25")};
-    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("192.0.2.13")),
+    policy.rule.exclude_cidrs = {CidrRange::parse("192.0.2.0/25")};
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("192.0.2.13"), 443),
               IpExcludeReason::global);
-    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("198.51.100.1")),
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("198.51.100.1"), 443),
               IpExcludeReason::none);
 }
 
 TEST(ip_exclude_policy_empty_excludes_nothing) {
     IpExcludePolicy policy;
-    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("192.0.2.1")),
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("192.0.2.1"), 443),
               IpExcludeReason::none);
-    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("203.0.113.1")),
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("203.0.113.1"), 443),
               IpExcludeReason::none);
 }
 
@@ -1023,8 +1023,8 @@ TEST(rule_engine_process_ip_exclude_is_scoped) {
     engine.apply_auto_rules(tree);
 
     auto ip = CidrRange::ip_to_uint("198.51.100.13");
-    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, ip), IpExcludeReason::rule);
-    ASSERT_EQ(engine.ip_exclude_reason(tree, 200, ip), IpExcludeReason::none);
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, ip, 443), IpExcludeReason::rule);
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 200, ip, 443), IpExcludeReason::none);
 }
 
 TEST(rule_engine_global_exclude_covers_manual_hijack) {
@@ -1037,9 +1037,9 @@ TEST(rule_engine_global_exclude_covers_manual_hijack) {
     engine.set_default_exclude_cidrs({"192.0.2.0/24"});
     engine.manual_hijack(tree, 100, 0);
 
-    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, CidrRange::ip_to_uint("192.0.2.3")),
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, CidrRange::ip_to_uint("192.0.2.3"), 443),
               IpExcludeReason::global);
-    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, CidrRange::ip_to_uint("198.51.100.3")),
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, CidrRange::ip_to_uint("198.51.100.3"), 443),
               IpExcludeReason::none);
 }
 
@@ -1056,7 +1056,7 @@ TEST(rule_engine_hack_tree_inherits_ip_exclude) {
     engine.set_auto_rules({edge});
     engine.apply_auto_rules(tree);
 
-    ASSERT_EQ(engine.ip_exclude_reason(tree, 101, CidrRange::ip_to_uint("203.0.113.2")),
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 101, CidrRange::ip_to_uint("203.0.113.2"), 443),
               IpExcludeReason::rule);
 }
 
@@ -1090,24 +1090,24 @@ TEST(policy_table_row_lookup_and_fallback) {
     table.rows.resize(3);
     table.rows[GLOBAL_ONLY_POLICY].global_cidrs = {CidrRange::parse("192.0.2.0/24")};
     table.rows[2].global_cidrs = {CidrRange::parse("192.0.2.0/24")};
-    table.rows[2].rule_cidrs   = {CidrRange::parse("198.51.100.0/24")};
+    table.rows[2].rule.exclude_cidrs = {CidrRange::parse("198.51.100.0/24")};
 
     const auto in_global = CidrRange::ip_to_uint("192.0.2.4");
     const auto in_rule   = CidrRange::ip_to_uint("198.51.100.4");
     const auto elsewhere = CidrRange::ip_to_uint("203.0.113.4");
 
-    ASSERT_EQ(table.evaluate(2, in_global), IpExcludeReason::global);
-    ASSERT_EQ(table.evaluate(2, in_rule), IpExcludeReason::rule);
-    ASSERT_EQ(table.evaluate(2, elsewhere), IpExcludeReason::none);
+    ASSERT_EQ(table.evaluate(2, in_global, 443), IpExcludeReason::global);
+    ASSERT_EQ(table.evaluate(2, in_rule, 443), IpExcludeReason::rule);
+    ASSERT_EQ(table.evaluate(2, elsewhere, 443), IpExcludeReason::none);
 
     // Row 0 carries global excludes only.
-    ASSERT_EQ(table.evaluate(GLOBAL_ONLY_POLICY, in_rule), IpExcludeReason::none);
-    ASSERT_EQ(table.evaluate(GLOBAL_ONLY_POLICY, in_global), IpExcludeReason::global);
+    ASSERT_EQ(table.evaluate(GLOBAL_ONLY_POLICY, in_rule, 443), IpExcludeReason::none);
+    ASSERT_EQ(table.evaluate(GLOBAL_ONLY_POLICY, in_global, 443), IpExcludeReason::global);
 
     // A slot left over from a deleted rule falls back to row 0, never to some
     // other rule's excludes.
-    ASSERT_EQ(table.evaluate(99, in_rule), IpExcludeReason::none);
-    ASSERT_EQ(table.evaluate(99, in_global), IpExcludeReason::global);
+    ASSERT_EQ(table.evaluate(99, in_rule, 443), IpExcludeReason::none);
+    ASSERT_EQ(table.evaluate(99, in_global, 443), IpExcludeReason::global);
 }
 
 TEST(policy_reader_picks_up_published_table) {
@@ -1115,20 +1115,20 @@ TEST(policy_reader_picks_up_published_table) {
     PolicyReader reader(publisher);
 
     const auto ip = CidrRange::ip_to_uint("192.0.2.4");
-    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip), IpExcludeReason::none);
+    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip, 443), IpExcludeReason::none);
 
     auto table = std::make_shared<PolicyTable>();
     table->rows.resize(1);
     table->rows[GLOBAL_ONLY_POLICY].global_cidrs = {CidrRange::parse("192.0.2.0/24")};
     publisher.publish(table);
 
-    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip), IpExcludeReason::global);
+    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip, 443), IpExcludeReason::global);
 
     // Republishing an empty policy is picked up as well.
     auto cleared = std::make_shared<PolicyTable>();
     cleared->rows.resize(1);
     publisher.publish(cleared);
-    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip), IpExcludeReason::none);
+    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip, 443), IpExcludeReason::none);
 }
 
 TEST(policy_id_survives_rule_add_and_remove) {
@@ -1154,14 +1154,14 @@ TEST(policy_id_survives_rule_add_and_remove) {
 
     // The published table must still carry edge's excludes under that id.
     auto table = engine.build_policy_table();
-    ASSERT_EQ(table->evaluate(id_before, CidrRange::ip_to_uint("198.51.100.7")),
+    ASSERT_EQ(table->evaluate(id_before, CidrRange::ip_to_uint("198.51.100.7"), 443),
               IpExcludeReason::rule);
 
     // Drop the rule: the row degrades to global-only rather than aliasing.
     engine.set_auto_rules({other});
     engine.apply_auto_rules(tree);
     auto after = engine.build_policy_table();
-    ASSERT_EQ(after->evaluate(id_before, CidrRange::ip_to_uint("198.51.100.7")),
+    ASSERT_EQ(after->evaluate(id_before, CidrRange::ip_to_uint("198.51.100.7"), 443),
               IpExcludeReason::none);
 }
 
@@ -1177,7 +1177,7 @@ TEST(policy_table_manual_hijack_gets_global_row) {
 
     ASSERT_EQ(engine.policy_id_for(tree, 100), GLOBAL_ONLY_POLICY);
     auto table = engine.build_policy_table();
-    ASSERT_EQ(table->evaluate(GLOBAL_ONLY_POLICY, CidrRange::ip_to_uint("192.0.2.9")),
+    ASSERT_EQ(table->evaluate(GLOBAL_ONLY_POLICY, CidrRange::ip_to_uint("192.0.2.9"), 443),
               IpExcludeReason::global);
 }
 

@@ -149,6 +149,9 @@ Rules tab → `Add Rule`. **New rules default to OFF; flip the toggle to activat
 | Hack tree | Always on: child processes are proxied too |
 | Protocol | TCP / UDP / Both |
 | Proxy group | Which proxy group to route through |
+| Advanced (optional) | Direct CIDRs, direct ports, proxy-only CIDRs, proxy ports |
+
+Destination checks run in this order: global exclude CIDRs → direct CIDRs → direct ports → proxy-only CIDRs → proxy ports. TCP and UDP share the same checks, and the Proxy status column in Network activity uses them too; hover an "Ignored" badge to see why.
 
 <img src="docs/images/rules.png" alt="Rules" width="80%" />
 

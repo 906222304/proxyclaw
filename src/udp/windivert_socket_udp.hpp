@@ -216,12 +216,12 @@ private:
             // it is excluded the slot goes away and the traffic never enters
             // the reflect/relay path at all.
             const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
-            const auto reason = rules_.ip_exclude_reason(tree_, pid, dest_ip);
+            const auto dest_port = static_cast<uint16_t>(addr.Socket.RemotePort);
+            const auto reason = rules_.ip_exclude_reason(tree_, pid, dest_ip, dest_port);
             if (reason != IpExcludeReason::none) {
                 tracker_.clear(src_port);
                 PC_LOG_DEBUG("[WD-SOCKET-UDP] Direct PID={} port={} -> {}:{} reason={}",
-                              pid, src_port, CidrRange::uint_to_ip(dest_ip),
-                              static_cast<uint16_t>(addr.Socket.RemotePort),
+                              pid, src_port, CidrRange::uint_to_ip(dest_ip), dest_port,
                               ip_exclude_reason_name(reason));
                 return;
             }

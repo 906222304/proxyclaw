@@ -345,27 +345,28 @@ public:
         }
     }
 
-    // Capture the destination-IP exclusion policy for a proxied process.
-    // Manual hijacks receive global excludes only. Auto rules use the same
-    // first-match ordering as get_match_info().
-    [[nodiscard]] IpExcludePolicy ip_exclude_policy(const flat_tree& tree, DWORD pid) const {
-        IpExcludePolicy policy;
-        policy.global_cidrs = default_exclude_cidrs_;
-
+    // The rule filter that applies to a proxied pid, or null when only the
+    // global excludes apply (manual hijack, unknown pid, no matching rule).
+    // Same first-match ordering as get_match_info().
+    [[nodiscard]] const TrafficFilter* rule_filter_for(const flat_tree& tree, DWORD pid) const {
         uint32_t idx = tree.find_by_pid(pid);
-        if (idx == INVALID_IDX) return policy;
+        if (idx == INVALID_IDX) return nullptr;
         const auto& entry = tree.at(idx);
         if (!entry.alive || !entry.is_proxied() ||
             entry.has_flag(entry_flags::MANUAL_HIJACK)) {
-            return policy;
+            return nullptr;
         }
-
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.contains(pid)) {
-                policy.rule_cidrs = rule.dst_filter.exclude_cidrs;
-                break;
-            }
+            if (rule.matched_pids.contains(pid)) return &rule.dst_filter;
         }
+        return nullptr;
+    }
+
+    // Capture the destination policy for a proxied process.
+    [[nodiscard]] IpExcludePolicy ip_exclude_policy(const flat_tree& tree, DWORD pid) const {
+        IpExcludePolicy policy;
+        policy.global_cidrs = default_exclude_cidrs_;
+        if (const auto* filter = rule_filter_for(tree, pid)) policy.rule = *filter;
         return policy;
     }
 
@@ -401,34 +402,51 @@ public:
         for (const auto& rule : auto_rules_) {
             auto it = policy_ids_.find(rule.id);
             if (it == policy_ids_.end()) continue;
-            table->rows[it->second].rule_cidrs = rule.dst_filter.exclude_cidrs;
+            table->rows[it->second].rule = rule.dst_filter;
         }
         return table;
     }
 
+    // Destination verdict for a proxied pid: global excludes, then the
+    // matched rule's dst_filter (exclude CIDR/port, include CIDR/port).
     [[nodiscard]] IpExcludeReason ip_exclude_reason(const flat_tree& tree,
                                                      DWORD pid,
-                                                     uint32_t dest_ip) const {
-        for (const auto& cidr : default_exclude_cidrs_) {
-            if (cidr.matches(dest_ip)) return IpExcludeReason::global;
-        }
+                                                     uint32_t dest_ip,
+                                                     uint16_t dest_port) const {
+        return evaluate_destination(default_exclude_cidrs_, rule_filter_for(tree, pid),
+                                    dest_ip, dest_port);
+    }
 
+    // Full verdict for one flow: the rule's protocol field, then the
+    // destination checks. The TCP SOCKET layer and the connection list both
+    // call this, so the UI reports what the data path decided.
+    //
+    // A proxied, non-manual pid with no matching rule (a transient state while
+    // rules are rebuilt) keeps the historical behaviour of each transport:
+    // TCP falls back to global excludes only, UDP is not proxied (that is what
+    // should_proxy_protocol() answers for it).
+    [[nodiscard]] IpExcludeReason route_reason(const flat_tree& tree,
+                                               DWORD pid,
+                                               bool is_udp,
+                                               uint32_t dest_ip,
+                                               uint16_t dest_port) const {
         uint32_t idx = tree.find_by_pid(pid);
-        if (idx == INVALID_IDX) return IpExcludeReason::none;
-        const auto& entry = tree.at(idx);
-        if (!entry.alive || !entry.is_proxied() ||
-            entry.has_flag(entry_flags::MANUAL_HIJACK)) {
-            return IpExcludeReason::none;
-        }
-
-        for (const auto& rule : auto_rules_) {
-            if (!rule.matched_pids.contains(pid)) continue;
-            for (const auto& cidr : rule.dst_filter.exclude_cidrs) {
-                if (cidr.matches(dest_ip)) return IpExcludeReason::rule;
+        if (idx != INVALID_IDX) {
+            const auto& entry = tree.at(idx);
+            if (entry.alive && entry.is_proxied() &&
+                !entry.has_flag(entry_flags::MANUAL_HIJACK)) {
+                for (const auto& rule : auto_rules_) {
+                    if (!rule.matched_pids.contains(pid)) continue;
+                    if (!(is_udp ? rule.matches_udp() : rule.matches_tcp())) {
+                        return IpExcludeReason::protocol;
+                    }
+                    return evaluate_destination(default_exclude_cidrs_, &rule.dst_filter,
+                                                dest_ip, dest_port);
+                }
+                if (is_udp) return IpExcludeReason::protocol;
             }
-            break;
         }
-        return IpExcludeReason::none;
+        return evaluate_destination(default_exclude_cidrs_, nullptr, dest_ip, dest_port);
     }
 
     std::optional<RuleMatchResult> get_match_info(const flat_tree& tree, DWORD pid) const {

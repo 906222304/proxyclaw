@@ -6,42 +6,87 @@
 
 namespace clew {
 
+// Why a destination goes DIRECT instead of through the proxy. `none` means
+// "proxy it". The same answer drives the TCP SOCKET layer, the UDP SOCKET and
+// NETWORK layers and the connection list in the UI, so what the UI shows is
+// what the data path actually did.
 enum class IpExcludeReason {
     none,
-    global,
-    rule,
+    global,             // config.default_exclude_cidrs
+    rule,               // rule.dst_filter.exclude_cidrs
+    rule_port,          // rule.dst_filter.exclude_ports
+    include_cidr_miss,  // rule.dst_filter.include_cidrs set, no match
+    include_port_miss,  // rule.dst_filter.include_ports set, no match
+    protocol,           // rule.protocol does not cover this transport
 };
 
 inline const char* ip_exclude_reason_name(IpExcludeReason reason) noexcept {
     switch (reason) {
-    case IpExcludeReason::global: return "global_exclude";
-    case IpExcludeReason::rule:   return "rule_exclude";
-    default:                      return "none";
+    case IpExcludeReason::global:            return "global_exclude";
+    case IpExcludeReason::rule:              return "rule_exclude";
+    case IpExcludeReason::rule_port:         return "rule_exclude_port";
+    case IpExcludeReason::include_cidr_miss: return "rule_include_cidr_miss";
+    case IpExcludeReason::include_port_miss: return "rule_include_port_miss";
+    case IpExcludeReason::protocol:          return "rule_protocol";
+    default:                                 return "none";
     }
 }
 
-// Immutable-by-convention snapshot attached to new TCP/UDP connections.
-// Only CIDR excludes are represented here; include/port semantics remain
-// deliberately outside this policy until their forwarding behavior is wired.
+// The one destination check. Order:
+//   1. global exclude CIDRs
+//   2. rule exclude CIDRs, then rule exclude ports
+//   3. rule include CIDRs (if any, must match)
+//   4. rule include ports (if any, must match)
+// `rule` is null for manual hijacks: only the global excludes apply.
+[[nodiscard]] inline IpExcludeReason evaluate_destination(
+        const std::vector<CidrRange>& global_cidrs,
+        const TrafficFilter* rule,
+        uint32_t dest_ip,
+        uint16_t dest_port) noexcept {
+    for (const auto& cidr : global_cidrs) {
+        if (cidr.matches(dest_ip)) return IpExcludeReason::global;
+    }
+    if (!rule) return IpExcludeReason::none;
+
+    for (const auto& cidr : rule->exclude_cidrs) {
+        if (cidr.matches(dest_ip)) return IpExcludeReason::rule;
+    }
+    for (const auto& pr : rule->exclude_ports) {
+        if (pr.matches(dest_port)) return IpExcludeReason::rule_port;
+    }
+    if (!rule->include_cidrs.empty()) {
+        bool hit = false;
+        for (const auto& cidr : rule->include_cidrs) {
+            if (cidr.matches(dest_ip)) { hit = true; break; }
+        }
+        if (!hit) return IpExcludeReason::include_cidr_miss;
+    }
+    if (!rule->include_ports.empty()) {
+        bool hit = false;
+        for (const auto& pr : rule->include_ports) {
+            if (pr.matches(dest_port)) { hit = true; break; }
+        }
+        if (!hit) return IpExcludeReason::include_port_miss;
+    }
+    return IpExcludeReason::none;
+}
+
+// Immutable-by-convention snapshot of one rule's destination policy, used by
+// the NETWORK workers through PolicyTable. An empty `rule` filter adds nothing
+// to the global excludes (manual hijacks, unmatched pids, removed rules).
 struct IpExcludePolicy {
     std::vector<CidrRange> global_cidrs;
-    std::vector<CidrRange> rule_cidrs;
+    TrafficFilter rule;
 
-    [[nodiscard]] IpExcludeReason evaluate(uint32_t dest_ip) const noexcept {
-        for (const auto& cidr : global_cidrs) {
-            if (cidr.matches(dest_ip)) return IpExcludeReason::global;
-        }
-        for (const auto& cidr : rule_cidrs) {
-            if (cidr.matches(dest_ip)) return IpExcludeReason::rule;
-        }
-        return IpExcludeReason::none;
+    [[nodiscard]] IpExcludeReason evaluate(uint32_t dest_ip, uint16_t dest_port) const noexcept {
+        return evaluate_destination(global_cidrs, &rule, dest_ip, dest_port);
     }
 };
 
 // ============================================================
 // Traffic Filter Engine
-// Determines whether a connection should be proxied based on
-// destination IP/port and the rule's TrafficFilter config.
+// Rule-only check (no global excludes), kept for callers that hold a bare
+// TrafficFilter. The data path uses rule_engine_v3::destination_reason().
 // ============================================================
 
 class TrafficFilterEngine {
@@ -58,35 +103,9 @@ public:
         // Always skip loopback
         if ((dest_ip >> 24) == 127) return false;
 
-        // Check exclude CIDRs
-        for (const auto& cidr : filter.exclude_cidrs) {
-            if (cidr.matches(dest_ip)) return false;
-        }
-
-        // Check exclude ports
-        for (const auto& pr : filter.exclude_ports) {
-            if (pr.matches(dest_port)) return false;
-        }
-
-        // Check include CIDRs (whitelist: if non-empty, must match at least one)
-        if (!filter.include_cidrs.empty()) {
-            bool cidr_match = false;
-            for (const auto& cidr : filter.include_cidrs) {
-                if (cidr.matches(dest_ip)) { cidr_match = true; break; }
-            }
-            if (!cidr_match) return false;
-        }
-
-        // Check include ports (whitelist: if non-empty, must match at least one)
-        if (!filter.include_ports.empty()) {
-            bool port_match = false;
-            for (const auto& pr : filter.include_ports) {
-                if (pr.matches(dest_port)) { port_match = true; break; }
-            }
-            if (!port_match) return false;
-        }
-
-        return true;
+        static const std::vector<CidrRange> no_global;
+        return evaluate_destination(no_global, &filter, dest_ip, dest_port)
+            == IpExcludeReason::none;
     }
 
     // Convenience overload with string IP

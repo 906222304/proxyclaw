@@ -60,6 +60,8 @@ const protocolId = useId()
 const proxyGroupId = useId()
 const excludeCidrsId = useId()
 const includePortsId = useId()
+const includeCidrsId = useId()
+const excludePortsId = useId()
 
 // Form state
 const formName = ref('')
@@ -77,6 +79,8 @@ const isCustomProxy = ref(false)
 const customProxyHost = ref('')
 const formExcludeCidrs = ref<string[]>([])
 const formIncludePorts = ref<string[]>([])
+const formIncludeCidrs = ref<string[]>([])
+const formExcludePorts = ref<string[]>([])
 const advancedOpen = ref(false)
 
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -97,9 +101,12 @@ watch(() => props.open, async (open) => {
       customProxyHost.value = ''
       formExcludeCidrs.value = [...props.rule.dst_filter.exclude_cidrs]
       formIncludePorts.value = [...props.rule.dst_filter.include_ports]
+      formIncludeCidrs.value = [...(props.rule.dst_filter.include_cidrs ?? [])]
+      formExcludePorts.value = [...(props.rule.dst_filter.exclude_ports ?? [])]
       formWorkDir.value = props.rule.image_path_pattern || ''
       formUseWorkDir.value = !!props.rule.image_path_pattern
-      advancedOpen.value = props.rule.dst_filter.exclude_cidrs.length > 0 || props.rule.dst_filter.include_ports.length > 0
+      advancedOpen.value = formExcludeCidrs.value.length > 0 || formIncludePorts.value.length > 0
+        || formIncludeCidrs.value.length > 0 || formExcludePorts.value.length > 0
     } else {
       const pName = props.prefillProcessName || ''
       const pDir = props.prefillWorkDir || ''
@@ -113,6 +120,8 @@ watch(() => props.open, async (open) => {
       customProxyHost.value = ''
       formExcludeCidrs.value = []
       formIncludePorts.value = []
+      formIncludeCidrs.value = []
+      formExcludePorts.value = []
       formWorkDir.value = pDir
       formUseWorkDir.value = !!pDir
       advancedOpen.value = false
@@ -168,9 +177,9 @@ function onSave() {
   }
   const dst_filter: TrafficFilter = {
     exclude_cidrs: formExcludeCidrs.value,
-    include_cidrs: [],
+    include_cidrs: formIncludeCidrs.value,
     include_ports: formIncludePorts.value,
-    exclude_ports: [],
+    exclude_ports: formExcludePorts.value,
   }
   emit('save', {
     name: formName.value,
@@ -441,6 +450,36 @@ function onClose(value: boolean) {
                   placeholder="例如 443（回车添加）"
                 />
               </div>
+
+              <!-- Include CIDRs -->
+              <div class="flex flex-col gap-2">
+                <Label :for="includeCidrsId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  仅代理网段（CIDR）
+                  <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">只代理访问这些网段的流量，其余直连。留空则不限制。</p></TooltipContent></Tooltip>
+                </Label>
+                <TagInput
+                  :id="includeCidrsId"
+                  :model-value="formIncludeCidrs"
+                  @update:model-value="formIncludeCidrs = $event"
+                  placeholder="例如 203.0.113.0/24（回车添加）"
+                />
+              </div>
+
+              <!-- Exclude Ports -->
+              <div class="flex flex-col gap-2">
+                <Label :for="excludePortsId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  直连端口
+                  <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">访问这些目标端口时直连，优先于代理端口。支持范围，如 6000-6100。</p></TooltipContent></Tooltip>
+                </Label>
+                <TagInput
+                  :id="excludePortsId"
+                  :model-value="formExcludePorts"
+                  @update:model-value="formExcludePorts = $event"
+                  placeholder="例如 22（回车添加）"
+                />
+              </div>
+
+              <p class="text-xs text-slate-500 dark:text-slate-400">判定顺序：全局排除网段 → 直连网段 → 直连端口 → 仅代理网段 → 代理端口。TCP 与 UDP 使用同一套判定。</p>
             </div>
           </div>
         </div>

@@ -76,6 +76,8 @@ export interface TcpConnection {
   hijacked: boolean
   pid_alive: boolean
   proxy_status: string
+  /** Why the flow is IGNORED; "none" when proxied. Same verdict the data path uses. */
+  route_reason?: string
   process_name: string
 }
 

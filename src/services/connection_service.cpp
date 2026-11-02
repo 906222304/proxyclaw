@@ -23,20 +23,19 @@ namespace clew {
 
 namespace {
 
-std::string proxy_status_from_filter(const rule_engine_v3& rules,
-                                      const flat_tree& tree,
-                                      DWORD pid,
-                                      const std::string& remote_ip,
-                                      uint16_t remote_port) {
-    auto match = rules.get_match_info(tree, pid);
-    if (!match) return "PROXIED";
-    for (const auto& rule : rules.auto_rules()) {
-        if (rule.id == match->rule_id) {
-            return TrafficFilterEngine::should_proxy(remote_ip, remote_port, rule.dst_filter)
-                 ? "PROXIED" : "IGNORED";
-        }
-    }
-    return "PROXIED";
+// Same verdict the data path uses (rule_engine_v3::route_reason), so a row
+// marked PROXIED is one the SOCKET/NETWORK layers actually send to the proxy.
+void set_proxy_status(nlohmann::json& c,
+                      const rule_engine_v3& rules,
+                      const flat_tree& tree,
+                      DWORD pid,
+                      bool is_udp,
+                      const std::string& remote_ip,
+                      uint16_t remote_port) {
+    const auto reason = rules.route_reason(tree, pid, is_udp,
+                                           CidrRange::ip_to_uint(remote_ip), remote_port);
+    c["proxy_status"] = reason == IpExcludeReason::none ? "PROXIED" : "IGNORED";
+    c["route_reason"] = ip_exclude_reason_name(reason);
 }
 
 nlohmann::json tcp_entry_to_json(const tcp_connection& conn,
@@ -63,8 +62,8 @@ nlohmann::json tcp_entry_to_json(const tcp_connection& conn,
                (conn.remote_ip == "0.0.0.0" && conn.remote_port == 0)) {
         c["proxy_status"] = "LISTEN";
     } else {
-        c["proxy_status"] = proxy_status_from_filter(rules, tree, conn.pid,
-                                                      conn.remote_ip, conn.remote_port);
+        set_proxy_status(c, rules, tree, conn.pid, /*is_udp=*/false,
+                         conn.remote_ip, conn.remote_port);
     }
 
     c["process_name"] = pid_alive ? std::string(tree.at(idx).name_u8) : std::string{"unknown"};
@@ -110,8 +109,13 @@ nlohmann::json udp_entry_to_json(const udp_endpoint& ep,
 
     if (!is_hijacked) {
         c["proxy_status"] = "-";
+    } else if (remote_ip.empty()) {
+        // No proxied destination seen yet: only the protocol gate is known.
+        const bool udp_ok = rules.should_proxy_protocol(tree, ep.pid, "udp");
+        c["proxy_status"] = udp_ok ? "PROXIED" : "IGNORED";
+        c["route_reason"] = udp_ok ? "none" : "rule_protocol";
     } else {
-        c["proxy_status"] = proxy_status_from_filter(rules, tree, ep.pid, remote_ip, remote_port);
+        set_proxy_status(c, rules, tree, ep.pid, /*is_udp=*/true, remote_ip, remote_port);
     }
 
     c["process_name"] = pid_alive ? std::string(tree.at(idx).name_u8) : std::string{"unknown"};

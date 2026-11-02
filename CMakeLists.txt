@@ -268,6 +268,9 @@ if(BUILD_TESTING AND WIN32)
         SOURCES tests/test_route_policy.cpp
         FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes
         LIBS nlohmann_json::nlohmann_json ws2_32)
+    proxyclaw_unit_test(udp_flow_tests
+        SOURCES tests/test_udp_flow.cpp
+        LIBS ws2_32)
     proxyclaw_unit_test(dns_wire_tests
         SOURCES tests/test_dns_wire.cpp
         FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)

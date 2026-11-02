@@ -99,6 +99,7 @@ src/
   udp/                           - UDP relay (mirrors TCP, per-app-port sessions)
     windivert_socket_udp.hpp / windivert_network_udp.hpp
     udp_port_tracker.hpp / udp_session_table.hpp / udp_relay.hpp
+    udp_flow.hpp                     - per-datagram handoff type, peer set, queue limits
     socks5_udp_manager.hpp / socks5_udp_session.hpp / socks5_udp_codec.hpp
 
   api/
@@ -382,7 +383,11 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 
 - Same dual-layer architecture as TCP: `windivert_socket_udp` + `windivert_network_udp`
 - Each app-level UDP port gets its own SOCKS5 UDP ASSOCIATE session (RFC 1928)
-- Response routing via per-port session table — no cross-process bleed
+- **Per-packet addressing** (v0.10.3): the NETWORK worker does not reflect a proxied datagram. It hands `UdpOutbound{app_port, group_id, dst, payload}` to the relay (`UdpOutboundSink::submit`, a non-blocking post onto the relay strand) and consumes the original packet. Each datagram therefore keeps its own destination, so one socket that talks to several peers (DNS to two resolvers, STUN/WebRTC, games, QUIC) no longer has its packets sent to whichever destination was seen last. Before v0.10.3 the destination came from a per-port table entry that every packet overwrote.
+- Upstream queues per app port; each port has one `flush_port` coroutine, so a slow SOCKS5 handshake for one socket only delays that socket. Limits (`UdpQueueLimits`): 8192 datagrams / 32 MB in flight overall, 512 per port; excess is dropped and counted (`[UDP-RELAY] Dropped datagram`). If the session cannot be created, that port's queue is dropped instead of paying the handshake timeout per datagram.
+- Downstream: the reply is injected with the source address the SOCKS5 UDP header names (the real responder), and only when that address:port is in the socket's peer set (peers it sent to; LRU, 1024 per socket). Other datagrams are dropped (`filtered`), like an address-and-port restricted NAT.
+- `UdpSessionTable` (keyed by app port) now holds app-side metadata only for injection (app address, interface, pid, group) plus the most recent destination for the connection list and the DNS 10 s idle rule. Peer sets are dropped by the relay's 30 s cleanup once the route expires.
+- Response routing stays per app port — no cross-process bleed
 - `UdpTrackerEntry` is `{group_id, pid, policy_id}` — trivially copyable, `policy_id` indexes the published `PolicyTable`
 - Dst excludes: a `connect()`ed socket has one fixed destination, so the exclude is decided once on the strand at CONNECT (excluded → no tracker entry, direct). A bind-then-`sendto` socket (e.g. a DNS client) hits many destinations, so its packets are evaluated per-packet in the NETWORK worker via a `PolicyReader` (one generation compare per packet).
 - The SOCKS5 UDP data socket binds the wildcard address (to reach a remote relay), so downstream drops any datagram whose sender is not the relay endpoint.

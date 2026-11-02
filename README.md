@@ -146,7 +146,7 @@ v0.8.1 及之前 hack / unhack 等操作偶尔会卡几秒，分别修了两个�
 | 规则名称 | 规则名 |
 | 进程名称 | 通配符，例如 `curl*`、`python.exe`；也可以选择具体的 exe 路径 |
 | 命令行匹配 | 命令行关键词，多个用空格分隔，大小写不敏感、顺序无关 |
-| 代理整个进程树 | 子进程跟着走代理 |
+| 代理整个进程树 | 始终开启，子进程跟着走代理 |
 | 协议 | 仅 TCP / 仅 UDP / TCP + UDP |
 | 代理组 | 走哪个代理组 |
 
@@ -258,49 +258,56 @@ ProxyClaw 需要管理员权限。若走注册表 `Run` 键，每次登录都会
 ### 工具链
 
 - Visual Studio 2022 或 2026（C++23）
-- CMake 3.20+、vcpkg
+- CMake 3.20+
+- Python 3.12+（拉取固定版本依赖）
 - Node.js 20+
-- WebView2 SDK
 
 ### 步骤
 
-```bash
-# 配置
-cmake --preset windows-vcpkg
+```powershell
+# 拉取并校验固定版本依赖（与 CI 一致：quill、nlohmann/json、cpp-httplib、asio、WinDivert、WebView2 SDK）
+python scripts/prepare_release_deps.py
 
-# 后端（约 30 个编译单元，CMakeLists 已开启 /MP 并行编译）
-cmake --build build --config Release
+# 配置（VS 2026 用 windows-vs2026）
+cmake --preset windows
 
 # 前端
 cd frontend
-npm install
+npm ci
+npm test
 npm run build
 cd ..
+
+# 后端（约 30 个编译单元，已开启 /MP 并行编译）与单元测试
+cmake --build --preset windows
+ctest --preset windows
 
 # 运行
 ./build/Release/proxyclaw.exe
 ```
+
+一键验证（前端测试与构建、后端构建、ctest、分层检查、e2e）：`python scripts/verify.py`，不在管理员终端时加 `--no-e2e`。
 
 想复用 CI 的固定依赖、本机打出与 Release 一致的完整包，见 [自动构建和发布说明](docs/RELEASE.md)。推送 `v*` 标签会自动构建 Windows x64 完整包并发布 Release；`main` 和 PR 构建只上传测试产物。
 
 <details>
 <summary><b>clangd / LSP 配置（可选）</b></summary>
 
-仓库带有 `.clangd` 和 `windows-vcpkg-clangd` preset，只编译运行 release 时用不到。
+仓库带有 `.clangd` 和 `windows-clangd` preset，只编译运行 release 时用不到。
 
-CMake 的 Visual Studio 生成器不输出 `compile_commands.json`，clangd 找不到 vcpkg / WebView2 / asio 头文件。需要 clangd 跳转 / 补全时（本机需有 Ninja）：
+CMake 的 Visual Studio 生成器不输出 `compile_commands.json`，clangd 找不到依赖 / WebView2 / asio 头文件。需要 clangd 跳转 / 补全时（本机需有 Ninja）：
 
 ```bash
-cmake --preset windows-vcpkg-clangd
+cmake --preset windows-clangd
 ```
 
-会在 `build-clangd/`（已 gitignore）生成 `compile_commands.json`。修改 `vcpkg.json`、新增源文件或 include 目录后重跑一次。
+会在 `build-clangd/`（已 gitignore）生成 `compile_commands.json`。依赖版本变化、新增源文件或 include 目录后重跑一次。
 
 </details>
 
 ## 测试
 
-以下回归测试都不需要启动代理，也不会修改系统 DNS。优化背景见 [项目优化检查](docs/OPTIMIZATION_REVIEW.md)。
+`ctest --preset windows` 会运行全部原生单元测试（管理 API 鉴权、DNS 报文与生命周期、配置与中文路径、日志读取、进程树推送、TCP 重定向），CI 每次提交都会跑。下面列出各测试的背景和单独运行方式，它们都不需要启动代理，也不会修改系统 DNS。优化背景见 [项目优化检查](docs/OPTIMIZATION_REVIEW.md)。
 
 <details>
 <summary><b>界面加载与后台刷新</b></summary>
@@ -308,7 +315,7 @@ cmake --preset windows-vcpkg-clangd
 设置页高级 JSON 编辑器按需加载；周期刷新等待上次请求结束，隐藏或切换进程时取消旧请求，窗口恢复后主动同步进程树。
 
 ```powershell
-node --test tests/async_poller_test.mjs
+cd frontend; npm test; cd ..
 python tests/run_projection_tests.py --cxx path/to/zig.exe --asio-include path/to/asio/include
 ```
 

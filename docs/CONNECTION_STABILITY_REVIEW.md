@@ -39,7 +39,7 @@ python tests/run_proxy_health_tests.py --baseline
 python tests/run_dns_network_tests.py --cxx build/test-toolchain/ziglang/zig.exe --asio-include build/network-test-deps/asio-asio-1-30-2/asio/include
 ```
 
-`--baseline` 默认读取旧提交 `6632a40` 的头文件，专门复现上述三个缺陷；也可用 `--baseline-ref` 指定另一个旧提交。
+`--baseline` 默认读取修复前的提交 `5b93eb0` 的头文件（原文中的 `6632a40` 在历史整理后已不存在，`5b93eb0` 是修复提交 `b921050` 的父提交），专门复现上述三个缺陷；也可用 `--baseline-ref` 指定另一个旧提交。
 
 这是加速的故障/回收回归，尚未做数小时的实际 GPT 会话观测。独立的 stability-preview 包保留当前配置和 DNS 关闭状态；切换前从托盘退出旧代理，不能并行运行。复现时保留发生时间和对应 `proxyclaw.log`，重点检查 `[RELAY] End`、`Transport lost`、`Establish failed`、`TCP control connection lost`，并结合 Mihomo 同时段的日志判断。
 

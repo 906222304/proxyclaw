@@ -49,6 +49,9 @@ from datetime import datetime, timezone
 
 import requests
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import api_token  # noqa: F401  (adds the API session token; see tests/api_token.py)
+
 
 # ---------------------------------------------------------------- paths/const
 

@@ -32,6 +32,9 @@ import time
 
 import requests
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import api_token  # noqa: F401  (adds the API session token; see tests/api_token.py)
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = REPO_ROOT / "build" / "Release" / "proxyclaw.exe"

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ProxyClaw VERSION 0.10.0 LANGUAGES CXX)
+project(ProxyClaw VERSION 0.10.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,7 +91,7 @@ link_directories(
 )
 
 # Source files. Historically header-only, but the three-layer refactor
-# (see refactor_docs/DESIGN.md) progressively introduces hpp/cpp-split
+# (see docs/ARCHITECTURE.md) progressively introduces hpp/cpp-split
 # translation units. The legacy http_api_server.cpp remains until Stage 4
 # retires it in favour of src/transport/*.
 set(PROXYCLAW_SOURCES
@@ -162,6 +162,7 @@ endif()
 set(PROXYCLAW_LIBRARIES
     ws2_32
     iphlpapi
+    bcrypt
     WinDivert
     quill::quill
     nlohmann_json::nlohmann_json
@@ -243,4 +244,46 @@ if(BUILD_TESTING AND WIN32)
         "${PROXYCLAW_WINDIVERT_DIR}/WinDivert.dll" "$<TARGET_FILE_DIR:tcp_redirect_tests>"
     )
     add_test(NAME tcp_redirect COMMAND tcp_redirect_tests)
+
+    # Self-contained unit tests: no driver, no admin rights, no system DNS.
+    # Fake include directories go BEFORE src so they shadow production
+    # logging / network headers exactly as the standalone runners do.
+    function(proxyclaw_unit_test name)
+        cmake_parse_arguments(T "" "" "SOURCES;FAKES;LIBS" ${ARGN})
+        add_executable(${name} ${T_SOURCES})
+        if(T_FAKES)
+            target_include_directories(${name} BEFORE PRIVATE ${T_FAKES})
+        endif()
+        target_link_libraries(${name} PRIVATE ${T_LIBS})
+        if(MSVC)
+            target_compile_options(${name} PRIVATE /EHsc)
+        endif()
+        add_test(NAME ${name} COMMAND ${name}
+                 WORKING_DIRECTORY "$<TARGET_FILE_DIR:${name}>")
+        set_tests_properties(${name} PROPERTIES TIMEOUT 60)
+    endfunction()
+
+    proxyclaw_unit_test(api_auth_tests SOURCES tests/test_api_auth.cpp)
+    proxyclaw_unit_test(dns_wire_tests
+        SOURCES tests/test_dns_wire.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)
+    proxyclaw_unit_test(dns_manager_tests
+        SOURCES tests/test_dns_manager.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)
+    proxyclaw_unit_test(ui_config_tests
+        SOURCES tests/test_ui_config_and_paths.cpp src/common/api_exception.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes
+        LIBS nlohmann_json::nlohmann_json shell32 ws2_32)
+    proxyclaw_unit_test(config_migration_tests
+        SOURCES tests/test_config_migration.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes
+        LIBS nlohmann_json::nlohmann_json shell32 ws2_32)
+    proxyclaw_unit_test(log_tail_tests
+        SOURCES tests/log_tail_test.cpp src/services/shell_service.cpp src/common/api_exception.cpp
+        LIBS quill::quill nlohmann_json::nlohmann_json comdlg32 shell32 user32)
+    proxyclaw_unit_test(projection_tests
+        SOURCES tests/test_projection_visibility.cpp src/projection/process_projection.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/projection_fakes ${CMAKE_SOURCE_DIR}/tests/network_fakes
+        LIBS asio::asio nlohmann_json::nlohmann_json ws2_32 mswsock)
+    target_compile_definitions(projection_tests PRIVATE ASIO_HAS_THREADS=1 PROXYCLAW_PROJECTION_COALESCE)
 endif()

@@ -258,7 +258,7 @@ def main():
     parser.add_argument('--cxx', type=Path, default=ROOT / 'build/test-toolchain/ziglang/zig.exe')
     parser.add_argument('--asio-include', type=Path, default=ROOT / 'build/network-test-deps/asio-asio-1-30-2/asio/include')
     parser.add_argument('--baseline', action='store_true')
-    parser.add_argument('--baseline-ref', default='6632a40de3997654f4e39c92fd1f3c6df14e8d20')
+    parser.add_argument('--baseline-ref', default='5b93eb0bdc5dc3d857f0ddfe5529938138d4944f')
     parser.add_argument('--exe', type=Path)
     args = parser.parse_args()
     exe = args.exe.resolve() if args.exe else compile_host(args)

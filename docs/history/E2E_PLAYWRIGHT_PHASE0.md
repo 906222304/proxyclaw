@@ -97,4 +97,4 @@ Phase 1 will add:
 - `test_no_event_source` — defends against SSE returning
 - `test_no_request_storm` — defends against polling regressions
 
-These will live next to `poc_attach.py` and run as part of `verify.sh`.
+These will live next to `poc_attach.py` and run as part of `scripts/verify.py` (formerly `verify.sh`).

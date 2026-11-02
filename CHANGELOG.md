@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.11.0 (unreleased)
+## v0.11.0 (2026-11-02)
 
 ### UDP
 

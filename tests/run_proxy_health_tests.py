@@ -171,7 +171,11 @@ class Host:
         try:
             return self.lines.get(timeout=timeout)
         except queue.Empty:
-            raise AssertionError('host did not complete operation within deadline')
+            code = self.process.poll()
+            detail = ''
+            if code is not None:
+                detail = f' (host exited {code:#x}: {self.process.stderr.read().strip()!r})'
+            raise AssertionError('host did not complete operation within deadline' + detail)
 
     def done(self):
         assert self.line() == 'DONE'

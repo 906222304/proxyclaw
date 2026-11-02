@@ -28,7 +28,7 @@ process_projection::process_projection(domain::process_tree_manager& mgr, strand
     , coalesce_timer_(strand)
 #endif
 {
-    std::atomic_store(&snapshot_, std::make_shared<const std::string>("[]"));
+    set_snapshot(std::make_shared<const std::string>("[]"));
 }
 
 void process_projection::on_tree_changed(push_urgency urgency) {
@@ -82,13 +82,13 @@ void process_projection::refresh_snapshot() {
     auto json_str = process_tree_to_json_string(mgr_.tree(), mgr_.rules());
     PC_LOG_DEBUG("[projection] snapshot: {} bytes, alive={}",
                  json_str.size(), mgr_.tree().alive_count());
-    std::atomic_store(&snapshot_, std::make_shared<const std::string>(std::move(json_str)));
+    set_snapshot(std::make_shared<const std::string>(std::move(json_str)));
 }
 
 void process_projection::push_current_snapshot() {
     auto* sink = sink_.load();
     if (!sink) return;
-    auto snap = std::atomic_load(&snapshot_);
+    auto snap = get_snapshot();
     if (!snap) return;
     sink->push("process_update", *snap);
 }

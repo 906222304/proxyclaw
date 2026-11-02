@@ -99,6 +99,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Loopback network tests (proxy health, DNS forwarder)
+        run: |
+          python tests/run_proxy_health_tests.py --exe build/Release/proxy_health_harness.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/run_dns_network_tests.py --exe build/Release/dns_forwarder_harness.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Live rule-policy test (WinDivert, elevated runner)
         run: |
           python tests/e2e_rule_policy.py --exe build/Release/proxyclaw.exe

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.11.0 (unreleased)
+
+### CI
+
+- The loopback network suites now run in CI: `proxy_health_harness` (TCP relay
+  and SOCKS5 UDP session, 23 cases) and `dns_forwarder_harness` (DNS forwarder
+  UDP/TCP fallback, 22 cases) are CMake targets built with the release
+  toolchain and driven by `tests/run_proxy_health_tests.py` /
+  `tests/run_dns_network_tests.py --exe`.
+- The IPv6 UDP bulk-cleanup case (96 create/cleanup/recreate cycles), which
+  had been timing out, passes. The proxy-health harness kept the 4 MiB
+  `PortTracker` as a coroutine local, which overflowed the 1 MiB stack under
+  MSVC; it is now heap-allocated.
+
+### Build
+
+- No compiler warnings: the projection snapshot uses a mutex instead of the
+  deprecated `std::atomic_load/store` on `shared_ptr`, and the UI config test
+  guards its `WIN32_LEAN_AND_MEAN` / `NOMINMAX` defines.
+
 ## v0.10.3 (2026-11-02)
 
 ### Rules

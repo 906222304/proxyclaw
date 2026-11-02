@@ -133,7 +133,7 @@ See the [related projects review](docs/RELATED_PROJECTS_REVIEW.md) (Chinese) for
 Proxies tab:
 
 - A `default` group already exists; change its host / port to point at your SOCKS5.
-- The refresh icon runs a latency test.
+- The refresh icon runs a speed test; "Test all" runs every group. The result is broken into stages (resolve proxy, connect to proxy, SOCKS5 handshake, proxy reaches target, first byte from target), and a failure names the stage it stopped at. The proxy host may be IPv4, IPv6 or a domain; an https test URL uses port 443 and waits for the TLS reply. Each test is capped at 8 seconds.
 
 <img src="docs/images/proxy_group.png" alt="Proxy group" width="80%" />
 

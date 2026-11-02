@@ -32,9 +32,22 @@
   resolver) stopped proxying all of its other destinations too. Excludes are
   now decided per packet only.
 
+### Proxy speed test
+
+- Rewritten (`src/services/proxy_probe.*`). Runs on its own io_context with an
+  8 s overall deadline; before, a dead proxy could block an API worker in a
+  connect with no timeout.
+- Proxy host may be IPv4, IPv6 or a domain name (before: IPv4 literal only).
+- The test URL's scheme and port are honoured: https uses 443 and waits for a
+  TLS ServerHello instead of sending plain HTTP to port 80.
+- The SOCKS5 CONNECT reply is read in full for every address type.
+- Timed by stage (resolve, connect, handshake, remote, first byte); a failure
+  names its stage and the SOCKS5 reply code. The UI shows the breakdown and
+  adds "Test all"; at most 4 tests run at once.
+
 ### Tests
 
-- New `route_policy_tests` and `udp_flow_tests` under CTest.
+- New `route_policy_tests`, `udp_flow_tests` and `proxy_probe_tests` under CTest.
 - `tests/e2e_rule_policy.py` runs in CI on the elevated Windows runner with the
   real WinDivert driver: rule filters over TCP, and UDP from one socket to two
   destinations through a SOCKS5 UDP relay.

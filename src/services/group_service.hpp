@@ -40,9 +40,11 @@ public:
     // missing.
     void migrate_group(std::uint32_t source_id, std::uint32_t target_id);
 
-    // Raw SOCKS5 + HTTP HEAD latency probe. Returns {latency_ms:...} on
-    // success, {error:"..."} on failure (status 200 to match the legacy
-    // frontend contract).
+    // Staged SOCKS5 probe (services/proxy_probe.hpp), 8 s budget, at most 4
+    // at once. Always HTTP 200:
+    //   success {latency_ms, total_ms, detail, target, stages:[{name,ms}]}
+    //   failure {error, failed_stage, total_ms, target, stages}
+    // `latency_ms` present means success (legacy frontend contract).
     [[nodiscard]] nlohmann::json test_group(std::uint32_t id);
 
 private:

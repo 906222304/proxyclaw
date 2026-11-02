@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <semaphore>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@
 #include "domain/process_tree_manager.hpp"
 #include "process/flat_tree.hpp"
 #include "rules/rule_engine_v3.hpp"
+#include "services/proxy_probe.hpp"
 
 namespace clew {
 
@@ -188,90 +190,46 @@ nlohmann::json group_service::test_group(std::uint32_t id) {
         throw api_exception{api_error::not_found, "Group not found"};
     }
 
-    // Parse test_url into host + port + path. Always use port 80 (HTTPS
-    // HEAD via plain socket is not valid).
-    std::string test_host;
-    std::string test_path = "/";
-    std::uint16_t test_port = 80;
-    {
-        std::string url = group->test_url;
-        auto pos = url.find("://");
-        if (pos != std::string::npos) url = url.substr(pos + 3);
-        pos = url.find('/');
-        if (pos != std::string::npos) { test_path = url.substr(pos); url = url.substr(0, pos); }
-        pos = url.find(':');
-        if (pos != std::string::npos) {
-            test_host = url.substr(0, pos);
-            test_port = static_cast<std::uint16_t>(std::stoi(url.substr(pos + 1)));
-        } else {
-            test_host = url;
-        }
+    const auto target = probe::parse_test_url(group->test_url);
+    if (!target) {
+        return nlohmann::json{{"error", "invalid test URL"}, {"failed_stage", "config"},
+                              {"stages", nlohmann::json::array()}};
     }
 
-    auto t0 = std::chrono::steady_clock::now();
-
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == INVALID_SOCKET) {
-        return nlohmann::json{{"error", "socket creation failed"}};
+    // Each probe holds an HTTP worker for up to its budget; cap concurrent
+    // probes so "test all" cannot starve the polling endpoints (8 workers).
+    static std::counting_semaphore<4> slots{4};
+    if (!slots.try_acquire_for(std::chrono::seconds(10))) {
+        return nlohmann::json{{"error", "too many tests running"}, {"failed_stage", "queue"},
+                              {"stages", nlohmann::json::array()}};
     }
-    DWORD timeout_ms = 5000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    struct release_slot { ~release_slot() { slots.release(); } } guard;
 
-    auto close_and_return = [&](nlohmann::json out) {
-        closesocket(sock);
-        return out;
+    std::string proxy_host = group->host;
+    if (proxy_host.size() > 2 && proxy_host.front() == '[' && proxy_host.back() == ']')
+        proxy_host = proxy_host.substr(1, proxy_host.size() - 2);
+
+    const auto r = probe::run(proxy_host, static_cast<std::uint16_t>(group->port), *target);
+
+    nlohmann::json stages = nlohmann::json::array();
+    for (const auto& st : r.stages) stages.push_back({{"name", st.name}, {"ms", st.ms}});
+    nlohmann::json out{
+        {"stages",   stages},
+        {"total_ms", r.total_ms},
+        {"target",   std::format("{}://{}:{}", target->scheme, target->host, target->port)},
     };
-
-    sockaddr_in proxy_addr{};
-    proxy_addr.sin_family = AF_INET;
-    proxy_addr.sin_port   = htons(group->port);
-    inet_pton(AF_INET, group->host.c_str(), &proxy_addr.sin_addr);
-    if (::connect(sock, reinterpret_cast<sockaddr*>(&proxy_addr), sizeof(proxy_addr)) != 0) {
-        return close_and_return(nlohmann::json{{"error", "proxy connect failed"}});
+    if (r.ok) {
+        out["latency_ms"] = r.total_ms;  // legacy field: success is latency_ms present
+        out["detail"]     = r.detail;
+        PC_LOG_DEBUG("[group_service] test group {}: {}ms ({}) to {}", id, r.total_ms, r.detail,
+                     group->test_url);
+    } else {
+        out["error"]        = r.error;
+        out["failed_stage"] = r.failed_stage;
+        PC_LOG_INFO("[group_service] test group {} failed at {}: {} ({}ms)", id, r.failed_stage,
+                    r.error, r.total_ms);
     }
-
-    std::uint8_t greeting[] = {0x05, 0x01, 0x00};
-    if (::send(sock, reinterpret_cast<const char*>(greeting), 3, 0) != 3) {
-        return close_and_return(nlohmann::json{{"error", "send failed"}});
-    }
-    std::uint8_t greeting_reply[2] = {0};
-    if (::recv(sock, reinterpret_cast<char*>(greeting_reply), 2, 0) != 2 || greeting_reply[1] != 0x00) {
-        return close_and_return(nlohmann::json{{"error", "socks5 auth failed"}});
-    }
-
-    std::vector<std::uint8_t> creq = {0x05, 0x01, 0x00, 0x03,
-                                      static_cast<std::uint8_t>(test_host.size())};
-    creq.insert(creq.end(), test_host.begin(), test_host.end());
-    creq.push_back(static_cast<std::uint8_t>(test_port >> 8));
-    creq.push_back(static_cast<std::uint8_t>(test_port & 0xFF));
-    if (::send(sock, reinterpret_cast<const char*>(creq.data()), static_cast<int>(creq.size()), 0)
-        != static_cast<int>(creq.size())) {
-        return close_and_return(nlohmann::json{{"error", "send connect failed"}});
-    }
-    std::uint8_t creply[10] = {0};
-    int n = ::recv(sock, reinterpret_cast<char*>(creply), 10, 0);
-    if (n < 4 || creply[1] != 0x00) {
-        return close_and_return(nlohmann::json{{"error", "socks5 connect failed"}});
-    }
-
-    std::string head_req = "HEAD " + test_path + " HTTP/1.1\r\nHost: " + test_host
-                         + "\r\nConnection: close\r\n\r\n";
-    if (::send(sock, head_req.c_str(), static_cast<int>(head_req.size()), 0) <= 0) {
-        return close_and_return(nlohmann::json{{"error", "send http failed"}});
-    }
-    char http_reply[32] = {0};
-    int r = ::recv(sock, http_reply, sizeof(http_reply), 0);
-    closesocket(sock);
-
-    if (r <= 0) {
-        return nlohmann::json{{"error", "timeout"}};
-    }
-
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t0).count();
-    PC_LOG_DEBUG("[group_service] test group {}: {}ms to {}", id, elapsed, group->test_url);
-    return nlohmann::json{{"latency_ms", elapsed}};
+    return out;
 }
 
 } // namespace clew

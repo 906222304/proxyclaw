@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.10.3 (unreleased)
+## v0.10.3 (2026-11-02)
 
 ### Rules
 
@@ -55,7 +55,7 @@
   real WinDivert driver: rule filters over TCP, and UDP from one socket to two
   destinations through a SOCKS5 UDP relay.
 
-## v0.10.2 (unreleased)
+## v0.10.2 (not released on its own; included in v0.10.3)
 
 Engineering and security cleanup. No change to traffic forwarding.
 

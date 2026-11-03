@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed, useId, nextTick } from 'vue'
-import type * as Monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
+import type * as Monaco from 'monaco-editor'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'

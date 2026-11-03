@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.11.1 (2026-11-03)
+
+### Frontend
+
+- Dependencies: `npm audit` now reports 0 vulnerabilities (was 15: 2 critical,
+  10 high). Vue, Vite and their transitive deps updated in range; Vitest
+  3 → 5; Monaco Editor 0.55 → 0.57.
+- Monaco bundles its own copy of DOMPurify (3.4.15, several XSS advisories).
+  The build now aliases Monaco's sanitizer import to the npm `dompurify`
+  package (pinned ≥ 3.4.17 via `overrides`), so the shipped editor uses the
+  patched version.
+- Monaco 0.57 import paths: deep imports follow the package's new `exports`
+  map (`monaco-editor/editor/...`); the Chinese language pack moved to
+  `monaco-editor/nls/lang/zh-cn.js`.
+- Bundle split: the network table registers only the AG Grid modules it uses
+  instead of `AllCommunityModule`, and vendor libraries go into separate
+  chunks. The eagerly loaded JavaScript drops from about 1.5 MB to 1.1 MB
+  (main app chunk 1,495 kB → 106 kB). Monaco chunks remain lazy and load only
+  when the JSON editor opens.
+
 ## v0.11.0 (2026-11-02)
 
 ### UDP

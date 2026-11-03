@@ -2,15 +2,32 @@
 import { ref, computed, watch, onMounted, onUnmounted, shallowRef } from 'vue'
 import { AgGridVue } from 'ag-grid-vue3'
 import {
-  AllCommunityModule,
+  CellStyleModule,
+  ClientSideRowModelModule,
+  LocaleModule,
   ModuleRegistry,
+  QuickFilterModule,
+  RowStyleModule,
+  TooltipModule,
+  ValidationModule,
   themeAlpine,
   colorSchemeDark,
   type ColDef,
   type GridApi,
 } from 'ag-grid-community'
 
-ModuleRegistry.registerModules([AllCommunityModule])
+// Register only the grid features this table uses instead of
+// AllCommunityModule, which pulls every community feature into the bundle.
+// ValidationModule (dev only) reports any feature used without its module.
+ModuleRegistry.registerModules([
+  ClientSideRowModelModule,
+  QuickFilterModule,
+  TooltipModule,
+  RowStyleModule,
+  CellStyleModule,
+  LocaleModule,
+  ...(import.meta.env.DEV ? [ValidationModule] : []),
+])
 import { getNetworkConnections } from '@/api/client'
 import type { NetworkConnection } from '@/api/types'
 import { Input } from '@/components/ui/input'

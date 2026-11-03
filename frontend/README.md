@@ -1,14 +1,14 @@
 # ProxyClaw frontend
 
-Vue 3 + TypeScript + Vite UI, embedded by `proxyclaw.exe` through WebView2 and
+React 19 + TypeScript + Vite UI, embedded by `proxyclaw.exe` through WebView2 and
 served from `frontend/dist` by the local API server.
 
 ## Commands
 
 ```bash
 npm ci          # install from the lockfile
-npm test        # Vitest unit tests (src/**/*.test.ts)
-npm run build   # type-check with vue-tsc, then build to dist/
+npm test        # Vitest unit tests (src/**/*.test.ts[x], jsdom where needed)
+npm run build   # type-check with tsc, then build to dist/
 npm run dev     # Vite dev server on http://localhost:5173
 ```
 
@@ -28,7 +28,16 @@ restarted) and the window must be reopened.
 
 ## Stack
 
-- UI components: [reka-ui](https://reka-ui.com/) (shadcn-vue style) + Tailwind CSS 4
-- Tables: AG Grid Community
-- JSON editor: Monaco, lazy-loaded from `src/lib/monacoRuntime.ts`
-- Icons: Lucide
+One library per concern:
+
+- Framework: React 19 + TypeScript, Vite 7, Tailwind CSS 4
+- Server state: TanStack Query. Every API response lives in the query cache
+  (`src/api/queries.ts`, keys in `src/api/queryKeys.ts`). Polling is
+  `refetchInterval` with `refetchIntervalInBackground: false` (pauses while
+  the window is hidden). The WebView2 push channel (`src/api/notify.ts`) only
+  calls `setQueryData` / `invalidateQueries`.
+- Lists: TanStack Virtual for the process tree and the network table
+- Primitives: Radix (dialog, select, switch, tooltip, tabs) wrapped by small
+  components in `src/components/ui`
+- JSON editor: CodeMirror 6 with JSON lint, lazy-loaded (`src/components/JsonEditor.tsx`)
+- Forms: React Hook Form + Zod (rule editor), toasts: Sonner, icons: Lucide

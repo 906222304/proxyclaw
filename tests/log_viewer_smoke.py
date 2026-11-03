@@ -1,4 +1,4 @@
-"""Real built Vue UI in isolated Edge; no real clipboard, shell or proxy writes."""
+"""Real built React UI in isolated Edge; no real clipboard, shell or proxy writes."""
 from pathlib import Path
 import json
 import os
@@ -23,16 +23,17 @@ with sync_playwright() as p:
       Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => { window.copiedLog = text; }}});
     ''')
     page.goto(BASE, wait_until='networkidle')
-    page.locator('nav').get_by_role('button', name='设置', exact=True).click()
+    page.get_by_role('tab', name='设置', exact=True).click()
     expect(page.get_by_role('link', name='本项目源码')).to_have_attribute('href', 'https://github.com/906222304/proxyclaw')
     assert page.get_by_text('基于 Clew', exact=False).count() == 0
-    assert not any('monacoRuntime-' in url for url in requests), 'log entry eagerly loaded Monaco'
+    assert not any('JsonEditor-' in url for url in requests), 'log entry eagerly loaded the JSON editor'
     page.get_by_role('button', name='查看日志', exact=True).click()
     dialog = page.get_by_role('dialog', name='运行日志')
     pane = dialog.get_by_label('日志内容', exact=True)
     expect(pane).to_contain_text('连接正常')
     expect(pane).to_contain_text('握手超时')
-    dialog.get_by_label('日志筛选', exact=True).select_option('problems')
+    dialog.get_by_role('combobox', name='日志筛选', exact=True).click()
+    page.get_by_role('option', name='警告和错误', exact=True).click()
     expect(pane).not_to_contain_text('连接正常')
     expect(pane).to_contain_text('TCP control connection lost')
     dialog.get_by_label('搜索日志', exact=True).fill('握手')
@@ -44,8 +45,9 @@ with sync_playwright() as p:
     page.wait_for_timeout(100)
     assert reveals[-1]['path'] == 'C:\\ProxyClaw\\proxyclaw.log'
     dialog.get_by_label('搜索日志', exact=True).fill('')
-    dialog.get_by_label('日志筛选', exact=True).select_option('all')
-    dialog.get_by_role('checkbox', name='自动刷新', exact=True).uncheck()
+    dialog.get_by_role('combobox', name='日志筛选', exact=True).click()
+    page.get_by_role('option', name='全部日志', exact=True).click()
+    dialog.get_by_role('switch', name='自动刷新', exact=True).click()
     page.wait_for_timeout(200)
     count = requests.count(BASE + '/api/logs')
     page.wait_for_timeout(3300)
@@ -54,7 +56,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(200)
     assert requests.count(BASE + '/api/logs') == count + 1
     page.screenshot(path=str(output / 'logs.png'))
-    dialog.get_by_role('checkbox', name='自动刷新', exact=True).check()
+    dialog.get_by_role('switch', name='自动刷新', exact=True).click()
     page.wait_for_timeout(200)
     count = requests.count(BASE + '/api/logs')
     page.wait_for_timeout(3300)
@@ -87,6 +89,7 @@ with sync_playwright() as p:
     page.evaluate('''() => {
       window.testHidden = true;
       Object.defineProperty(document, 'hidden', {configurable: true, get: () => window.testHidden});
+      Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => window.testHidden ? 'hidden' : 'visible'});
       document.dispatchEvent(new Event('visibilitychange'));
     }''')
     count = requests.count(BASE + '/api/logs')

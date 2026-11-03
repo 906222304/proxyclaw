@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.12.0 (unreleased)
+
+### Frontend
+
+- Rewritten from Vue 3 to React 19 + TypeScript (Vite 7, Tailwind CSS 4).
+  Vue, reka-ui, AG Grid, Monaco and the DOMPurify alias are gone. Same
+  features, same API calls, same Chinese UI and dark / light themes.
+- One library per concern: TanStack Query holds all server state. The
+  hand-written `asyncPoller` is replaced by `refetchInterval` with
+  `refetchIntervalInBackground: false`, so every poll (stats 3 s, connections
+  2 s, process activity 10 s, logs 3 s) pauses while the window is hidden and
+  refetches once on restore. The WebView2 push channel only writes the cache:
+  `process_update` → `setQueryData`, `auto_rule_changed` → invalidates rules
+  and stats (the rule list now refreshes on that push).
+- Process tree and network table are virtualized with TanStack Virtual. The
+  table keeps column sort (asc → desc → off), the quick filter (now also
+  matches the Chinese state labels), the `route_reason` tooltip and the
+  struck-through rows for exited processes.
+- Raw JSON config editor: CodeMirror 6 with JSON lint, loaded on demand;
+  Ctrl+S saves.
+- Radix primitives (dialog, select, switch, tooltip, tabs), Sonner toasts
+  (replace the status-bar message), React Hook Form + Zod for the rule editor.
+- Calmer layout: neutral low-saturation palette, segmented tabs, settings
+  grouped into card lists, more whitespace.
+- Eagerly loaded JavaScript: about 1.1 MB → 620 kB (index 77 kB + vendor
+  543 kB; 198 kB gzipped). The 358 kB editor chunk loads only when the JSON
+  editor opens.
+- `npm audit`: 0 vulnerabilities. Tests: data layer (polling, pause while
+  hidden, push → cache), table sort / filter, tree helpers, form mapping, and
+  an App smoke test under jsdom.
+
 ## v0.11.1 (2026-11-03)
 
 ### Frontend

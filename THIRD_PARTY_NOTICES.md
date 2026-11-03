@@ -33,12 +33,18 @@ All linked at build time via vcpkg. Their licenses are permissive (MIT / BSL-1.0
 
 | Library | License | Link |
 |---|---|---|
-| Vue 3 | MIT | <https://vuejs.org/> |
+| React / React DOM | MIT | <https://react.dev/> |
 | Vite | MIT | <https://vitejs.dev/> |
-| reka-ui | MIT | <https://reka-ui.com/> |
+| TanStack Query | MIT | <https://tanstack.com/query> |
+| TanStack Virtual | MIT | <https://tanstack.com/virtual> |
+| Radix UI Primitives | MIT | <https://www.radix-ui.com/> |
 | Tailwind CSS | MIT | <https://tailwindcss.com/> |
-| AG Grid Community | MIT | <https://www.ag-grid.com/> |
-| Monaco Editor | MIT | <https://microsoft.github.io/monaco-editor/> |
+| tailwind-merge | MIT | <https://github.com/dcastil/tailwind-merge> |
+| clsx | MIT | <https://github.com/lukeed/clsx> |
+| CodeMirror 6 (incl. Lezer) | MIT | <https://codemirror.net/> |
+| React Hook Form (+ resolvers) | MIT | <https://react-hook-form.com/> |
+| Zod | MIT | <https://zod.dev/> |
+| Sonner | MIT | <https://sonner.emilkowal.ski/> |
 | Lucide | ISC | <https://lucide.dev/> |
 
 Full transitive license information is available via `npm ls` / `npx license-checker` in `frontend/`.

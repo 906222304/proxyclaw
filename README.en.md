@@ -215,10 +215,13 @@ Having trouble? Start with the [troubleshooting guide](docs/TROUBLESHOOTING.en.m
 | Backend | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | Embedded HTTP server |
 | Backend | [asio](https://think-async.com/Asio/) | Asynchronous I/O |
 | Backend | [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) | Embedded Edge for the UI |
-| Frontend | [Vue 3](https://vuejs.org/) + TypeScript + [Vite](https://vitejs.dev/) | App framework and build |
-| Frontend | [reka-ui](https://reka-ui.com/) + [Tailwind CSS](https://tailwindcss.com/) | Components (shadcn-vue style) and styling |
-| Frontend | [AG Grid Community](https://www.ag-grid.com/) | Network activity table |
-| Frontend | [Monaco Editor](https://microsoft.github.io/monaco-editor/) | JSON editor in Settings (lazy-loaded) |
+| Frontend | [React 19](https://react.dev/) + TypeScript + [Vite](https://vitejs.dev/) | App framework and build |
+| Frontend | [TanStack Query](https://tanstack.com/query) | Server state, polling and push cache |
+| Frontend | [TanStack Virtual](https://tanstack.com/virtual) | Virtualized process tree and network table |
+| Frontend | [Radix UI](https://www.radix-ui.com/) + [Tailwind CSS](https://tailwindcss.com/) | Dialog, select, switch, tooltip and tabs primitives; styling |
+| Frontend | [CodeMirror 6](https://codemirror.net/) | JSON editor in Settings (lazy-loaded) |
+| Frontend | [React Hook Form](https://react-hook-form.com/) + [Zod](https://zod.dev/) | Rule and proxy-group forms |
+| Frontend | [Sonner](https://sonner.emilkowal.ski/) | Toast notifications |
 | Frontend | [Lucide](https://lucide.dev/) | Icons |
 
 Full license information: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

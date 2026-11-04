@@ -134,6 +134,8 @@ jobs:
         env:
           PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
         run: |
+          python -m pip install --disable-pip-version-check -q requests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/e2e_api_test.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Stress smoke (packaged app, bounded)

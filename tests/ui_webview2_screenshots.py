@@ -138,6 +138,13 @@ def main() -> int:
                 loc = msg.location or {}
                 if loc.get("url"):
                     line += f"  ({loc.get('url', '').split('?')[0]}:{loc.get('lineNumber')})"
+                # A process without an extractable icon answers /api/icon with
+                # 404 by design; the <img> onError swaps in a generic icon.
+                # Chromium still logs the failed load as a console error.
+                if (msg.type == "error" and "/api/icon" in loc.get("url", "")
+                        and msg.text.startswith("Failed to load resource") and "404" in msg.text):
+                    console.append("[allowed] " + line)
+                    return
                 console.append(line)
                 if msg.type == "error":
                     problems.append("console error: " + line)
@@ -158,7 +165,7 @@ def main() -> int:
 
             page.wait_for_function("document.querySelector('#root')?.childElementCount > 0", timeout=30000)
             page.get_by_role("tablist", name="主导航").wait_for(timeout=30000)
-            page.get_by_text("已连接", exact=True).wait_for(timeout=30000)
+            page.locator("footer").get_by_text("已连接", exact=True).wait_for(timeout=30000)
             # Process tree data arrives over the WebView2 push channel after the
             # ready handshake; wait until at least one process row is shown.
             page.get_by_text(re.compile(r"\.exe$", re.I)).first.wait_for(timeout=30000)

@@ -28,7 +28,9 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright, expect
 
-WIDTH, HEIGHT = 1200, 800
+# GitHub's windows-2025 runner desktop is 1024x768; the host clamps the window
+# to the work area (1024x720 with the taskbar), so ask for exactly that.
+WIDTH, HEIGHT = 1024, 720
 
 
 def wait_cdp(port: int, proc: subprocess.Popen, timeout: float = 60) -> None:
@@ -43,6 +45,26 @@ def wait_cdp(port: int, proc: subprocess.Popen, timeout: float = 60) -> None:
         except Exception:
             time.sleep(0.5)
     raise RuntimeError(f"WebView2 CDP endpoint on :{port} did not come up in {timeout}s")
+
+
+def wait_app_target(port: int, proc: subprocess.Popen, timeout: float = 60) -> None:
+    """Wait until the WebView navigated to the app before attaching Playwright:
+    attaching while the target is still about:blank leaves Playwright with a
+    stale about:blank page after WebView2 swaps renderers on navigation."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=2) as r:
+                targets = json.load(r)
+            if any(t.get("type") == "page" and t.get("url", "").startswith("http://127.0.0.1")
+                   and "/api/session" not in t.get("url", "") for t in targets):
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+    raise RuntimeError(f"WebView2 never navigated to the app within {timeout}s")
 
 
 def find_app_page(browser, timeout: float = 30):
@@ -103,8 +125,10 @@ def main() -> int:
     problems: list[str] = []
     shots: list[str] = []
     rc = 1
+    close_requested = False
     try:
         wait_cdp(args.port, proc)
+        wait_app_target(args.port, proc)
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{args.port}")
             page = find_app_page(browser)
@@ -233,6 +257,7 @@ def main() -> int:
 
             # Close the window the way the title-bar X does; close_to_tray is
             # off in this config, so the app exits.
+            close_requested = True
             try:
                 page.evaluate("window.chrome.webview.postMessage('close')")
             except Exception as e:  # page goes away while evaluating
@@ -246,10 +271,12 @@ def main() -> int:
         print(f"FAIL harness: {e!r}")
         rc = 1
     finally:
+        if not close_requested and proc.poll() is None:
+            proc.terminate()
         try:
             code = proc.wait(20)
-            print(f"proxyclaw.exe exited cleanly with {code}")
-            if code != 0 and rc == 0:
+            print(f"proxyclaw.exe exited with code {code}")
+            if close_requested and code != 0 and rc == 0:
                 print("FAIL: non-zero exit code")
                 rc = 1
         except subprocess.TimeoutExpired:

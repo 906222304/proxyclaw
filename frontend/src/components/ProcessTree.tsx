@@ -227,14 +227,16 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         </span>
         {manual && <Badge tone="green" className="h-4 px-1 text-[10px]">手动</Badge>}
         {auto && <Badge tone="blue" className="h-4 px-1 text-[10px]">自动</Badge>}
-        <span className="ml-auto flex shrink-0 items-center pl-1.5">
+        {/* The hover-only hack button sits on top of the PID (which fades out)
+            instead of taking width, so hovering never squeezes the name. */}
+        <span className="relative ml-auto flex shrink-0 items-center pl-1.5">
           {showHack && (
             <Tooltip content="启用代理">
               <button
                 type="button"
                 aria-label="启用代理"
                 onClick={e => { e.stopPropagation(); onHack(node.pid) }}
-                className="flex h-6 w-0 items-center justify-center overflow-hidden rounded text-muted-foreground opacity-0 transition hover:bg-border hover:text-amber-500 group-hover:mr-1 group-hover:w-6 group-hover:opacity-100 focus-visible:mr-1 focus-visible:w-6 focus-visible:opacity-100"
+                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-border hover:text-amber-500 group-hover:opacity-100 focus-visible:opacity-100"
               >
                 <Zap className="size-3.5" />
               </button>
@@ -252,7 +254,12 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
               </button>
             </Tooltip>
           )}
-          <span className={cn('font-mono text-[11px]', selected ? 'text-primary' : 'text-muted-foreground', textDim)}>
+          <span className={cn(
+            'font-mono text-[11px] transition',
+            selected ? 'text-primary' : 'text-muted-foreground',
+            textDim,
+            showHack && 'group-hover:opacity-0 peer-focus-visible:opacity-0',
+          )}>
             {node.pid}
           </span>
         </span>

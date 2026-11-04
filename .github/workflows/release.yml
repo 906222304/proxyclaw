@@ -120,6 +120,23 @@ jobs:
           $archive = "dist/$env:PACKAGE_NAME.zip"
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $env:PACKAGE_NAME.zip" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+      - name: Real-window WebView2 screenshot test (packaged app over CDP)
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          python -m pip install --disable-pip-version-check -q playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/ui_webview2_screenshots.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/ui-screenshots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ui-screenshots
+          path: build/ui-screenshots/
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-x64

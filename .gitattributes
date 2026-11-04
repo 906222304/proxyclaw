@@ -1,0 +1,2 @@
+# Third-party WinDivert SDK: exclude from GitHub language stats
+WinDivert-2.2.2-A/** linguist-vendored

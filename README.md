@@ -215,10 +215,13 @@ ProxyClaw 需要管理员权限。若走注册表 `Run` 键，每次登录都会
 | 后端 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | 内置 HTTP 服务端 |
 | 后端 | [asio](https://think-async.com/Asio/) | 异步 IO |
 | 后端 | [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) | 嵌入 Edge 渲染前端 |
-| 前端 | [Vue 3](https://vuejs.org/) + TypeScript + [Vite](https://vitejs.dev/) | 应用框架与构建 |
-| 前端 | [reka-ui](https://reka-ui.com/) + [Tailwind CSS](https://tailwindcss.com/) | 组件（shadcn-vue 风格）与样式 |
-| 前端 | [AG Grid Community](https://www.ag-grid.com/) | 网络活动表格 |
-| 前端 | [Monaco Editor](https://microsoft.github.io/monaco-editor/) | 设置页 JSON 编辑器（按需加载） |
+| 前端 | [React 19](https://react.dev/) + TypeScript + [Vite](https://vitejs.dev/) | 应用框架与构建 |
+| 前端 | [TanStack Query](https://tanstack.com/query) | 服务端状态、轮询与推送缓存 |
+| 前端 | [TanStack Virtual](https://tanstack.com/virtual) | 进程树与网络活动表格虚拟滚动 |
+| 前端 | [Radix UI](https://www.radix-ui.com/) + [Tailwind CSS](https://tailwindcss.com/) | 对话框、下拉框、开关、提示等基础组件与样式 |
+| 前端 | [CodeMirror 6](https://codemirror.net/) | 设置页 JSON 编辑器（按需加载） |
+| 前端 | [React Hook Form](https://react-hook-form.com/) + [Zod](https://zod.dev/) | 规则与代理组表单 |
+| 前端 | [Sonner](https://sonner.emilkowal.ski/) | 操作提示 |
 | 前端 | [Lucide](https://lucide.dev/) | 图标 |
 
 完整许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

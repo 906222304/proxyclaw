@@ -1,8 +1,8 @@
 #pragma once
 
 // icon_service — extract 16x16 PNG icon bytes for a given exe.
-// Reuses the legacy icon_cache (GDI+ based). Throws not_found if the icon
-// is missing or empty — callers surface 404.
+// Reuses the legacy icon_cache (GDI+ based). Returns an empty vector when the
+// exe has no extractable icon — the HTTP layer answers that with 204.
 
 #include <cstdint>
 #include <string_view>
@@ -20,7 +20,7 @@ public:
     icon_service& operator=(const icon_service&) = delete;
 
     // name: executable file name, e.g. "chrome.exe"; path may be empty.
-    // Returns a copy of the PNG bytes.
+    // Returns a copy of the PNG bytes, or an empty vector for "no icon".
     [[nodiscard]] std::vector<std::uint8_t> get(std::string_view name,
                                                 std::string_view path);
 

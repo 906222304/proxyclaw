@@ -1,28 +1,30 @@
 import path from 'node:path'
 import tailwindcss from '@tailwindcss/vite'
-import vue from '@vitejs/plugin-vue'
+import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [react(), tailwindcss()],
   resolve: {
-    alias: [
-      { find: '@', replacement: path.resolve(__dirname, './src') },
-      // monaco-editor vendors its own DOMPurify copy (3.4.15, known XSS
-      // advisories). Point Monaco's sanitizer at the patched npm package.
-      { find: /^\.\/dompurify\/dompurify\.js$/, replacement: 'dompurify' },
-    ],
+    alias: { '@': path.resolve(__dirname, './src') },
   },
   build: {
     rollupOptions: {
+      // zod's sources carry /*#__PURE__*/ comments in positions Rollup
+      // ignores; the warning is noise.
+      onwarn(warning, warn) {
+        if (warning.code === 'INVALID_ANNOTATION') return
+        warn(warning)
+      },
       output: {
-        // Keep the eagerly loaded app small and cache-friendly: split the
-        // large UI libraries into their own vendor chunks. Monaco stays out of
-        // these groups so it remains in the lazily loaded editor chunks.
+        // React itself and the small UI libraries form two cacheable vendor
+        // chunks (one would exceed Vite's 500 kB warning limit). CodeMirror is
+        // excluded so it stays in the lazily loaded JSON editor chunk and is
+        // fetched only when the editor opens.
         manualChunks(id) {
-          if (!id.includes('node_modules') || id.includes('monaco-editor')) return
-          if (id.includes('ag-grid')) return 'vendor-grid'
-          if (id.includes('lucide-vue-next')) return 'vendor-icons'
+          if (!id.includes('node_modules')) return
+          if (/[\\/](@codemirror|@lezer|crelt|style-mod|w3c-keyname)[\\/]/.test(id)) return
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react'
           return 'vendor'
         },
       },

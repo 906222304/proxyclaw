@@ -8,7 +8,7 @@ Contributor-facing technical overview. For the end-user intro see [README.md](..
 - **Build**: CMake + pinned dependencies (`scripts/prepare_release_deps.py`)
 - **Core deps**: WinDivert (kernel traffic intercept), WebView2 (embedded browser UI)
 - **Backend libs** (pinned, checksum-verified): `quill` (logging), `nlohmann-json`, `cpp-httplib`, `asio` (standalone)
-- **Frontend**: Vue 3 + TypeScript + shadcn-vue (reka-ui) + Tailwind CSS 4 + AG Grid + Monaco (JSON-only, lazy-loaded)
+- **Frontend**: React 19 + TypeScript + Vite 7 + Tailwind CSS 4; TanStack Query (all server state: polling via `refetchInterval`, push writes into the cache), TanStack Virtual (process tree + network table), Radix primitives, CodeMirror 6 (JSON-only, lazy-loaded)
 - **IPC**: HTTP API for CRUD + WebView2 in-process PostMessage for backend → frontend push (replaces the previous SSE channel)
 - **Config**: JSON (`proxyclaw.json`)
 - **Target**: Windows 10 2004+ / 11 (requires `SetInterfaceDnsSettings`), administrator privileges
@@ -109,7 +109,7 @@ src/
   ui/
     webview_app.hpp                  - Frameless WebView2 host + tray; WndProc dispatcher
 
-frontend/                            - Vue 3 + TypeScript (built static files served by cpp-httplib)
+frontend/                            - React 19 + TypeScript (built static files served by cpp-httplib)
 tests/
   test_components.cpp                - Component-level unit tests (wildcard, flat_tree, etc.)
   e2e_api_test.py                    - 22-case HTTP integration suite (requests-based); `-k SUBSTR` runs a subset
@@ -166,8 +166,9 @@ Replaces the earlier SSE / `EventSource` channel. Push events flow:
 5. The UI-thread WndProc takes ownership, builds `{event, data}`, and calls
    `ICoreWebView2::PostWebMessageAsJson`.
 6. Frontend's `notify.ts` listens on `chrome.webview` `message` events and
-   updates the shared Vue refs (`tree`, etc.); components consume them
-   directly.
+   writes the TanStack Query cache (`setQueryData` for `process_update`,
+   `invalidateQueries` for `auto_rule_changed`); components read it through
+   `useQuery`.
 7. Initial sync: when the frontend mounts (or when visibility transitions
    from hidden back to visible) it posts `{type: 'ready'}` back through
    `chrome.webview.postMessage`. The host invokes
@@ -231,10 +232,11 @@ backend stops doing tree-snapshot work entirely. Implementation:
    and early-returns when hidden. No `refresh_snapshot`, no PostMessage,
    no V8 wake-up. The strand is free to serve other work (in practice
    there's nothing else to serve while the user has the window away).
-4. The frontend `useDocumentVisibility` composable mirrors the gate on the
-   client side: the three remaining polled endpoints (`/api/stats`,
-   `/api/tcp`, `/api/udp` via `fetchActivity` / `fetchConnections` /
-   `fetchStatus`) suspend their `setInterval` while hidden.
+4. The frontend mirrors the gate on the client side: the polled endpoints
+   (`/api/stats`, `/api/tcp`, `/api/udp`, `/api/logs`) are TanStack Query
+   queries with `refetchInterval` and `refetchIntervalInBackground: false`,
+   so they pause while `document.visibilityState` is `hidden` and refetch
+   once on restore (`frontend/src/api/queries.ts`).
 5. When the host returns to visible, `set_visible(true)` does NOT replay
    automatically — instead, the frontend's `visibilitychange` handler
    re-posts `{type: 'ready'}`, which drives the existing replay path

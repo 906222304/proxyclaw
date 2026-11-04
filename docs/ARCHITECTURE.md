@@ -111,17 +111,18 @@ src/
 
 frontend/                            - React 19 + TypeScript (built static files served by cpp-httplib)
 tests/
-  test_components.cpp                - Component-level unit tests (wildcard, flat_tree, etc.)
-  e2e_api_test.py                    - 22-case HTTP integration suite (requests-based); `-k SUBSTR` runs a subset
-  run_all.py                         - admin-shell harness: launch + wait-ready + run + teardown
-  playwright_e2e/
-    poc_attach.py                    - Playwright + WebView2 CDP attach PoC
-    run_pw.py                        - 5-case UI e2e suite: push reception, no SSE leak,
-                                       DELETE roundtrip regression net, no polling
-                                       under ETW load
+  test_*.cpp, log_tail_test.cpp      - native unit tests registered in CTest (see CMakeLists.txt)
+  proxy_health_harness.cpp,
+  dns_forwarder_harness.cpp          - loopback integration hosts, driven by run_proxy_health_tests.py
+                                       and run_dns_network_tests.py in CI
+  e2e_rule_policy.py                 - real-WinDivert rule / UDP / speed-test e2e (CI, admin)
+  ui_webview2_screenshots.py         - packaged app in a real WebView2 window, screenshots over CDP (CI)
+  test_components.cpp, test_window_dpi.cpp, test_icon_resolution.cpp
+                                     - older unit tests not yet in CTest (run_window_dpi_tests.py)
+  network_fakes/ dns_fakes/ projection_fakes/ - header fakes for the unit tests
 scripts/
   verify.py                          - one-shot: frontend tests/build + cpp build + ctest + layering
-                                       grep guards + HTTP e2e + Playwright e2e
+                                       grep guards + real-WinDivert e2e (admin)
 assets/
   clew.svg / clew.ico / clew.rc      - Embedded Windows icon
 ```
@@ -209,8 +210,7 @@ lets a connection go direct. ETW delivers a spawn loop's starts and stops
 up to 100 ms later — is not perceptible. The option is kept for
 experiments (`cmake -DPROXYCLAW_PROJECTION_COALESCE=OFF`) but `CMakePresets.json`
 pins it ON; an old `build/` cache keeps whatever it had, so reconfigure via
-the preset. For characterisation use `tests/stress_etw.py` +
-`tests/stress_backend.py` (see the "Build notes" section).
+the preset.
 
 ### Visibility gate — minimize / tray drops backend work
 
@@ -284,7 +284,7 @@ proportional fix.
 ### WinDivert dual-layer
 
 - **SOCKET SNIFF layer** (`windivert_socket.hpp`): observes `connect()` and `close()` events (filter `outbound and !loopback and tcp and (event == CONNECT or event == CLOSE)`). For every CONNECT it publishes exactly one decision into `PortTracker[local_port]`: `proxied(group)` or `direct`. Unknown PIDs (younger than the ~1–2 s ETW delivery) are resolved on the spot by `process_tree_manager::resolve_pid_now` (ancestor walk + insert with the real PSN, so the late ETW START is an idempotent no-op). Handler runs on the strand.
-- **NETWORK redirect layer** (`windivert_network.hpp`, `tcp_redirect.hpp`): filter `outbound and tcp and (!loopback or tcp.SrcPort == redirect_port)`, opened in divert mode (`flags = 0`). A proxied packet is handed to the local acceptor as `AppIP:AppPort -> AppIP:redirect_port`, injected outbound. Only acceptor replies enter the loopback branch; they are restored to `OriginalRemoteIP:OriginalRemotePort -> AppIP:AppPort` and injected inbound on the saved original interface. This avoids fabricating an inbound public-peer stream at the acceptor, which can be aborted by Windows stream filters on physical adapters. Initial undecided SYNs remain **parked**, and both the injector and live workers use the same transformation. See [the no-TUN diagnosis and validation](NO_TUN_TCP_FIX.md). Two dedicated blocking worker threads.
+- **NETWORK redirect layer** (`windivert_network.hpp`, `tcp_redirect.hpp`): filter `outbound and tcp and (!loopback or tcp.SrcPort == redirect_port)`, opened in divert mode (`flags = 0`). A proxied packet is handed to the local acceptor as `AppIP:AppPort -> AppIP:redirect_port`, injected outbound. Only acceptor replies enter the loopback branch; they are restored to `OriginalRemoteIP:OriginalRemotePort -> AppIP:AppPort` and injected inbound on the saved original interface. This avoids fabricating an inbound public-peer stream at the acceptor, which can be aborted by Windows stream filters on physical adapters. Initial undecided SYNs remain **parked**, and both the injector and live workers use the same transformation. Two dedicated blocking worker threads.
 - WinDivert's layer split is the reason for both layers: NETWORK can block/inject but has no PID; SOCKET has the PID but cannot touch packets. The local port is the only key they share.
 
 ### TCP SYN parking (v0.10)
@@ -429,7 +429,7 @@ cookie and redirects to `/`; the token never appears in static assets and is
 redacted from the navigation log line. No CORS headers are sent and `OPTIONS`
 is no longer answered. WebView2 web messages are accepted only from the origin
 the host navigated to. Test harnesses set `PROXYCLAW_API_TOKEN` (32+ chars)
-for the process they launch and send the header (`tests/api_token.py`).
+for the process they launch and send the header.
 Isolation from other local processes of the same user is out of scope; that
 would need an ACL'd named pipe.
 
@@ -558,37 +558,22 @@ The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a sy
 - ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `proxyclaw.exe` before rebuilding (MSVC LNK1104 error otherwise).
-- `python scripts/verify.py` runs the frontend unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), the HTTP e2e suite (`run_all.py`) and the Playwright + WebView2 e2e suite (`run_pw.py`), each stage with its own timeout. The e2e stages need an administrator shell and `uv`; `--no-e2e` skips them. The e2e harnesses share a session token with the proxyclaw.exe they launch through `tests/api_token.py`.
+- `python scripts/verify.py` runs the frontend unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), and the real-WinDivert e2e suite (`tests/e2e_rule_policy.py`), each stage with its own timeout. The e2e stage needs an administrator shell; `--no-e2e` skips it.
 
-### E2E testing strategy: log-scan over Playwright timing
+### E2E testing in CI
 
-The HTTP e2e suite runs 22 cases against a live proxyclaw.exe; the Playwright suite runs 3. The split is deliberate:
+`.github/workflows/release.yml` runs, on every push and PR to `main`:
 
-- **Traffic interception is judged by the exit IP, never by counters.** The suite copies `System32\curl.exe` to a private name (`clew_e2e_curl.exe`) so its rule cannot collide with the user's own `curl.exe` rule, measures two references once per run (through `--proxy socks5://127.0.0.1:7890`, and direct with `trust_env=False`), and refuses to run when the two are equal, because the proxy would then be routing the target DIRECT. Then 20 sequential and 20 concurrent fresh probe processes must all report the proxy's exit IP, and a control case with the rule disabled must report the direct IP. `tcp_syn_parking` deltas (`proxied_decisions`, `released_by_watchdog`, `late_rejected`, `pool_in_use`) are secondary evidence: a wrong decision published on time leaves every counter quiet (see "TCP SYN parking").
-- **HTTP / log-scan** (`tests/e2e_api_test.py`) — anything assertable from `proxyclaw.log` lives here. T22 (batch_hijack single notify, was T14) counts `[tree-change] source=batch_hijack` lines in a measurement window; T23 (DELETE 60ms regression net for the cpp-httplib bug) reads the server-side elapsed time from the `[api] DELETE … (Xus)` line. Both are independent of the frontend's own timing — V8 contention can't make these tests flaky. The suite flips `log_level=debug` at startup and restores on exit (`try/finally`), so DEBUG lines like `[tree-change]` are visible inside the run without polluting default behaviour.
-- **Playwright** (`tests/playwright_e2e/run_pw.py`) — only UI-side regressions that pure HTTP can't observe: no `/api/events` fetch ever made (no SSE leak), backend push reaches the React tree, no HTTP polling under ETW load. **Removed**: T14 batch single-push (replaced by T22 log-scan), DELETE 60ms (replaced by T23 log-scan), stress UI responsiveness (Playwright `page.evaluate` competes with V8 main-thread push processing, RTTs measured through CDP are several times higher than actual backend latency — wrong tool for that question).
+- `ctest` — all native unit tests;
+- `tests/run_proxy_health_tests.py` and `tests/run_dns_network_tests.py` — the
+  loopback harnesses (SOCKS5 relay, UDP cleanup, DNS forwarder);
+- `tests/e2e_rule_policy.py` — launches the built `proxyclaw.exe` with the real
+  WinDivert driver and judges rules, UDP per-packet addressing and the staged
+  speed test by what actually leaves the machine;
+- `tests/ui_webview2_screenshots.py` — opens the packaged app in a real
+  WebView2 window over CDP, fails on any console / page error, and uploads the
+  `ui-screenshots` artifact used by the README.
 
-To enable the log-scan tests, the underlying instrumentation went in v0.9.0:
-- `notify_tree_changed` logs `[tree-change] source=…` at DEBUG (zero cost at default `info` level).
-- `route_registry::dispatch` was already logging `[api] METHOD path -> status (Xus)` at INFO; v0.9.0 added `write_json` setting `res.status=200` explicitly so the recorded status is the real value (was `-1`, cpp-httplib's pre-flush sentinel).
+Older local-only suites (HTTP log-scan e2e, Playwright push tests, ETW stress
+harness) were removed in v0.13; they remain in git history before that release.
 
-### Performance harness (no Playwright)
-
-For perf characterisation independent of the Playwright runner (which itself
-competes with V8 main-thread push processing under load):
-
-- `tests/stress_etw.py` — PEP 723 ETW churn driver. Maintains a target
-  population of short-lived `cmd.exe /c ping ...` children so Windows
-  continuously fires ProcessStart / ProcessStop events. Each child = 2 OS
-  processes (cmd + ping) so `--target N` produces ~2N stress processes plus
-  ambient. Knobs: `--target / --min-life / --max-life / --duration`.
-- `tests/stress_backend.py` — pure-Python perf measurement. Spawns
-  stress_etw, exercises hijack via HTTP at a configurable cadence, scans
-  `proxyclaw.log` for instrumentation traces in the measured wall-clock window,
-  reports per-stage timing distributions (refresh_us / push_us / strand
-  wait_us / hijack RTT). Optional `--visibility-cycle` to drive minimize
-  / restore mid-test via `WM_SYSCOMMAND` and bucket pre / hidden / post
-  metrics — useful for verifying the visibility gate.
-
-Neither harness is part of `verify.py` (they're for ad-hoc characterisation,
-not regression).

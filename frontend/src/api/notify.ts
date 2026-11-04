@@ -78,7 +78,7 @@ export function startNotifications(queryClient: QueryClient): boolean {
   if (started) return connected
   started = queryClient
 
-  // Test bridge for Playwright + CDP (tests/playwright_e2e): returns the
+  // Debug bridge for CDP-driven tests (e.g. Playwright): returns the
   // current pushed state as plain JSON. Always on; the WebView2 host is
   // in-process, so there is no user-facing surface to leak.
   ;(window as unknown as { __clew_debug: unknown }).__clew_debug = {

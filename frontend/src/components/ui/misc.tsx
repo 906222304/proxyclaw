@@ -58,7 +58,7 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
   className?: string
 }) {
   return (
-    <div role="radiogroup" className={cn('inline-flex rounded-lg bg-muted p-0.5', className)}>
+    <div role="radiogroup" className={cn('inline-flex shrink-0 rounded-lg bg-muted p-0.5', className)}>
       {options.map(o => (
         <button
           key={o.value}
@@ -67,7 +67,7 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
           aria-checked={value === o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            'flex-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+            'flex-1 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
             value === o.value ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
           )}
         >

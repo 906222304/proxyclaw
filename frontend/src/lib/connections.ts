@@ -41,11 +41,11 @@ export function remoteOf(c: NetworkConnection): string {
  */
 export function columnsFor(allProcesses: boolean): ColumnDef[] {
   const cols: ColumnDef[] = []
-  if (allProcesses) cols.push({ key: 'process_name', header: '进程', width: 'minmax(150px, 1fr)' })
+  if (allProcesses) cols.push({ key: 'process_name', header: '进程', width: 'minmax(120px, 1fr)' })
   cols.push(
-    { key: 'pid', header: 'PID', width: '76px', mono: true },
-    { key: 'protocol', header: '协议', width: '72px' },
-    { key: 'remote', header: '远端地址', width: allProcesses ? 'minmax(150px, 210px)' : 'minmax(160px, 1fr)', mono: true },
+    { key: 'pid', header: 'PID', width: '68px', mono: true },
+    { key: 'protocol', header: '协议', width: '64px' },
+    { key: 'remote', header: '远端地址', width: allProcesses ? 'minmax(130px, 210px)' : 'minmax(160px, 1fr)', mono: true },
     { key: 'state', header: '连接状态', width: '124px' },
     { key: 'proxy_status', header: '代理状态', width: '96px' },
     { key: 'local_port', header: '本地端口', width: '96px', mono: true },

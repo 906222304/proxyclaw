@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ProcessInfo } from '@/api/types'
-import { countProcesses, dirOf, exeFromCmdline, filterTree, flattenTree, matchedPids, subtreeActive } from './process'
+import {
+  countProcesses, dirOf, exeFromCmdline, filterTree, flattenTree, matchedPids, MAX_INDENT_DEPTH, rowIndent, subtreeActive,
+} from './process'
 
 const p = (pid: number, name: string, children: ProcessInfo[] = [], hijacked = false): ProcessInfo =>
   ({ pid, parent_pid: 0, name, hijacked, children })
@@ -47,6 +49,34 @@ describe('process tree helpers', () => {
     expect(rows[3]!.nextSibling).toBeNull()
     expect(rows[4]!.rails).toEqual([])
     expect(flattenTree(tree, () => false).map(r => r.node.pid)).toEqual([1, 6])
+  })
+
+  it('caps the visual indent depth and keeps rails consistent', () => {
+    // A single chain 100 -> 101 -> ... nested 10 levels deep, all expanded.
+    let chain: ProcessInfo = { pid: 110, parent_pid: 109, name: 'leaf.exe', hijacked: false, children: [] }
+    for (let pid = 109; pid >= 100; pid--) {
+      chain = { pid, parent_pid: pid - 1, name: `p${pid}.exe`, hijacked: false, children: [chain] }
+    }
+    const rows = flattenTree([chain], () => true)
+    expect(rows).toHaveLength(11)
+    const indents = rows.map(rowIndent)
+    expect(MAX_INDENT_DEPTH).toBeGreaterThanOrEqual(4)
+    // Indent grows one step per level up to the cap...
+    for (let d = 0; d <= MAX_INDENT_DEPTH; d++) {
+      expect(indents[d]!.level).toBe(d)
+      expect(indents[d]!.compressed).toBe(false)
+      expect(indents[d]!.rails).toHaveLength(Math.max(0, d - 1))
+    }
+    // ...then stays at the cap, marked compressed, never drawing more rails.
+    for (let d = MAX_INDENT_DEPTH + 1; d <= 10; d++) {
+      expect(rows[d]!.depth).toBe(d)
+      expect(indents[d]!.level).toBe(MAX_INDENT_DEPTH)
+      expect(indents[d]!.compressed).toBe(true)
+      expect(indents[d]!.rails).toHaveLength(MAX_INDENT_DEPTH - 1)
+    }
+    // Rails kept are the shallow ones, unchanged.
+    const r3 = flattenTree(tree, pid => pid === 1 || pid === 2)[2]!
+    expect(rowIndent(r3)).toEqual({ level: 2, compressed: false, rails: [5] })
   })
 
   it('parses executable paths', () => {

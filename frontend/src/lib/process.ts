@@ -110,6 +110,32 @@ export function flattenTree(nodes: ProcessInfo[], isExpanded: (pid: number) => b
   return rows
 }
 
+/**
+ * Deepest level that still gets its own indent step. The sidebar is ~247 px
+ * wide, so unbounded indentation pushes deep names out of view; rows nested
+ * deeper stay at this indent and draw a dashed (compressed) guide instead.
+ */
+export const MAX_INDENT_DEPTH = 5
+
+export interface RowIndent {
+  /** Indent level actually rendered: min(depth, MAX_INDENT_DEPTH). */
+  level: number
+  /** True when depth exceeds the cap (levels were folded into the last step). */
+  compressed: boolean
+  /** Ancestor guide-line columns to draw, 0..level-2 (see FlatRow.rails). */
+  rails: (number | null)[]
+}
+
+/** Visual indent for a flattened row, with the depth cap applied. */
+export function rowIndent(row: Pick<FlatRow, 'depth' | 'rails'>): RowIndent {
+  const level = Math.min(row.depth, MAX_INDENT_DEPTH)
+  return {
+    level,
+    compressed: row.depth > MAX_INDENT_DEPTH,
+    rails: row.rails.slice(0, Math.max(0, level - 1)),
+  }
+}
+
 /** Executable path from a command line (quoted or first token). */
 export function exeFromCmdline(cmd: string): string {
   if (cmd.startsWith('"')) {

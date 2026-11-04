@@ -6,6 +6,8 @@ export const queryKeys = {
   /** Process tree. Push-only: filled by `process_update`, never fetched. */
   processTree: ['processTree'] as const,
   processDetail: (pid: number) => ['processDetail', pid] as const,
+  /** Object URL of an exe's icon (null = none). Fetched once per name per session. */
+  processIcon: (name: string) => ['processIcon', name] as const,
   stats: ['stats'] as const,
   /** TCP+UDP connections for one PID, or for all processes ('all'). */
   connections: (pid: number | undefined) => ['connections', pid ?? 'all'] as const,

@@ -141,13 +141,6 @@ def main() -> int:
                 loc = msg.location or {}
                 if loc.get("url"):
                     line += f"  ({loc.get('url', '').split('?')[0]}:{loc.get('lineNumber')})"
-                # A process without an extractable icon answers /api/icon with
-                # 404 by design; the <img> onError swaps in a generic icon.
-                # Chromium still logs the failed load as a console error.
-                if (msg.type == "error" and "/api/icon" in loc.get("url", "")
-                        and msg.text.startswith("Failed to load resource") and "404" in msg.text):
-                    console.append("[allowed] " + line)
-                    return
                 console.append(line)
                 if msg.type == "error":
                     problems.append("console error: " + line)
@@ -213,6 +206,17 @@ def main() -> int:
             # Playwright scrolls the clicked (deeply indented) row into view
             # horizontally; a mouse user would not, so undo that.
             page.evaluate("document.querySelectorAll('*').forEach(e => { if (e.scrollLeft) e.scrollLeft = 0 })")
+            # The selected row is deeply nested; with the indent cap its name
+            # must still fit the sidebar without being cut off.
+            fit = page.evaluate("""() => {
+                const el = [...document.querySelectorAll('span[title="proxyclaw.exe"]')][0]
+                const row = el?.closest('[data-depth]')
+                return el ? { depth: Number(row?.dataset.depth), scroll: el.scrollWidth, client: el.clientWidth } : null
+            }""")
+            console.append(f"[info] selected tree row {fit}")
+            print(f"selected tree row: {fit}")
+            if not fit or fit["scroll"] > fit["client"] + 1:
+                problems.append(f"process tree name truncated: {fit}")
             shot("network-selected-process-dark")
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("")
             page.get_by_role("button", name=re.compile("^全部进程")).first.click()

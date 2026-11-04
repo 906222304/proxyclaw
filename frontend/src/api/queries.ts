@@ -1,5 +1,6 @@
 import { QueryClient, queryOptions, useQuery, type QueryClient as QC } from '@tanstack/react-query'
 import {
+  fetchProcessIcon,
   getAutoRules,
   getAutostart,
   getConfig,
@@ -55,6 +56,17 @@ export function createQueryClient(): QueryClient {
 // the "all processes" feed. When a process is explicitly selected we still
 // show whatever it owns, including pid 0/4.
 export const SYSTEM_PIDS = new Set([0, 4])
+
+/** Exe icon as an object URL, or null (204 = no icon, or any failure). */
+export function processIconQuery(name: string) {
+  return queryOptions({
+    queryKey: queryKeys.processIcon(name),
+    queryFn: ({ signal }) => fetchProcessIcon(name, signal).catch(() => null),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  })
+}
 
 export const statsQuery = queryOptions({
   queryKey: queryKeys.stats,

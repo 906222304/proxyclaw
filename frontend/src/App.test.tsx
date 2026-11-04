@@ -80,7 +80,7 @@ describe('App', () => {
     expect(host.querySelector('[role="row"].line-through')).not.toBeNull()
 
     // Expand explorer.exe and select the child.
-    const chevron = [...host.querySelectorAll('span')].find(s => s.querySelector('svg') && s.className.includes('w-5'))!
+    const chevron = [...host.querySelectorAll('span')].find(s => s.querySelector('svg') && s.className.includes('w-3.5'))!
     click(chevron)
     await flush()
     const child = [...host.querySelectorAll('[title]')].find(e => e.getAttribute('title') === 'app.exe')!

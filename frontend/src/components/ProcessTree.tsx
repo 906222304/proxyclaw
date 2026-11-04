@@ -4,22 +4,23 @@ import { ChevronDown, ChevronRight, Monitor, Zap, ZapOff } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
 import { hijackProcess, unhijackProcess } from '@/api/client'
 import { activityQuery, isActive, useProcessTree } from '@/api/queries'
+import { ProcessIcon } from '@/components/ProcessIcon'
 import { Badge, Segmented } from '@/components/ui/misc'
 import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
-  countProcesses, filterTree, flattenTree, matchedPids, subtreeActive,
+  countProcesses, filterTree, flattenTree, matchedPids, rowIndent, subtreeActive,
   type FlatRow, type ProcessFilter,
 } from '@/lib/process'
 import { pushError } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 const ROW_HEIGHT = 28
-const INDENT = 22
-const LINE_X = 10
-
-// Icons that failed to load once are not retried when a virtual row remounts.
-const failedIcons = new Set<string>()
+// One indent step; the cap (MAX_INDENT_DEPTH) bounds the total to 55 px so
+// deep names still fit the ~247 px sidebar.
+const INDENT = 11
+// Guide-line x offset inside a step: centre of the 14 px chevron gutter.
+const LINE_X = 7
 
 const FILTERS: { value: ProcessFilter; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -101,11 +102,11 @@ export function ProcessTree({ selectedPid, onSelect }: {
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{total}</span>
       </button>
 
-      <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 select-none overflow-auto px-2 pb-3">
+      <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 select-none overflow-y-auto overflow-x-hidden px-2 pb-3">
         {rows.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-muted-foreground">没有找到进程。</div>
         ) : (
-          <div className="relative w-max min-w-full" style={{ height: virtualizer.getTotalSize() }}>
+          <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
             <div style={{ transform: `translateY(${items[0]?.start ?? 0}px)` }}>
               {items.map(item => {
                 const row = rows[item.index]!
@@ -133,6 +134,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
 }
 
 const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/60' : 'bg-border')
+const dashClass = (on: boolean) => (on ? 'border-muted-foreground/60' : 'border-border')
 
 const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, onSelect, onToggle, onHack, onUnhack }: {
   row: FlatRow
@@ -145,7 +147,9 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   onHack: (pid: number) => void
   onUnhack: (pid: number) => void
 }) {
-  const { node, depth, hasChildren, expanded, rails, nextSibling } = row
+  const { node, depth, hasChildren, expanded, nextSibling } = row
+  const { level, compressed, rails } = rowIndent(row)
+  const elbowX = (level - 1) * INDENT + LINE_X
   const manual = node.hijack_source === 'manual'
   const auto = node.hijack_source === 'auto'
   const showHack = !node.hijacked && !auto
@@ -153,7 +157,6 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   // Text dims on self-idle; the icon dims only when the whole subtree is idle.
   const textDim = !selected && !active ? 'opacity-50' : ''
   const iconDim = !selected && !subtreeOn ? 'opacity-50' : ''
-  const [iconFailed, setIconFailed] = useState(() => failedIcons.has(node.name))
 
   return (
     <div
@@ -163,8 +166,9 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
           ? active ? 'bg-selected' : 'bg-muted'
           : matched ? 'bg-amber-400/15' : 'hover:bg-muted',
       )}
-      style={{ height: ROW_HEIGHT, paddingLeft: depth * INDENT }}
-      title={node.cmdline || node.name}
+      style={{ height: ROW_HEIGHT, paddingLeft: level * INDENT }}
+      title={(node.cmdline || node.name) + (compressed ? `\n（第 ${depth} 层）` : '')}
+      data-depth={depth}
       onClick={() => onSelect(node.pid)}
     >
       {/* Guide lines: ancestor rails, then this row's elbow. */}
@@ -175,18 +179,30 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
           style={{ left: k * INDENT + LINE_X }}
         />
       ))}
-      {depth > 0 && (
+      {level > 0 && !compressed && (
         <>
-          <span className={cn('absolute top-0 h-1/2 w-px', lineClass(subtreeOn))} style={{ left: (depth - 1) * INDENT + LINE_X }} />
-          <span className={cn('absolute top-1/2 h-px', lineClass(subtreeOn))} style={{ left: (depth - 1) * INDENT + LINE_X, width: INDENT - LINE_X }} />
+          <span className={cn('absolute top-0 h-1/2 w-px', lineClass(subtreeOn))} style={{ left: elbowX }} />
+          <span className={cn('absolute top-1/2 h-px', lineClass(subtreeOn))} style={{ left: elbowX, width: INDENT - LINE_X }} />
           {nextSibling != null && (
-            <span className={cn('absolute top-1/2 h-1/2 w-px', lineClass(activeSubtree.has(nextSibling)))} style={{ left: (depth - 1) * INDENT + LINE_X }} />
+            <span className={cn('absolute top-1/2 h-1/2 w-px', lineClass(activeSubtree.has(nextSibling)))} style={{ left: elbowX }} />
           )}
+        </>
+      )}
+      {/* Deeper than the cap: levels are folded into the last step, drawn as
+          a dashed rail with a short elbow (full depth is in the tooltip). */}
+      {compressed && (
+        <>
+          <span
+            data-testid="compressed-guide"
+            className={cn('absolute top-0 h-full w-0 border-l border-dashed', dashClass(subtreeOn))}
+            style={{ left: elbowX }}
+          />
+          <span className={cn('absolute top-1/2 h-px', lineClass(subtreeOn))} style={{ left: elbowX, width: INDENT - LINE_X }} />
         </>
       )}
 
       <span
-        className="flex w-5 shrink-0 items-center justify-center"
+        className="flex w-3.5 shrink-0 items-center justify-center"
         onClick={e => { e.stopPropagation(); if (hasChildren) onToggle(node.pid) }}
       >
         {hasChildren && (
@@ -196,39 +212,29 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         )}
       </span>
 
-      <span className="flex flex-1 items-center gap-2">
-        {iconFailed ? (
-          <Monitor className={cn('size-4 shrink-0 text-muted-foreground', iconDim)} />
-        ) : (
-          <img
-            src={`/api/icon?name=${encodeURIComponent(node.name)}`}
-            alt=""
-            loading="lazy"
-            className={cn('size-4 shrink-0', iconDim)}
-            onError={() => { failedIcons.add(node.name); setIconFailed(true) }}
-          />
-        )}
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <ProcessIcon name={node.name} className={cn('size-4', iconDim)} />
         {node.hijacked && (
           <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title={manual ? '手动代理' : '自动代理'} />
         )}
         <span className={cn(
-          'whitespace-nowrap font-mono tracking-tight',
+          'min-w-0 truncate font-mono tracking-tight',
           depth === 0 ? 'text-[13px]' : 'text-xs',
           selected ? 'font-semibold text-primary' : 'text-foreground',
           textDim,
-        )}>
+        )} title={node.name}>
           {node.name}
         </span>
         {manual && <Badge tone="green" className="h-4 px-1 text-[10px]">手动</Badge>}
         {auto && <Badge tone="blue" className="h-4 px-1 text-[10px]">自动</Badge>}
-        <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+        <span className="ml-auto flex shrink-0 items-center pl-1.5">
           {showHack && (
             <Tooltip content="启用代理">
               <button
                 type="button"
                 aria-label="启用代理"
                 onClick={e => { e.stopPropagation(); onHack(node.pid) }}
-                className="flex size-6 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-border hover:text-amber-500 group-hover:opacity-100 focus-visible:opacity-100"
+                className="flex h-6 w-0 items-center justify-center overflow-hidden rounded text-muted-foreground opacity-0 transition hover:bg-border hover:text-amber-500 group-hover:mr-1 group-hover:w-6 group-hover:opacity-100 focus-visible:mr-1 focus-visible:w-6 focus-visible:opacity-100"
               >
                 <Zap className="size-3.5" />
               </button>
@@ -240,7 +246,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
                 type="button"
                 aria-label="取消代理"
                 onClick={e => { e.stopPropagation(); onUnhack(node.pid) }}
-                className="flex size-6 items-center justify-center rounded text-emerald-500 transition hover:bg-border hover:text-red-500"
+                className="mr-1 flex size-6 items-center justify-center rounded text-emerald-500 transition hover:bg-border hover:text-red-500"
               >
                 <ZapOff className="size-3.5" />
               </button>

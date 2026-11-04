@@ -50,6 +50,20 @@ async function requestVoid(url: string, options?: RequestInit): Promise<void> {
   }
 }
 
+// -- Icons --
+// GET /api/icon answers 200 + image/png, or 204 No Content when the exe has no
+// extractable icon. Fetching (instead of a bare <img src>) lets "no icon" stay
+// a normal answer: no failed image load, no console error.
+
+/** Object URL of the exe's 16x16 PNG icon, or null when it has none. */
+export async function fetchProcessIcon(name: string, signal?: AbortSignal): Promise<string | null> {
+  const res = await fetch(`${BASE}/icon?name=${encodeURIComponent(name)}`, { signal })
+  if (res.status === 204 || !res.ok) return null
+  if (!(res.headers.get('Content-Type') ?? '').startsWith('image/')) return null
+  const blob = await res.blob()
+  return blob.size > 0 ? URL.createObjectURL(blob) : null
+}
+
 // -- Processes --
 // Note: bulk tree retrieval (formerly GET /api/processes) is delivered via
 // WebView2 PostMessage into the query cache (api/notify.ts, useProcessTree). /detail endpoints remain for cmdline + image_path fetches.

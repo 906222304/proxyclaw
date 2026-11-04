@@ -180,6 +180,19 @@ def test_icon_api():
     assert len(r.content) > 50, f"PNG too small: {len(r.content)} bytes"
 
 
+@test("Icon API returns 204 No Content when there is no icon")
+def test_icon_api_no_icon():
+    r = requests.get(f"{BASE}/icon", params={"name": "proxyclaw-e2e-no-such-exe.exe"}, timeout=5)
+    assert r.status_code == 204, f"Status {r.status_code}"
+    assert r.content == b"", f"Expected empty body, got {len(r.content)} bytes"
+
+
+@test("Icon API rejects a request without name")
+def test_icon_api_missing_name():
+    r = requests.get(f"{BASE}/icon", timeout=5)
+    assert r.status_code == 400, f"Status {r.status_code}"
+
+
 @test("SSE endpoint connects")
 def test_sse():
     r = requests.get(f"{BASE}/events", stream=True, timeout=3)
@@ -1060,6 +1073,8 @@ if __name__ == "__main__":
         test_tcp_table,
         test_udp_table,
         test_icon_api,
+        test_icon_api_no_icon,
+        test_icon_api_missing_name,
         # test_sse retired: /api/events removed with the SSE->PostMessage
         # transport switch. Push-channel coverage now lives in Playwright
         # (test_no_event_source / test_push_after_hijack).

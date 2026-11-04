@@ -17,12 +17,14 @@ export default defineConfig({
         warn(warning)
       },
       output: {
-        // React + the small UI libraries form one cacheable vendor chunk.
-        // CodeMirror is excluded so it stays in the lazily loaded JSON editor
-        // chunk and is fetched only when the editor opens.
+        // React itself and the small UI libraries form two cacheable vendor
+        // chunks (one would exceed Vite's 500 kB warning limit). CodeMirror is
+        // excluded so it stays in the lazily loaded JSON editor chunk and is
+        // fetched only when the editor opens.
         manualChunks(id) {
           if (!id.includes('node_modules')) return
           if (/[\\/](@codemirror|@lezer|crelt|style-mod|w3c-keyname)[\\/]/.test(id)) return
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react'
           return 'vendor'
         },
       },

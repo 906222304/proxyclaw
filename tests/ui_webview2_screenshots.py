@@ -210,9 +210,13 @@ def main() -> int:
             # The process tree precedes the connections table in DOM order.
             page.get_by_text("proxyclaw.exe", exact=True).first.click()
             page.wait_for_timeout(1500)
+            # Playwright scrolls the clicked (deeply indented) row into view
+            # horizontally; a mouse user would not, so undo that.
+            page.evaluate("document.querySelectorAll('*').forEach(e => { if (e.scrollLeft) e.scrollLeft = 0 })")
             shot("network-selected-process-dark")
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("")
-            page.get_by_text("全部进程", exact=True).first.click()
+            page.get_by_role("button", name=re.compile("^全部进程")).first.click()
+            page.evaluate("document.querySelectorAll('*').forEach(e => { if (e.scrollLeft) e.scrollLeft = 0 })")
 
             tab("规则")
             page.get_by_text("Chrome via proxy").first.wait_for()

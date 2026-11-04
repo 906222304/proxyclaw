@@ -205,16 +205,17 @@ def wait_pid_in_clew(pid: int, timeout: float = 5.0) -> bool:
 
 
 def hijack(pid: int) -> tuple[int, float]:
-    t0 = time.monotonic()
+    # perf_counter: time.monotonic() ticks at 15.6 ms on Windows.
+    t0 = time.perf_counter()
     r = requests.post(f"{BASE}/hijack/{pid}",
                       json={"tree": False, "group_id": 0}, timeout=30.0)
-    return r.status_code, (time.monotonic() - t0) * 1e6  # microseconds
+    return r.status_code, (time.perf_counter() - t0) * 1e6  # microseconds
 
 
 def unhijack(pid: int) -> tuple[int, float]:
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     r = requests.delete(f"{BASE}/hijack/{pid}", data="", timeout=30.0)
-    return r.status_code, (time.monotonic() - t0) * 1e6
+    return r.status_code, (time.perf_counter() - t0) * 1e6
 
 
 HIJACK_ERRORS: list[str] = []
@@ -268,10 +269,10 @@ class HttpLoad:
         while not self.stop.is_set():
             path = LOAD_PATHS[n % len(LOAD_PATHS)]
             n += 1
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             try:
                 r = sess.get(BASE + path, timeout=10)
-                dt = (time.monotonic() - t0) * 1e6
+                dt = (time.perf_counter() - t0) * 1e6
                 with self.lock:
                     if r.status_code == 200:
                         self.lat_us.append(dt)

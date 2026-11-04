@@ -1,6 +1,6 @@
 # ProxyClaw 路线图
 
-> **English summary.** v0.13 makes capability boundaries visible and decisions explainable: IPv6 traffic labelled as not taken over, DNS TCP-only mode with asynchronous enable, per-connection rule-hit explanation, a capped icon cache, and every unit test in CTest. v0.14 widens coverage: end-to-end IPv6 proxying (TCP + UDP), editable app presets, child-process-tree exceptions, and an engine status view with config import / export. Later: a performance baseline first, then WinDivert RecvEx/SendEx batching, resource limits, long-session soak tests and a service mode. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols.
+> **English summary.** v0.13 makes capability boundaries visible and decisions explainable: IPv6 traffic labelled as not taken over, DNS TCP-only mode with asynchronous enable, per-connection rule-hit explanation, a capped icon cache, and every unit test in CTest. v0.14 widens coverage: end-to-end IPv6 proxying (TCP + UDP), editable app presets, child-process-tree exceptions, and an engine status view with config import / export. Later: a performance baseline first (the stress harness exists and CI publishes a smoke baseline), then WinDivert RecvEx/SendEx batching, resource limits, long-session soak tests and a service mode. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols.
 
 当前版本 v0.12.0（2026-11-04）。本文替代此前的各份调研 / 复核文档，只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。
 
@@ -50,7 +50,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 性能基准 | 记录空闲、单独 TCP / UDP、健康 / 故障上游、窗口显示 / 隐藏、进程风暴、大流量下的 CPU、RSS、句柄、p95 / p99 延迟与丢包，重点测“非目标应用”经过用户态的成本。ETW 压测脚本可从 v0.12.0 的 git 历史恢复。 |
+| 性能基准 | 记录空闲、单独 TCP / UDP、健康 / 故障上游、窗口显示 / 隐藏、进程风暴、大流量下的 CPU、RSS、句柄、p95 / p99 延迟与丢包，重点测“非目标应用”经过用户态的成本。压测工具已在仓库中（`tests/stress_backend.py` + `tests/stress_etw.py`），CI 每次以 `--ci` 跑有界冒烟并上传 `stress-summary`（请求数、错误、p50/p95/p99、proxyclaw 内存与句柄）作为粗略基线；还缺固定硬件上的完整场景与前后对比。 |
 | RecvEx / SendEx 批处理 | NETWORK 层仍逐包 `WinDivertRecv/Send`，按基准评估批量收发；必须保护 SYN parking、重传、校验和、关闭顺序和缓冲区生命周期。 |
 | 资源上限 | 活动 / 待建会话、重试、队列等设容量上限与溢出计数；IO 线程数按测量决定。 |
 | 进程信息缓存 | 减少重复解析进程信息，保留 PSN 身份校验，不为命中缓存跳过 PID 重用与退出清理。 |

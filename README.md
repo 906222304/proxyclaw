@@ -75,7 +75,7 @@ ctest --preset windows-vs2026
 ./build/Release/proxyclaw.exe
 ```
 
-`python scripts/verify.py` 一次跑完前端测试与构建、后端构建、CTest、分层检查和 e2e（非管理员终端加 `--no-e2e`）。打包与发布流程见 [RELEASE.md](docs/RELEASE.md)。
+`python scripts/verify.py` 一次跑完前端测试与构建、后端构建、CTest、分层检查和 e2e（规则策略 `tests/e2e_rule_policy.py` 与管理 API `tests/e2e_api_test.py`；非管理员终端加 `--no-e2e`），加 `--stress` 再跑约 1 分钟的压力冒烟 `tests/stress_backend.py --ci`。CI 对打包产物运行同样的 API e2e 与压力冒烟，并上传 `stress-summary` 工件。打包与发布流程见 [RELEASE.md](docs/RELEASE.md)。
 
 ## 常见问题
 

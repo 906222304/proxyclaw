@@ -116,6 +116,17 @@ tests/
   dns_forwarder_harness.cpp          - loopback integration hosts, driven by run_proxy_health_tests.py
                                        and run_dns_network_tests.py in CI
   e2e_rule_policy.py                 - real-WinDivert rule / UDP / speed-test e2e (CI, admin)
+  e2e_api_test.py                    - management API e2e against the packaged exe (CI, admin):
+                                       stats/tables, icon 200/204/400, rule + group CRUD, exit routing
+                                       of fresh probe processes, hijack/batch notify, config observers,
+                                       DNS proxy round trip. --exe launches proxyclaw with a recording
+                                       SOCKS5 server; without it, attaches to a running instance
+  api_token.py                       - shared PROXYCLAW_API_TOKEN for the Python harnesses
+  stress_backend.py                  - backend stress + measurement; --ci is the bounded CI smoke
+                                       (ETW churn, hijack cycling, concurrent GETs, proxyclaw RSS /
+                                       handles); fails on errors or a crash, never on numbers.
+                                       Summary uploaded as the `stress-summary` artifact
+  stress_etw.py                      - ETW process-churn driver (no admin), spawned by stress_backend
   ui_webview2_screenshots.py         - packaged app in a real WebView2 window, screenshots over CDP (CI)
   test_components.cpp, test_window_dpi.cpp, test_icon_resolution.cpp
                                      - older unit tests not yet in CTest (run_window_dpi_tests.py)
@@ -558,7 +569,7 @@ The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a sy
 - ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `proxyclaw.exe` before rebuilding (MSVC LNK1104 error otherwise).
-- `python scripts/verify.py` runs the frontend unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), and the real-WinDivert e2e suite (`tests/e2e_rule_policy.py`), each stage with its own timeout. The e2e stage needs an administrator shell; `--no-e2e` skips it.
+- `python scripts/verify.py` runs the frontend unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), and the real-WinDivert e2e suites (`tests/e2e_rule_policy.py`, `tests/e2e_api_test.py`), each stage with its own timeout. The e2e stage needs an administrator shell; `--no-e2e` skips it. `--stress` adds the bounded stress smoke (`tests/stress_backend.py --ci`).
 
 ### E2E testing in CI
 
@@ -572,8 +583,22 @@ The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a sy
   speed test by what actually leaves the machine;
 - `tests/ui_webview2_screenshots.py` — opens the packaged app in a real
   WebView2 window over CDP, fails on any console / page error, and uploads the
-  `ui-screenshots` artifact used by the README.
+  `ui-screenshots` artifact used by the README;
+- `tests/e2e_api_test.py --exe <packaged proxyclaw.exe>` — the management API
+  suite. It starts the packaged app with a throwaway config whose default group
+  is a recording SOCKS5 server, so "went via the proxy" is judged by that
+  server seeing the CONNECT rather than by a second exit IP. Also scans
+  `proxyclaw.log` for the batch-notify and DELETE-latency invariants, and
+  toggles the DNS proxy (system DNS is restored afterwards);
+- `tests/stress_backend.py --ci --duration 45` — a bounded smoke on the packaged
+  app: `stress_etw.py` process churn (target 40, 1–3 s lifetimes), hijack /
+  unhijack every 0.5 s and 4 threads of concurrent GETs, with proxyclaw.exe
+  working set / private bytes / handles sampled each second. It fails only on
+  request errors, a proxyclaw crash or a dead API afterwards; latency and memory
+  are reported, not gated (a shared runner is too noisy for thresholds). The
+  JSON summary and console output are uploaded as the `stress-summary` artifact.
 
-Older local-only suites (HTTP log-scan e2e, Playwright push tests, ETW stress
-harness) were removed in v0.13; they remain in git history before that release.
+The Playwright push tests and HTTP log-scan helpers that predate the React
+frontend remain local-only history; the longer stress scenarios
+(`--scenario steady`, `--visibility-cycle`) are local tools.
 

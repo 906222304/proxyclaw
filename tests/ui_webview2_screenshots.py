@@ -80,6 +80,9 @@ def find_app_page(browser, timeout: float = 30):
 
 
 def main() -> int:
+    # The runner console is cp1252; Playwright errors quote Chinese locators.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", required=True, type=pathlib.Path)
     ap.add_argument("--out", required=True, type=pathlib.Path)
@@ -193,6 +196,11 @@ def main() -> int:
                 page.get_by_role("dialog").get_by_role("button", name="关闭", exact=True).first.click()
                 expect(page.get_by_role("dialog")).to_have_count(0)
 
+            def close_json_editor() -> None:
+                # The config editor replaces the settings page inline (not a dialog).
+                page.get_by_role("button", name="关闭", exact=True).last.click()
+                expect(page.locator(".cm-editor")).to_have_count(0)
+
             set_dark(True)
             tab("网络活动")
             shot("network-dark")
@@ -234,7 +242,7 @@ def main() -> int:
             page.get_by_role("button", name="编辑", exact=True).click()
             page.locator(".cm-editor").wait_for(timeout=20000)
             shot("json-editor-dark")
-            close_dialog()
+            close_json_editor()
 
             set_dark(False)
             tab("网络活动")
@@ -252,7 +260,7 @@ def main() -> int:
             page.get_by_role("button", name="编辑", exact=True).click()
             page.locator(".cm-editor").wait_for(timeout=20000)
             shot("json-editor-light")
-            close_dialog()
+            close_json_editor()
             set_dark(True)
             tab("网络活动")
 

@@ -9,7 +9,7 @@ export const fieldClass = cn(
   'disabled:pointer-events-none disabled:opacity-50',
 )
 
-export const inputClass = cn(fieldClass, 'h-8 w-full px-2.5 text-ui placeholder:text-muted-foreground/70')
+export const inputClass = cn(fieldClass, 'h-8 w-full px-2.5 text-ui placeholder:text-faint')
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => <input ref={ref} className={cn(inputClass, className)} {...props} />,

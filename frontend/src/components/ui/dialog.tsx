@@ -23,14 +23,14 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
           onInteractOutside={block}
           onEscapeKeyDown={block}
           className={cn(
-            'dialog-in fixed left-1/2 top-1/2 z-50 flex max-h-[88vh] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col',
+            'dialog-in fixed inset-0 z-50 m-auto flex h-fit max-h-[88vh] w-[calc(100vw-2rem)] max-w-md flex-col',
             'rounded-2xl border border-border bg-popover text-popover-foreground shadow-xl outline-none focus-visible:outline-none',
             className,
           )}
         >
           <div className="flex items-start justify-between gap-4 px-5 pt-4 pb-3">
             <div className="min-w-0">
-              <DialogPrimitive.Title className="text-[14px] font-semibold leading-snug">{title}</DialogPrimitive.Title>
+              <DialogPrimitive.Title className="text-base font-semibold">{title}</DialogPrimitive.Title>
               {description
                 ? <DialogPrimitive.Description className="mt-0.5 text-xs text-muted-foreground">{description}</DialogPrimitive.Description>
                 : <DialogPrimitive.Description className="sr-only">{title}</DialogPrimitive.Description>}

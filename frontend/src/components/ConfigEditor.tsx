@@ -304,7 +304,7 @@ function RawConfig({ config }: { config: Config | undefined }) {
     <section className="flex min-h-[420px] flex-col">
       <div className="mb-2 flex items-center justify-between gap-3 px-1">
         <div className="flex items-center gap-2">
-          <h2 className="text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">配置文件</h2>
+          <h2 className="text-2xs font-semibold uppercase tracking-[.05em] text-muted-foreground">配置文件</h2>
           {dirty && <Badge tone="amber">尚未保存</Badge>}
           {message && <span className={message.ok ? 'text-xs text-success' : 'text-xs text-destructive'}>{message.text}</span>}
         </div>

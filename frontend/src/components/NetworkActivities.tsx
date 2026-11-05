@@ -97,7 +97,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
                       style={{ height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, gridTemplateColumns: template }}
                     >
                       {columns.map(col => (
-                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && (col.key === 'remote' ? 'font-mono text-[11.5px] text-foreground-2' : 'tabular text-foreground-2'))}>
+                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && (col.key === 'remote' ? 'font-mono text-xs text-foreground-2' : 'tabular text-foreground-2'))}>
                           <Cell conn={c} col={col} />
                         </div>
                       ))}
@@ -142,7 +142,7 @@ function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
     case 'protocol':
       return (
         <span className={cn(
-          'rounded-sm px-1.5 py-px text-[10px] font-semibold tracking-[.04em]',
+          'rounded-sm px-1.5 py-px text-2xs font-semibold tracking-[.04em]',
           conn.protocol === 'UDP' ? 'bg-violet-soft text-violet' : 'bg-info-soft text-info',
         )}>
           {conn.protocol}

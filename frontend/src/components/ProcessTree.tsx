@@ -219,14 +219,14 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         )}
         <span className={cn(
           'min-w-0 truncate',
-          depth === 0 ? 'text-ui' : 'text-xs',
+          depth === 0 ? 'text-xs font-medium' : 'text-xs',
           selected ? 'font-medium text-foreground' : 'text-foreground',
           textDim,
         )} title={node.name}>
           {node.name}
         </span>
-        {manual && <Badge tone="green" className="h-4 px-1 text-[10px]">手动</Badge>}
-        {auto && <Badge tone="blue" className="h-4 px-1 text-[10px]">自动</Badge>}
+        {manual && <Badge tone="green" className="px-1">手动</Badge>}
+        {auto && <Badge tone="blue" className="px-1">自动</Badge>}
         {/* The hover-only hack button sits on top of the PID (which fades out)
             instead of taking width, so hovering never squeezes the name. */}
         <span className="relative ml-auto flex shrink-0 items-center pl-1.5">

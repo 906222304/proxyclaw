@@ -34,7 +34,7 @@ export function Row({ title, description, children, className }: {
   return (
     <div className={cn('flex min-h-12 items-center justify-between gap-6 px-4 py-2.5', className)}>
       <div className="min-w-0">
-        <div className="text-sm font-medium tracking-[-.005em]">{title}</div>
+        <div className="text-sm font-medium">{title}</div>
         {description && <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</div>}
       </div>
       {children != null && <div className="flex shrink-0 items-center gap-2">{children}</div>}
@@ -45,7 +45,7 @@ export function Row({ title, description, children, className }: {
 export function SectionTitle({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
   return (
     <div className="mb-1.5 px-1">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">{children}</h2>
+      <h2 className="text-2xs font-semibold uppercase tracking-[.05em] text-muted-foreground">{children}</h2>
       {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )

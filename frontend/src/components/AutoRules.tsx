@@ -138,7 +138,7 @@ export function AutoRules({ onAdd, onEdit }: {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className={cn('truncate text-sm font-medium tracking-[-.005em]', !rule.enabled && 'text-muted-foreground')}>{rule.name}</span>
+                    <span className={cn('truncate text-sm font-medium', !rule.enabled && 'text-muted-foreground')}>{rule.name}</span>
                     {rule.protocol === 'udp' && <Badge tone="green">UDP</Badge>}
                     {rule.protocol === 'both' && <Badge tone="violet">TCP+UDP</Badge>}
                     {(rule.matched_count ?? 0) > 0 && (
@@ -146,7 +146,7 @@ export function AutoRules({ onAdd, onEdit }: {
                     )}
                   </div>
                   <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className="truncate font-mono text-[11px] text-foreground-2">{rule.process_name}</span>
+                    <span className="truncate font-mono text-2xs text-foreground-2">{rule.process_name}</span>
                     <span className="text-faint">·</span>
                     <span className="shrink-0">{groupName.get(rule.proxy_group_id) ?? '默认'}</span>
                     <span className="text-faint">·</span>

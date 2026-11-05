@@ -12,17 +12,24 @@
   --font-sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif, "Segoe UI Emoji";
   --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", ui-monospace, monospace;
 
-  /* Dense type scale (px): 10.5 / 11 / 11.5 / 12 / 12.5 / 13 / 14 / 15 */
-  --text-2xs: 10.5px;
-  --text-2xs--line-height: 1.35;
-  --text-xs: 11.5px;
-  --text-xs--line-height: 1.45;
-  --text-ui: 12.5px;
-  --text-ui--line-height: 1.45;
-  --text-sm: 13px;
-  --text-sm--line-height: 1.45;
-  --text-base: 15px;
-  --text-base--line-height: 1.4;
+  /*
+   * Integer type scale (px) with integer line heights, so glyphs sit on the
+   * pixel grid under DirectWrite and CJK fallbacks (YaHei UI) stay legible:
+   * 12 captions/badges · 13 dense cells, tree rows, secondary · 14 body,
+   * controls, row titles · 16 dialog/section titles · 18 page titles.
+   */
+  --text-2xs: 12px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 13px;
+  --text-xs--line-height: 18px;
+  --text-ui: 14px;
+  --text-ui--line-height: 20px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 22px;
+  --text-lg: 18px;
+  --text-lg--line-height: 24px;
 
   /* Radii: controls 6-8, cards 12, dialogs 14 */
   --radius-sm: 5px;
@@ -72,8 +79,8 @@
 :root {
   color-scheme: light;
   --background: #f4f4f6;
-  --foreground: #1c1c21;
-  --foreground-2: #4b4b53;
+  --foreground: #1f2328;
+  --foreground-2: #3d424c;
   --card: #ffffff;
   --surface-2: #f9f9fb;
   --popover: #ffffff;
@@ -82,8 +89,8 @@
   --primary-soft: #eeedfd;
   --muted: #f1f1f4;
   --hover: #e9e9ee;
-  --muted-foreground: #74747c;
-  --faint: #b9b9c2;
+  --muted-foreground: #5b616e;
+  --faint: #7c818b;
   --destructive: #d64545;
   --destructive-soft: #fbe9e9;
   --success: #189a58;
@@ -107,8 +114,8 @@
 .dark {
   color-scheme: dark;
   --background: #1a1a1e;
-  --foreground: #ededf1;
-  --foreground-2: #b9b9c1;
+  --foreground: #e6e6ea;
+  --foreground-2: #c4c4cb;
   --card: #232327;
   --surface-2: #1f1f23;
   --popover: #26262b;
@@ -117,8 +124,8 @@
   --primary-soft: #2b2c47;
   --muted: #2d2d33;
   --hover: #36363d;
-  --muted-foreground: #8b8b94;
-  --faint: #56565f;
+  --muted-foreground: #a1a1aa;
+  --faint: #82828c;
   --destructive: #f28b82;
   --destructive-soft: #45272a;
   --success: #6fd99b;
@@ -144,9 +151,12 @@
     @apply border-border;
   }
   html, body {
-    @apply bg-background font-sans text-foreground antialiased;
-    font-size: 13px;
-    line-height: 1.45;
+    @apply bg-background font-sans text-foreground;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 400;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: auto;
     margin: 0;
     min-width: 320px;
     height: 100%;
@@ -181,7 +191,7 @@
 }
 .thin-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
 .thin-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--faint);
+  background: color-mix(in srgb, var(--faint) 55%, transparent);
   border: 2px solid transparent;
   border-radius: 8px;
   background-clip: padding-box;
@@ -216,8 +226,10 @@ html.maximized #root {
 /* Floating layers fade/scale in (dialogs, menus); overlay fades. */
 .pop-in { animation: pop-in .16s var(--ease-out); }
 .fade-in { animation: fade-in .16s ease-out; }
-@keyframes pop-in { from { opacity: 0; transform: scale(.97); } }
-@keyframes fade-in { from { opacity: 0; } }
+@keyframes pop-in { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .dialog-in { animation: dialog-in .2s var(--ease-out); }
-@keyframes dialog-in { from { opacity: 0; transform: translate(-50%, -48%) scale(.98); } }
+/* Dialogs are centred with inset+margin (no resting transform), so text is
+ * never composited at a half-pixel offset once the entry animation ends. */
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .pop-in, .fade-in, .dialog-in { animation: none; } }

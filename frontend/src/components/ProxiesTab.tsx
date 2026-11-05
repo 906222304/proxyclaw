@@ -131,7 +131,7 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
   return (
     <Card className="px-4 py-3.5 transition-colors hover:border-faint/70">
       <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold tracking-[-.005em]">{group.name}</span>
+        <span className="text-sm font-semibold">{group.name}</span>
         <Badge>SOCKS5</Badge>
         <Button size="icon" variant="ghost" aria-label="编辑代理组" title="编辑代理组" onClick={onEdit}><Pencil /></Button>
         {group.id !== 0 && (
@@ -141,7 +141,7 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
         )}
         <span className="ml-auto text-xs text-muted-foreground">{rules.length} 条规则</span>
       </div>
-      <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">socks5://{group.host}:{group.port}</div>
+      <div className="mt-0.5 font-mono text-2xs text-muted-foreground">socks5://{group.host}:{group.port}</div>
 
       <div className="mt-3 flex items-center gap-2 border-t border-divider pt-3">
         <Globe className="size-3.5 shrink-0 text-faint" />
@@ -167,7 +167,7 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
       </div>
 
       {!isFetching && result?.stages?.length ? (
-        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-6 font-mono text-[11px] text-muted-foreground">
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-6 font-mono text-2xs text-muted-foreground">
           {result.stages.map(st => <span key={st.name}>{stageLabel(st.name)} {st.ms}ms</span>)}
           {result.failed_stage && <span className="text-destructive">{failedLabel(result)}：{result.error}</span>}
         </div>
@@ -185,7 +185,7 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
                 <div key={r.id} className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">{r.name}</span>
                   <span className="font-mono">{r.process_name}</span>
-                  {!r.enabled && <Badge className="h-4 text-[10px]">已停用</Badge>}
+                  {!r.enabled && <Badge>已停用</Badge>}
                 </div>
               ))}
             </div>

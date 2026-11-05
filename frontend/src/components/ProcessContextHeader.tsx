@@ -60,7 +60,7 @@ export function ProcessContextHeader({ process, onCreateRule }: {
       <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-2">
           <ProcessIcon name={process.name} className="size-5" />
-          <span className="truncate text-sm font-semibold tracking-[-.005em]">{process.name}</span>
+          <span className="truncate text-sm font-semibold">{process.name}</span>
           {process.hijack_source === 'manual' && <Badge tone="green">手动</Badge>}
           {process.hijack_source === 'auto' && <Badge tone="blue">自动</Badge>}
           <span className="tabular rounded-sm bg-muted px-1.5 text-2xs leading-[18px] text-muted-foreground">PID {process.pid}</span>
@@ -83,12 +83,12 @@ export function ProcessContextHeader({ process, onCreateRule }: {
           >
             <FolderOpen className="size-3.5" />
           </button>
-          <span className="inline-flex shrink-0 items-center font-mono text-[11px]">
+          <span className="inline-flex shrink-0 items-center font-mono text-2xs">
             {cwd && <span className="max-w-[220px] truncate rounded-l-md bg-muted px-1.5 py-0.5 text-muted-foreground" title={cwd}>{cwd}</span>}
             <span className={cn('bg-muted px-1.5 py-0.5 font-medium text-foreground', cwd ? 'rounded-r-md border-l border-border' : 'rounded-md')}>{exeName}</span>
           </span>
           {args && (
-            <span className={cn('ml-1 font-mono text-[11px] text-muted-foreground', !expanded && isLong ? 'max-w-[12rem] truncate' : 'break-all')}>
+            <span className={cn('ml-1 font-mono text-2xs text-muted-foreground', !expanded && isLong ? 'max-w-[12rem] truncate' : 'break-all')}>
               {args}
             </span>
           )}
@@ -105,7 +105,7 @@ export function ProcessContextHeader({ process, onCreateRule }: {
             </button>
           )}
           <button type="button" onClick={() => copy(cmdline, 'full')} title="复制完整命令行"
-            className="flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/path:opacity-100">
+            className="flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-2xs text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/path:opacity-100">
             {copied === 'full' ? <Check className="size-3 text-success" /> : <><Copy className="size-3" /><span>全部</span></>}
           </button>
         </div>

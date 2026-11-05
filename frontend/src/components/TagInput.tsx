@@ -31,7 +31,7 @@ export function TagInput({ value, onChange, placeholder, id }: {
           type="button"
           onClick={() => remove(i)}
           title="删除"
-          className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] transition-colors hover:text-destructive"
+          className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-2xs transition-colors hover:text-destructive"
         >
           {tag} <X className="size-3" />
         </button>

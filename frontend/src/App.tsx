@@ -114,7 +114,7 @@ export default function App() {
         <header className="titlebar flex h-10 shrink-0 select-none items-center justify-between border-b border-divider bg-background">
           <div className="no-drag flex items-center gap-2 pl-3.5">
             <img src={appIcon} className="size-[18px] object-contain" alt="ProxyClaw" />
-            <span className="text-sm font-semibold tracking-[-.01em]">ProxyClaw</span>
+            <span className="text-sm font-semibold">ProxyClaw</span>
             <span className="tabular rounded-sm bg-muted px-1.5 py-px text-2xs text-muted-foreground">v{PROXYCLAW_VERSION}</span>
           </div>
           <div className="no-drag flex h-full items-center text-muted-foreground [&>button]:h-full [&>button]:w-11 [&>button]:inline-flex [&>button]:items-center [&>button]:justify-center [&>button]:transition-colors [&>button]:duration-150">
@@ -174,7 +174,7 @@ export default function App() {
           }
         />
 
-        <footer className="flex h-7 shrink-0 select-none items-center justify-between border-t border-divider bg-background px-3.5 text-[11px] text-muted-foreground">
+        <footer className="flex h-7 shrink-0 select-none items-center justify-between border-t border-divider bg-background px-3.5 text-2xs text-muted-foreground">
           <span>监听端口 <span className="tabular font-medium text-foreground-2">18080</span></span>
           <span className="flex items-center gap-1.5">
             <span className={cn('size-1.5 rounded-full ring-2', connected ? 'bg-success ring-success/20' : 'bg-destructive ring-destructive/20')} />

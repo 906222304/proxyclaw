@@ -40,7 +40,8 @@ export function HijackDot({ source }: { source?: string | null }) {
  * 48px header row for the selected process: icon, name, sub-line
  * "PID · path args" (copy / reveal actions on hover), and 创建规则.
  * The path middle-truncates: the directory ellipsizes, the exe name stays,
- * arguments give way first. The expand chevron shows the full command line.
+ * arguments give way first. The expand chevron sits inline right after the path and shows the full
+ * command line; copy / reveal actions follow on hover.
  */
 export function ProcessContextHeader({ process, onCreateRule }: {
   process: ProcessInfo
@@ -91,6 +92,11 @@ export function ProcessContextHeader({ process, onCreateRule }: {
                   <span className="shrink-0 text-foreground-2">{exeName}</span>
                   {args && <span className="min-w-0 shrink-[100] truncate pl-1">{args}</span>}
                 </span>
+                {isLong && (
+                  <button type="button" onClick={() => setExpanded(v => !v)} title={expanded ? '收起命令行' : '展开完整命令行'} aria-expanded={expanded} data-testid="process-cmdline-toggle" className={iconBtn}>
+                    {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                  </button>
+                )}
                 <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/path:opacity-100 focus-within:opacity-100">
                   <button type="button" onClick={locate} title="打开程序所在文件夹" className={cn(iconBtn, located && 'text-success')}>
                     <FolderOpen className="size-3" />
@@ -104,11 +110,6 @@ export function ProcessContextHeader({ process, onCreateRule }: {
                     {copied === 'full' ? <Check className="size-3 text-success" /> : <><Copy className="size-3" /><span>全部</span></>}
                   </button>
                 </span>
-                {isLong && (
-                  <button type="button" onClick={() => setExpanded(v => !v)} title={expanded ? '收起命令行' : '展开命令行'} className={iconBtn}>
-                    {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
-                  </button>
-                )}
               </>
             )}
           </div>

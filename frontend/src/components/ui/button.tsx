@@ -32,7 +32,7 @@ export function Button({ variant = 'secondary', size = 'md', className, type = '
         // Own (non-opaque, rounded) layer: Chromium then draws grayscale AA
         // instead of ClearType, whose colour fringes made dense CJK strokes
         // (测 in 全部测速) look amber/blue at 12px.
-        'will-change-transform',
+        'aa-gray',
         variants[variant], sizes[size], className,
       )}
       {...props}

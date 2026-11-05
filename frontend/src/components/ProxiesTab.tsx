@@ -9,6 +9,7 @@ import type { AutoRule, GroupInUseError, ProxyGroup, ProxyTestResult } from '@/a
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { ProcessIcon } from '@/components/ProcessIcon'
 import { EmptyState, Label, ListSkeleton } from '@/components/ui/misc'
 import { MoreMenu } from '@/components/ui/menu'
 import { SearchInput } from '@/components/ui/search-input'
@@ -46,7 +47,7 @@ export const failedLabel = (r: ProxyTestResult) => (r.failed_stage ? `${stageLab
 interface GroupForm { name: string; host: string; port: string; test_url: string }
 const EMPTY_FORM: GroupForm = { name: '', host: '127.0.0.1', port: '7890', test_url: 'https://www.google.com' }
 
-export function ProxiesTab() {
+export function ProxiesTab({ onEditRule }: { onEditRule?: (rule: AutoRule) => void } = {}) {
   const qc = useQueryClient()
   const { data: groups = [], isPending: loading } = useQuery(proxyGroupsQuery)
   const { data: rules = [] } = useQuery(autoRulesQuery)
@@ -108,6 +109,7 @@ export function ProxiesTab() {
             deleting={remove.isPending}
             onTest={() => void runTest(g.id)}
             onEdit={() => setEditing(g)}
+            onEditRule={onEditRule}
             onDelete={() => remove.mutate(g)}
           />
         ))}
@@ -124,9 +126,10 @@ export function ProxiesTab() {
 const latencyTone = (ms: number) => (ms < 300 ? 'text-success' : ms < 1000 ? 'text-warning' : 'text-destructive')
 
 /** 48px row; click expands an inline panel (test URL, last result, rules). */
-function GroupRow({ group, rules, deleting, onTest, onEdit, onDelete }: {
+function GroupRow({ group, rules, deleting, onTest, onEdit, onDelete, onEditRule }: {
   group: ProxyGroup
   rules: AutoRule[]
+  onEditRule?: (rule: AutoRule) => void
   deleting: boolean
   onTest: () => void
   onEdit: () => void
@@ -184,13 +187,24 @@ function GroupRow({ group, rules, deleting, onTest, onEdit, onDelete }: {
             </div>
           ) : null}
           {rules.length > 0 ? (
-            <div className="space-y-1 pt-1">
+            <div className="divide-y divide-divider overflow-hidden rounded-lg border border-divider bg-card" data-testid="group-rules">
               {rules.map(r => (
-                <div key={r.id} className="flex min-w-0 items-center gap-2">
-                  <span className={cn('truncate font-medium', r.enabled ? 'text-foreground-2' : 'text-faint')}>{r.name}</span>
-                  <span className="truncate">{r.process_name}</span>
-                  {!r.enabled && <span className="shrink-0 text-faint">已停用</span>}
-                </div>
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => onEditRule?.(r)}
+                  disabled={!onEditRule}
+                  title={onEditRule ? '编辑规则' : undefined}
+                  className="flex h-9 w-full min-w-0 items-center gap-2.5 px-3 text-left transition-colors duration-100 enabled:hover:bg-hover disabled:cursor-default"
+                >
+                  <ProcessIcon name={r.process_name} className={cn('size-4 shrink-0', !r.enabled && 'opacity-50 grayscale')} />
+                  <span className={cn('min-w-0 shrink truncate text-xs font-medium', r.enabled ? 'text-foreground' : 'text-muted-foreground')}>{r.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">{r.process_name}</span>
+                  <span className={cn('flex shrink-0 items-center gap-1.5 text-2xs', r.enabled ? 'text-muted-foreground' : 'text-faint')}>
+                    <span className={cn('size-1.5 rounded-full', r.enabled ? 'bg-success' : 'bg-faint')} />
+                    {r.enabled ? '已启用' : '已停用'}
+                  </span>
+                </button>
               ))}
             </div>
           ) : (
@@ -249,7 +263,9 @@ function GroupEditor({ editing, onClose, onSaved }: {
         </Button>
       </>}
     >
-      <form className="space-y-4 pt-1" onSubmit={e => { e.preventDefault(); void submit() }}>
+      <form className="space-y-4" onSubmit={e => { e.preventDefault(); void submit() }}>
+        {/* first, not last: space-y adds margin below every child but the last */}
+        <button type="submit" hidden />
         <div className="space-y-1.5">
           <Label htmlFor={`${ids}-n`}>名称</Label>
           <Input id={`${ids}-n`} placeholder="我的代理" {...register('name')} />
@@ -268,7 +284,6 @@ function GroupEditor({ editing, onClose, onSaved }: {
           <Label htmlFor={`${ids}-u`}>测试网址</Label>
           <Input id={`${ids}-u`} placeholder="https://www.google.com" className="tabular" {...register('test_url')} />
         </div>
-        <button type="submit" hidden />
       </form>
     </Dialog>
   )
@@ -307,7 +322,7 @@ function MigrateDialog({ conflict, groups, onClose, onDone }: {
       </>}
     >
       {info && (
-        <div className="space-y-3 pt-1">
+        <div className="space-y-3">
           {info.auto_rules.length > 0 && (
             <div>
               <p className="mb-1 text-sm font-medium">自动规则（{info.auto_rules.length}）</p>

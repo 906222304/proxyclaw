@@ -217,7 +217,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
         </Button>
       </>}
     >
-      <form className="space-y-7 pt-2" onSubmit={e => { e.preventDefault(); void submit() }}>
+      <form className="space-y-7" onSubmit={e => { e.preventDefault(); void submit() }}>
         <Section title="基本信息">
           <div className="space-y-1.5">
             <Label htmlFor={`${ids}-name`} hint={<Help>规则的显示名称，仅用于识别。</Help>}>规则名称</Label>

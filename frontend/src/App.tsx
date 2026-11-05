@@ -121,7 +121,8 @@ export default function App() {
             <span className="truncate text-xs font-semibold">ProxyClaw</span>
           </div>
 
-          <Tabs.List aria-label="主导航" className="no-drag flex shrink-0 items-center gap-0.5">
+          {/* aa-gray: own transparent layer -> grayscale AA, no ClearType fringes on CJK */}
+          <Tabs.List aria-label="主导航" className="aa-gray no-drag flex shrink-0 items-center gap-0.5">
             {TABS.map(({ key, label }) => (
               <Tabs.Trigger
                 key={key}
@@ -188,7 +189,7 @@ export default function App() {
           <AutoRules onAdd={() => openRuleDialog(null)} onEdit={r => openRuleDialog(r)} />
         </Tabs.Content>
         <Tabs.Content value="proxies" className="view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
-          <ProxiesTab />
+          <ProxiesTab onEditRule={r => openRuleDialog(r)} />
         </Tabs.Content>
         <Tabs.Content value="settings" className="view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <ConfigEditor />

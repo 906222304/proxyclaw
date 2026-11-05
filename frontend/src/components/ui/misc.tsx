@@ -71,7 +71,7 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
   size?: 'sm' | 'md'
 }) {
   return (
-    <div role="radiogroup" className={cn('inline-flex shrink-0 gap-0.5', size === 'sm' ? 'h-6' : 'h-control', className)}>
+    <div role="radiogroup" className={cn('aa-gray inline-flex shrink-0 gap-0.5', size === 'sm' ? 'h-6' : 'h-control', className)}>
       {options.map(o => (
         <button
           key={o.value}

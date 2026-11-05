@@ -111,13 +111,13 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex h-screen w-full flex-col overflow-hidden bg-background text-foreground">
-        <header className="titlebar flex h-10 shrink-0 select-none items-center justify-between border-b border-border">
-          <div className="no-drag flex items-center gap-2 pl-4">
-            <img src={appIcon} className="size-5 object-contain" alt="ProxyClaw" />
-            <span className="text-sm font-semibold">ProxyClaw</span>
-            <span className="text-xs text-muted-foreground">v{PROXYCLAW_VERSION}</span>
+        <header className="titlebar flex h-10 shrink-0 select-none items-center justify-between border-b border-divider bg-background">
+          <div className="no-drag flex items-center gap-2 pl-3.5">
+            <img src={appIcon} className="size-[18px] object-contain" alt="ProxyClaw" />
+            <span className="text-sm font-semibold tracking-[-.01em]">ProxyClaw</span>
+            <span className="tabular rounded-sm bg-muted px-1.5 py-px text-2xs text-muted-foreground">v{PROXYCLAW_VERSION}</span>
           </div>
-          <div className="no-drag flex h-full items-center text-muted-foreground [&>button]:h-full [&>button]:px-3 [&>button]:transition-colors">
+          <div className="no-drag flex h-full items-center text-muted-foreground [&>button]:h-full [&>button]:w-11 [&>button]:inline-flex [&>button]:items-center [&>button]:justify-center [&>button]:transition-colors [&>button]:duration-150">
             <button type="button" onClick={toggleTheme} title="切换主题" className="hover:bg-muted hover:text-foreground">
               {dark ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
             </button>
@@ -127,7 +127,7 @@ export default function App() {
             <button type="button" onClick={() => windowCmd('maximize')} title="最大化 / 还原" className="hover:bg-muted hover:text-foreground">
               {maximized ? <Copy className="size-3" /> : <Square className="size-3" />}
             </button>
-            <button type="button" onClick={() => windowCmd('close')} title="关闭" className="hover:bg-red-500 hover:text-white">
+            <button type="button" onClick={() => windowCmd('close')} title="关闭" className="hover:bg-[#c42b1c] hover:text-white">
               <X className="size-3.5" />
             </button>
           </div>
@@ -137,20 +137,21 @@ export default function App() {
           left={<ProcessTree selectedPid={selectedPid} onSelect={setSelectedPid} />}
           right={
             <Tabs.Root value={tab} onValueChange={v => setTab(v as TabKey)} className="flex min-h-0 flex-1 flex-col bg-background">
-              <Tabs.List aria-label="主导航" className="flex shrink-0 items-center gap-1 px-5 pt-3 pb-3">
+              <Tabs.List aria-label="主导航" className="flex shrink-0 items-center gap-0.5 px-5 pt-3 pb-3">
                 {TABS.map(({ key, label, icon: Icon }) => (
                   <Tabs.Trigger
                     key={key}
                     value={key}
                     className={cn(
-                      'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-muted-foreground transition-colors',
-                      'hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm',
+                      'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground outline-offset-2 transition-[background-color,color,box-shadow] duration-150',
+                      'data-[state=inactive]:hover:bg-muted data-[state=inactive]:hover:text-foreground-2 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm',
+                      'dark:data-[state=active]:bg-hover',
                     )}
                   >
-                    <Icon className="size-4" />
+                    <Icon className="size-3.5" />
                     {label}
                     {key === 'rules' && rulesCount > 0 && (
-                      <span className="rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground">{rulesCount}</span>
+                      <span className="tabular min-w-4 rounded-full bg-muted px-1.5 text-center text-2xs font-medium leading-4 text-muted-foreground">{rulesCount}</span>
                     )}
                   </Tabs.Trigger>
                 ))}
@@ -173,10 +174,10 @@ export default function App() {
           }
         />
 
-        <footer className="flex h-7 shrink-0 select-none items-center justify-between border-t border-border px-4 text-[11px] text-muted-foreground">
-          <span>监听端口 <span className="font-mono text-foreground/80">18080</span></span>
+        <footer className="flex h-7 shrink-0 select-none items-center justify-between border-t border-divider bg-background px-3.5 text-[11px] text-muted-foreground">
+          <span>监听端口 <span className="tabular font-medium text-foreground-2">18080</span></span>
           <span className="flex items-center gap-1.5">
-            <span className={cn('size-1.5 rounded-full', connected ? 'bg-emerald-500' : 'bg-red-500')} />
+            <span className={cn('size-1.5 rounded-full ring-2', connected ? 'bg-success ring-success/20' : 'bg-destructive ring-destructive/20')} />
             {connected ? '已连接' : '未连接'}
           </span>
         </footer>

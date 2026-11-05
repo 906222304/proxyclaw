@@ -2,56 +2,141 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Calm, low-saturation palette: neutral surfaces, one accent. */
+/*
+ * Design tokens (ideas adapted from yetone/magpie, MIT): neutral, slightly
+ * cool greys; colour only for state; hairline dividers instead of zebra;
+ * shadows reserved for floating layers. Every colour is a CSS variable so
+ * light and dark switch together; Tailwind utilities map onto them below.
+ */
 @theme inline {
-  --font-sans: "Inter", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif, "Segoe UI Emoji";
-  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif, "Segoe UI Emoji";
+  --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", ui-monospace, monospace;
+
+  /* Dense type scale (px): 10.5 / 11 / 11.5 / 12 / 12.5 / 13 / 14 / 15 */
+  --text-2xs: 10.5px;
+  --text-2xs--line-height: 1.35;
+  --text-xs: 11.5px;
+  --text-xs--line-height: 1.45;
+  --text-ui: 12.5px;
+  --text-ui--line-height: 1.45;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.45;
+  --text-base: 15px;
+  --text-base--line-height: 1.4;
+
+  /* Radii: controls 6-8, cards 12, dialogs 14 */
+  --radius-sm: 5px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+
+  --shadow-xs: var(--elev-xs);
+  --shadow-sm: var(--elev-sm);
+  --shadow-lg: var(--elev-pop);
+  --shadow-xl: var(--elev-pop);
+
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-foreground-2: var(--foreground-2);
   --color-card: var(--card);
+  --color-surface-2: var(--surface-2);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
   --color-muted: var(--muted);
+  --color-hover: var(--hover);
   --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
   --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
   --color-border: var(--border);
+  --color-divider: var(--divider);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-selected: var(--selected);
 }
 
 :root {
-  --background: #f7f7f5;
-  --foreground: #1f2328;
+  color-scheme: light;
+  --background: #f4f4f6;
+  --foreground: #1c1c21;
+  --foreground-2: #4b4b53;
   --card: #ffffff;
+  --surface-2: #f9f9fb;
   --popover: #ffffff;
-  --primary: #3b6fd4;
+  --primary: #4f46e5;
   --primary-foreground: #ffffff;
-  --muted: #efefec;
-  --muted-foreground: #6b7076;
-  --destructive: #d14b4b;
-  --border: #e4e4e0;
+  --primary-soft: #eeedfd;
+  --muted: #f1f1f4;
+  --hover: #e9e9ee;
+  --muted-foreground: #74747c;
+  --faint: #b9b9c2;
+  --destructive: #d64545;
+  --destructive-soft: #fbe9e9;
+  --success: #189a58;
+  --success-soft: #e4f6ec;
+  --warning: #b45309;
+  --warning-soft: #fbf0df;
+  --info: #0369a1;
+  --info-soft: #e3f1fa;
+  --violet: #7c3aed;
+  --violet-soft: #f1eafd;
+  --border: #e3e3e8;
+  --divider: #ececf0;
   --input: #ffffff;
-  --ring: #3b6fd4;
-  --selected: rgb(59 111 212 / 0.09);
+  --ring: #4f46e5;
+  --selected: #ecebfb;
+  --elev-xs: 0 1px 1px rgb(0 0 0 / .04);
+  --elev-sm: 0 1px 2px rgb(0 0 0 / .12), 0 0 0 .5px rgb(0 0 0 / .08);
+  --elev-pop: 0 16px 44px rgb(20 22 30 / .16), 0 2px 8px rgb(20 22 30 / .06), 0 0 0 .5px rgb(20 22 30 / .1);
 }
 
 .dark {
-  --background: #141517;
-  --foreground: #e6e6e3;
-  --card: #1b1c1f;
-  --popover: #1e1f22;
-  --primary: #6b95e6;
-  --primary-foreground: #0f1012;
-  --muted: #25262a;
-  --muted-foreground: #8e9096;
-  --destructive: #e06666;
-  --border: #2c2d31;
-  --input: #18191c;
-  --ring: #6b95e6;
-  --selected: rgb(107 149 230 / 0.12);
+  color-scheme: dark;
+  --background: #1a1a1e;
+  --foreground: #ededf1;
+  --foreground-2: #b9b9c1;
+  --card: #232327;
+  --surface-2: #1f1f23;
+  --popover: #26262b;
+  --primary: #a5b4fc;
+  --primary-foreground: #14142a;
+  --primary-soft: #2b2c47;
+  --muted: #2d2d33;
+  --hover: #36363d;
+  --muted-foreground: #8b8b94;
+  --faint: #56565f;
+  --destructive: #f28b82;
+  --destructive-soft: #45272a;
+  --success: #6fd99b;
+  --success-soft: #1e3a2b;
+  --warning: #f2b544;
+  --warning-soft: #3f3220;
+  --info: #7dd3fc;
+  --info-soft: #1d3340;
+  --violet: #c4b5fd;
+  --violet-soft: #312a4a;
+  --border: #333339;
+  --divider: #2c2c32;
+  --input: #1f1f23;
+  --ring: #a5b4fc;
+  --selected: #33345a;
+  --elev-xs: 0 1px 1px rgb(0 0 0 / .2);
+  --elev-sm: inset 0 .5px 0 rgb(255 255 255 / .08), 0 1px 2px rgb(0 0 0 / .3);
+  --elev-pop: 0 16px 44px rgb(0 0 0 / .55), 0 2px 8px rgb(0 0 0 / .3), 0 0 0 .5px rgb(255 255 255 / .1);
 }
 
 @layer base {
@@ -59,7 +144,9 @@
     @apply border-border;
   }
   html, body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
+    font-size: 13px;
+    line-height: 1.45;
     margin: 0;
     min-width: 320px;
     height: 100%;
@@ -68,13 +155,50 @@
     width: 100%;
     height: 100vh;
   }
+  button, [role="tab"], [role="switch"], [role="checkbox"], [role="radio"] {
+    cursor: default;
+  }
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
+    outline-offset: 1px;
+  }
+  input:focus-visible, textarea:focus-visible, [role="combobox"]:focus-visible {
+    outline: none;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 28%, transparent);
+  }
 }
 
-/* Thin scrollbar */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin scrollbar (8px, faint thumb inset by a transparent border). */
 .thin-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--muted-foreground) 35%, transparent) transparent;
 }
+.thin-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--faint);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover { background-color: var(--muted-foreground); }
+.thin-scrollbar::-webkit-scrollbar-corner { background: transparent; }
+
+/* Loading skeleton: a slow shimmer between the two control fills. */
+.skeleton {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--muted) 25%, var(--hover) 45%, var(--muted) 65%);
+  background-size: 240% 100%;
+  animation: skeleton-shift 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shift { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 
 /* Title bar: the whole header drags the window; controls opt out. */
 .titlebar {
@@ -88,3 +212,12 @@
 html.maximized #root {
   padding: 8px 8px 0 8px;
 }
+
+/* Floating layers fade/scale in (dialogs, menus); overlay fades. */
+.pop-in { animation: pop-in .16s var(--ease-out); }
+.fade-in { animation: fade-in .16s ease-out; }
+@keyframes pop-in { from { opacity: 0; transform: scale(.97); } }
+@keyframes fade-in { from { opacity: 0; } }
+.dialog-in { animation: dialog-in .2s var(--ease-out); }
+@keyframes dialog-in { from { opacity: 0; transform: translate(-50%, -48%) scale(.98); } }
+@media (prefers-reduced-motion: reduce) { .pop-in, .fade-in, .dialog-in { animation: none; } }

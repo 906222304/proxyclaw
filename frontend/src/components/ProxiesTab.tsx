@@ -9,7 +9,7 @@ import type { AutoRule, GroupInUseError, ProxyGroup, ProxyTestResult } from '@/a
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Badge, Card, EmptyState, Label } from '@/components/ui/misc'
+import { Badge, Card, EmptyState, Label, ListSkeleton } from '@/components/ui/misc'
 import { SearchInput } from '@/components/ui/search-input'
 import { Select } from '@/components/ui/select'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -47,7 +47,7 @@ const EMPTY_FORM: GroupForm = { name: '', host: '127.0.0.1', port: '7890', test_
 
 export function ProxiesTab() {
   const qc = useQueryClient()
-  const { data: groups = [] } = useQuery(proxyGroupsQuery)
+  const { data: groups = [], isPending: loading } = useQuery(proxyGroupsQuery)
   const { data: rules = [] } = useQuery(autoRulesQuery)
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState<ProxyGroup | 'new' | null>(null)
@@ -87,7 +87,7 @@ export function ProxiesTab() {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 px-5">
         <SearchInput value={query} onChange={setQuery} placeholder="搜索代理组…" className="w-60" />
-        <span className="ml-auto text-xs text-muted-foreground">{groups.length} 个代理组</span>
+        <span className="tabular ml-auto text-xs text-muted-foreground">{groups.length} 个代理组</span>
         <Button size="sm" disabled={testingAll || visible.length === 0} onClick={testAll}>
           {testingAll ? <Loader2 className="animate-spin" /> : <RefreshCw />} 全部测速
         </Button>
@@ -95,7 +95,8 @@ export function ProxiesTab() {
       </div>
 
       <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto px-5 pb-5">
-        {visible.length === 0 && <EmptyState icon={<Server />} title="没有找到代理组。" />}
+        {loading && <ListSkeleton rows={2} />}
+        {!loading && visible.length === 0 && <EmptyState icon={<Server />} title="没有找到代理组。" />}
         {visible.map(g => (
           <GroupCard
             key={g.id}
@@ -128,22 +129,22 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
   const ok = result?.latency_ms != null
 
   return (
-    <Card className="p-4">
+    <Card className="px-4 py-3.5 transition-colors hover:border-faint/70">
       <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold">{group.name}</span>
+        <span className="text-sm font-semibold tracking-[-.005em]">{group.name}</span>
         <Badge>SOCKS5</Badge>
         <Button size="icon" variant="ghost" aria-label="编辑代理组" title="编辑代理组" onClick={onEdit}><Pencil /></Button>
         {group.id !== 0 && (
-          <Button size="icon" variant="ghost" aria-label="删除代理组" title="删除代理组" className="hover:text-destructive" disabled={deleting} onClick={onDelete}>
+          <Button size="icon" variant="ghost" aria-label="删除代理组" title="删除代理组" className="hover:bg-destructive-soft hover:text-destructive" disabled={deleting} onClick={onDelete}>
             <Trash2 />
           </Button>
         )}
         <span className="ml-auto text-xs text-muted-foreground">{rules.length} 条规则</span>
       </div>
-      <div className="mt-1 font-mono text-xs text-muted-foreground">socks5://{group.host}:{group.port}</div>
+      <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">socks5://{group.host}:{group.port}</div>
 
-      <div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
-        <Globe className="size-4 shrink-0 text-muted-foreground" />
+      <div className="mt-3 flex items-center gap-2 border-t border-divider pt-3">
+        <Globe className="size-3.5 shrink-0 text-faint" />
         <span className="flex-1 truncate text-xs text-muted-foreground">{group.test_url}</span>
         {isFetching ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
@@ -153,8 +154,8 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
               type="button"
               onClick={onTest}
               className={cn(
-                'shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold transition-colors',
-                ok ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/10 text-red-600 dark:text-red-400',
+                'tabular shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold transition-[filter] hover:brightness-95 dark:hover:brightness-110',
+                ok ? 'bg-success-soft text-success' : 'bg-destructive-soft text-destructive',
               )}
             >
               {ok ? `${result.latency_ms}ms` : failedLabel(result)}
@@ -168,7 +169,7 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
       {!isFetching && result?.stages?.length ? (
         <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-6 font-mono text-[11px] text-muted-foreground">
           {result.stages.map(st => <span key={st.name}>{stageLabel(st.name)} {st.ms}ms</span>)}
-          {result.failed_stage && <span className="text-red-500">{failedLabel(result)}：{result.error}</span>}
+          {result.failed_stage && <span className="text-destructive">{failedLabel(result)}：{result.error}</span>}
         </div>
       ) : null}
 
@@ -179,7 +180,7 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
             {expanded ? '收起' : '展开'}规则
           </button>
           {expanded && (
-            <div className="mt-2 space-y-1 border-l-2 border-border pl-4">
+            <div className="mt-2 space-y-1 border-l-2 border-divider pl-4">
               {rules.map(r => (
                 <div key={r.id} className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">{r.name}</span>

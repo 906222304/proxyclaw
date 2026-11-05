@@ -17,10 +17,10 @@ import { cn } from '@/lib/utils'
 const ROW_HEIGHT = 30
 
 const stateDot: Record<ReturnType<typeof stateTone>, string> = {
-  ok: 'bg-emerald-500',
-  bound: 'bg-violet-400',
-  wait: 'bg-amber-400',
-  idle: 'bg-muted-foreground/50',
+  ok: 'bg-success shadow-[0_0_0_2.5px] shadow-success/18',
+  bound: 'bg-violet shadow-[0_0_0_2.5px] shadow-violet/18',
+  wait: 'bg-warning shadow-[0_0_0_2.5px] shadow-warning/18',
+  idle: 'bg-faint',
 }
 
 export function NetworkActivities({ selectedPid }: { selectedPid: number | undefined }) {
@@ -55,7 +55,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
           className="w-72"
         />
         {rows.length > 0 && (
-          <span className="ml-auto text-xs text-muted-foreground">
+          <span className="tabular ml-auto text-xs text-muted-foreground">
             {view.length === rows.length ? `${rows.length} 条连接` : `${view.length} / ${rows.length} 条连接`}
           </span>
         )}
@@ -72,7 +72,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
           <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 overflow-auto" role="table" aria-rowcount={view.length}>
             <div
               role="row"
-              className="sticky top-0 z-10 grid min-w-fit border-b border-border bg-card text-xs text-muted-foreground"
+              className="sticky top-0 z-10 grid min-w-fit border-b border-border bg-surface-2 text-2xs text-muted-foreground"
               style={{ gridTemplateColumns: template }}
             >
               {columns.map(col => (
@@ -80,7 +80,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
               ))}
             </div>
             {view.length === 0 ? (
-              <div className="py-10 text-center text-xs text-muted-foreground">没有匹配的连接。</div>
+              <div className="py-12 text-center text-xs text-muted-foreground">没有匹配的连接。</div>
             ) : (
               <div className="relative min-w-fit" style={{ height: virtualizer.getTotalSize() }}>
                 {virtualizer.getVirtualItems().map(item => {
@@ -90,14 +90,14 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
                       key={item.key}
                       role="row"
                       className={cn(
-                        'absolute inset-x-0 grid items-center border-b border-border/60 text-xs hover:bg-muted/60',
+                        'absolute inset-x-0 grid items-center border-b border-divider text-xs text-foreground transition-colors duration-100 hover:bg-muted/70',
                         // A socket whose owner exited: struck through and faded.
                         !c.pid_alive && 'line-through opacity-40',
                       )}
                       style={{ height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, gridTemplateColumns: template }}
                     >
                       {columns.map(col => (
-                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && 'font-mono')}>
+                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && (col.key === 'remote' ? 'font-mono text-[11.5px]' : 'tabular text-foreground-2'))}>
                           <Cell conn={c} col={col} />
                         </div>
                       ))}
@@ -121,7 +121,10 @@ function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | n
       role="columnheader"
       aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none'}
       onClick={onSort}
-      className="flex h-8 items-center gap-1 px-3 text-left font-medium hover:text-foreground"
+      className={cn(
+        'flex h-8 items-center gap-1 px-3 text-left font-medium tracking-[.02em] transition-colors hover:text-foreground',
+        active && 'text-foreground',
+      )}
     >
       {col.header}
       {active === 'asc' && <ArrowUp className="size-3" />}
@@ -133,14 +136,14 @@ function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | n
 function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
   switch (col.key) {
     case 'process_name':
-      return <span title={conn.process_name}>{conn.process_name}</span>
+      return <span className="font-medium" title={conn.process_name}>{conn.process_name}</span>
     case 'pid':
       return <>{conn.pid}</>
     case 'protocol':
       return (
         <span className={cn(
-          'rounded px-1.5 py-px text-[10px] font-semibold',
-          conn.protocol === 'UDP' ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : 'bg-sky-500/10 text-sky-700 dark:text-sky-400',
+          'rounded-sm px-1.5 py-px text-[10px] font-semibold tracking-[.04em]',
+          conn.protocol === 'UDP' ? 'bg-violet-soft text-violet' : 'bg-info-soft text-info',
         )}>
           {conn.protocol}
         </span>
@@ -152,20 +155,20 @@ function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
     case 'state':
       return conn.state ? (
         <span className="inline-flex items-center gap-1.5">
-          <span className={cn('size-1.5 rounded-full', stateDot[stateTone(conn.state)])} />
+          <span className={cn('size-1.5 shrink-0 rounded-full', stateDot[stateTone(conn.state)])} />
           {CONNECTION_STATES[conn.state] ?? conn.state}
         </span>
       ) : null
     case 'proxy_status': {
       const label = conn.proxy_status === 'PROXIED' || conn.proxy_status === 'IGNORED' ? PROXY_STATES[conn.proxy_status] : '直连'
       const tone = conn.proxy_status === 'PROXIED'
-        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+        ? 'bg-success-soft text-success'
         : conn.proxy_status === 'IGNORED'
-          ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+          ? 'bg-warning-soft text-warning'
           : 'bg-muted text-muted-foreground'
       return (
         <Tooltip content={ROUTE_REASONS[conn.route_reason ?? '']}>
-          <span className={cn('rounded-full px-2 py-px text-[11px] font-medium', tone)}>{label}</span>
+          <span className={cn('inline-flex h-[18px] items-center rounded-sm px-1.5 text-2xs font-medium', tone)}>{label}</span>
         </Tooltip>
       )
     }

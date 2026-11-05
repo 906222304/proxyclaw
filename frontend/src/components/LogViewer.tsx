@@ -102,7 +102,7 @@ export function LogViewer() {
               const el = e.currentTarget
               follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32
             }}
-            className="thin-scrollbar min-h-[200px] flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-3 font-mono text-xs leading-5"
+            className="thin-scrollbar min-h-[200px] flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-divider bg-surface-2 p-3 font-mono text-[11.5px] leading-5"
           >
             {filtered || placeholder}
           </pre>

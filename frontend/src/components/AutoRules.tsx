@@ -6,7 +6,7 @@ import { autoRulesQuery, proxyGroupsQuery } from '@/api/queries'
 import type { AutoRule } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Badge, Checkbox, EmptyState, Segmented } from '@/components/ui/misc'
+import { Badge, Checkbox, EmptyState, ListSkeleton, Segmented } from '@/components/ui/misc'
 import { SearchInput } from '@/components/ui/search-input'
 import { Switch } from '@/components/ui/switch'
 import { pushError } from '@/lib/toast'
@@ -27,7 +27,7 @@ export function AutoRules({ onAdd, onEdit }: {
   onAdd: () => void
   onEdit: (rule: AutoRule) => void
 }) {
-  const { data: rules = [] } = useQuery(autoRulesQuery)
+  const { data: rules = [], isPending: loading } = useQuery(autoRulesQuery)
   const { data: groups = [] } = useQuery(proxyGroupsQuery)
   const groupName = useMemo(() => new Map(groups.map(g => [g.id, g.name])), [groups])
 
@@ -114,7 +114,9 @@ export function AutoRules({ onAdd, onEdit }: {
       </div>
 
       <div className="thin-scrollbar min-h-0 flex-1 overflow-auto px-5 pb-5">
-        {visible.length === 0 ? (
+        {loading ? (
+          <ListSkeleton rows={3} />
+        ) : visible.length === 0 ? (
           <EmptyState
             icon={<ClipboardList />}
             title={query || status !== 'all'
@@ -122,11 +124,11 @@ export function AutoRules({ onAdd, onEdit }: {
               : <>暂无规则，点击 <strong>添加规则</strong> 创建第一条规则。</>}
           />
         ) : (
-          <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+          <div className="divide-y divide-divider overflow-hidden rounded-xl border border-border bg-card">
             {visible.map(rule => (
               <div
                 key={rule.id}
-                className={cn('group flex items-center gap-3 px-4 py-3 transition-colors', selected.has(rule.id) ? 'bg-selected' : 'hover:bg-muted/50')}
+                className={cn('group flex min-h-14 items-center gap-3 px-4 py-2.5 transition-colors duration-100', selected.has(rule.id) ? 'bg-selected' : 'hover:bg-surface-2')}
               >
                 <Checkbox checked={selected.has(rule.id)} onChange={() => toggleOne(rule.id)} label={`选择 ${rule.name}`} />
                 <Switch
@@ -136,18 +138,18 @@ export function AutoRules({ onAdd, onEdit }: {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className={cn('truncate text-sm font-medium', !rule.enabled && 'text-muted-foreground')}>{rule.name}</span>
+                    <span className={cn('truncate text-sm font-medium tracking-[-.005em]', !rule.enabled && 'text-muted-foreground')}>{rule.name}</span>
                     {rule.protocol === 'udp' && <Badge tone="green">UDP</Badge>}
                     {rule.protocol === 'both' && <Badge tone="violet">TCP+UDP</Badge>}
                     {(rule.matched_count ?? 0) > 0 && (
                       <Badge tone="blue" title="当前匹配的进程数">{rule.matched_count} 个进程</Badge>
                     )}
                   </div>
-                  <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="truncate font-mono">{rule.process_name}</span>
-                    <span>·</span>
+                  <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="truncate font-mono text-[11px] text-foreground-2">{rule.process_name}</span>
+                    <span className="text-faint">·</span>
                     <span className="shrink-0">{groupName.get(rule.proxy_group_id) ?? '默认'}</span>
-                    <span>·</span>
+                    <span className="text-faint">·</span>
                     <span className="shrink-0">进程树</span>
                   </div>
                 </div>
@@ -158,7 +160,7 @@ export function AutoRules({ onAdd, onEdit }: {
                     variant="ghost"
                     title="删除规则"
                     aria-label="删除规则"
-                    className="hover:text-destructive"
+                    className="hover:bg-destructive-soft hover:text-destructive"
                     onClick={() => setPendingDelete({ ids: [rule.id], label: rule.name || rule.id })}
                   >
                     <Trash2 />

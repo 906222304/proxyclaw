@@ -60,10 +60,10 @@ export function ProcessContextHeader({ process, onCreateRule }: {
       <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-2">
           <ProcessIcon name={process.name} className="size-5" />
-          <span className="truncate font-mono text-sm font-semibold">{process.name}</span>
+          <span className="truncate text-sm font-semibold tracking-[-.005em]">{process.name}</span>
           {process.hijack_source === 'manual' && <Badge tone="green">手动</Badge>}
           {process.hijack_source === 'auto' && <Badge tone="blue">自动</Badge>}
-          <span className="font-mono text-xs text-muted-foreground">PID {process.pid}</span>
+          <span className="tabular rounded-sm bg-muted px-1.5 text-2xs leading-[18px] text-muted-foreground">PID {process.pid}</span>
         </div>
         <Button size="sm" variant="ghost" onClick={onCreateRule} title="为此进程创建规则">
           <Plus /> 创建规则
@@ -77,15 +77,15 @@ export function ProcessContextHeader({ process, onCreateRule }: {
             onClick={locate}
             title="打开程序所在文件夹"
             className={cn(
-              'shrink-0 rounded p-1 transition-colors',
-              located ? 'bg-emerald-500/10 text-emerald-600' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              'shrink-0 rounded-md p-1 transition-colors',
+              located ? 'bg-success-soft text-success' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >
             <FolderOpen className="size-3.5" />
           </button>
           <span className="inline-flex shrink-0 items-center font-mono text-[11px]">
-            {cwd && <span className="max-w-[220px] truncate rounded-l bg-muted px-1.5 py-0.5 text-muted-foreground" title={cwd}>{cwd}</span>}
-            <span className={cn('bg-muted px-1.5 py-0.5 font-semibold', cwd ? 'rounded-r border-l border-border' : 'rounded')}>{exeName}</span>
+            {cwd && <span className="max-w-[220px] truncate rounded-l-md bg-muted px-1.5 py-0.5 text-muted-foreground" title={cwd}>{cwd}</span>}
+            <span className={cn('bg-muted px-1.5 py-0.5 font-medium text-foreground', cwd ? 'rounded-r-md border-l border-border' : 'rounded-md')}>{exeName}</span>
           </span>
           {args && (
             <span className={cn('ml-1 font-mono text-[11px] text-muted-foreground', !expanded && isLong ? 'max-w-[12rem] truncate' : 'break-all')}>
@@ -101,12 +101,12 @@ export function ProcessContextHeader({ process, onCreateRule }: {
           {cwd && (
             <button type="button" onClick={() => copy(cwd, 'cwd')} title="复制工作目录"
               className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/path:opacity-100">
-              {copied === 'cwd' ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+              {copied === 'cwd' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
             </button>
           )}
           <button type="button" onClick={() => copy(cmdline, 'full')} title="复制完整命令行"
             className="flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/path:opacity-100">
-            {copied === 'full' ? <Check className="size-3 text-emerald-500" /> : <><Copy className="size-3" /><span>全部</span></>}
+            {copied === 'full' ? <Check className="size-3 text-success" /> : <><Copy className="size-3" /><span>全部</span></>}
           </button>
         </div>
       )}

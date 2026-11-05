@@ -1,20 +1,20 @@
-import type { HTMLAttributes, ReactNode } from 'react'
+import type { CSSProperties, HTMLAttributes, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 type Tone = 'neutral' | 'green' | 'blue' | 'amber' | 'violet' | 'red'
 const tones: Record<Tone, string> = {
   neutral: 'bg-muted text-muted-foreground',
-  green: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  blue: 'bg-sky-500/10 text-sky-700 dark:text-sky-400',
-  amber: 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  violet: 'bg-violet-500/10 text-violet-700 dark:text-violet-400',
-  red: 'bg-red-500/10 text-red-700 dark:text-red-400',
+  green: 'bg-success-soft text-success',
+  blue: 'bg-info-soft text-info',
+  amber: 'bg-warning-soft text-warning',
+  violet: 'bg-violet-soft text-violet',
+  red: 'bg-destructive-soft text-destructive',
 }
 
 export function Badge({ tone = 'neutral', className, ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: Tone }) {
   return (
     <span
-      className={cn('inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-[11px] font-medium', tones[tone], className)}
+      className={cn('inline-flex h-[18px] shrink-0 items-center rounded-sm px-1.5 text-2xs font-medium leading-none', tones[tone], className)}
       {...props}
     />
   )
@@ -22,7 +22,7 @@ export function Badge({ tone = 'neutral', className, ...props }: HTMLAttributes<
 
 /** A rounded group of rows (magpie-style settings list). */
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-xl border border-border bg-card', className)} {...props} />
+  return <div className={cn('overflow-hidden rounded-xl border border-border bg-card', className)} {...props} />
 }
 
 export function Row({ title, description, children, className }: {
@@ -32,9 +32,9 @@ export function Row({ title, description, children, className }: {
   className?: string
 }) {
   return (
-    <div className={cn('flex items-center justify-between gap-6 px-4 py-3.5', className)}>
+    <div className={cn('flex min-h-12 items-center justify-between gap-6 px-4 py-2.5', className)}>
       <div className="min-w-0">
-        <div className="text-sm font-medium">{title}</div>
+        <div className="text-sm font-medium tracking-[-.005em]">{title}</div>
         {description && <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</div>}
       </div>
       {children != null && <div className="flex shrink-0 items-center gap-2">{children}</div>}
@@ -44,9 +44,9 @@ export function Row({ title, description, children, className }: {
 
 export function SectionTitle({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
   return (
-    <div className="mb-2 px-1">
-      <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{children}</h2>
-      {hint && <p className="mt-0.5 text-xs text-muted-foreground/80">{hint}</p>}
+    <div className="mb-1.5 px-1">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">{children}</h2>
+      {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }
@@ -58,7 +58,7 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
   className?: string
 }) {
   return (
-    <div role="radiogroup" className={cn('inline-flex shrink-0 rounded-lg bg-muted p-0.5', className)}>
+    <div role="radiogroup" className={cn('inline-flex h-7 shrink-0 rounded-lg bg-muted p-0.5', className)}>
       {options.map(o => (
         <button
           key={o.value}
@@ -67,8 +67,8 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
           aria-checked={value === o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            'flex-1 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-            value === o.value ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+            'flex-1 whitespace-nowrap rounded-md px-2.5 text-xs transition-[background-color,color,box-shadow] duration-150',
+            value === o.value ? 'bg-card font-medium text-foreground shadow-sm dark:bg-hover' : 'text-muted-foreground hover:text-foreground-2',
           )}
         >
           {o.label}
@@ -92,8 +92,8 @@ export function Checkbox({ checked, indeterminate, onChange, label }: {
       aria-label={label}
       onClick={e => { e.stopPropagation(); onChange() }}
       className={cn(
-        'flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
-        checked || indeterminate ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40 hover:border-primary',
+        'flex size-[15px] shrink-0 items-center justify-center rounded-[4px] border transition-colors duration-150',
+        checked || indeterminate ? 'border-primary bg-primary text-primary-foreground' : 'border-faint bg-card hover:border-muted-foreground',
       )}
     >
       {checked && <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth={3}><path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" /></svg>}
@@ -104,17 +104,40 @@ export function Checkbox({ checked, indeterminate, onChange, label }: {
 
 export function EmptyState({ icon, title, hint }: { icon?: ReactNode; title: ReactNode; hint?: ReactNode }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 py-16 text-center">
-      {icon && <div className="mb-2 text-muted-foreground/30 [&_svg]:size-10">{icon}</div>}
-      <p className="text-sm text-muted-foreground">{title}</p>
-      {hint && <p className="max-w-sm text-xs text-muted-foreground/70">{hint}</p>}
+    <div className="flex flex-1 flex-col items-center justify-center gap-1 px-8 py-14 text-center">
+      {icon && (
+        <div className="mb-3 flex size-11 items-center justify-center rounded-xl bg-muted text-muted-foreground [&_svg]:size-5">{icon}</div>
+      )}
+      <p className="text-sm font-medium text-foreground">{title}</p>
+      {hint && <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">{hint}</p>}
+    </div>
+  )
+}
+
+/** Shimmering placeholder rows for first loads. */
+export function Skeleton({ className, style }: { className?: string; style?: CSSProperties }) {
+  return <span aria-hidden className={cn('skeleton h-3', className)} style={style} />
+}
+
+export function ListSkeleton({ rows = 4, className }: { rows?: number; className?: string }) {
+  return (
+    <div role="status" aria-label="加载中" className={cn('divide-y divide-divider overflow-hidden rounded-xl border border-border bg-card', className)}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="flex h-12 items-center gap-3 px-4">
+          <Skeleton className="size-4 rounded-md" />
+          <div className="flex flex-1 flex-col gap-1.5">
+            <Skeleton className="h-2.5" style={{ width: `${46 - (i % 3) * 9}%` }} />
+            <Skeleton className="h-2 w-1/4" />
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
 
 export function Label({ htmlFor, children, hint }: { htmlFor?: string; children: ReactNode; hint?: ReactNode }) {
   return (
-    <label htmlFor={htmlFor} className="flex items-center gap-1.5 text-xs font-medium text-foreground/80">
+    <label htmlFor={htmlFor} className="flex items-center gap-1.5 text-xs font-medium text-foreground-2">
       {children}
       {hint}
     </label>

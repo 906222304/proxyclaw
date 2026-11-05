@@ -93,18 +93,18 @@ export function ProcessTree({ selectedPid, onSelect }: {
         type="button"
         onClick={() => onSelect(undefined)}
         className={cn(
-          'mx-2 mb-1 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
-          selectedPid == null ? 'bg-selected font-medium text-primary' : 'text-muted-foreground hover:bg-muted',
+          'mx-2 mb-1 flex h-8 items-center gap-2 rounded-lg px-2.5 text-ui transition-colors duration-150',
+          selectedPid == null ? 'bg-selected font-medium text-foreground [&>svg]:text-primary' : 'text-foreground-2 hover:bg-muted',
         )}
       >
-        <Monitor className="size-4" />
+        <Monitor className="size-3.5" />
         全部进程
-        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{total}</span>
+        <span className="tabular ml-auto text-2xs text-muted-foreground">{total}</span>
       </button>
 
       <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 select-none overflow-y-auto overflow-x-hidden px-2 pb-3">
         {rows.length === 0 ? (
-          <div className="px-3 py-4 text-center text-xs text-muted-foreground">没有找到进程。</div>
+          <div className="px-3 py-8 text-center text-xs text-muted-foreground">没有找到进程。</div>
         ) : (
           <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
             <div style={{ transform: `translateY(${items[0]?.start ?? 0}px)` }}>
@@ -133,7 +133,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
   )
 }
 
-const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/60' : 'bg-border')
+const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/55' : 'bg-border')
 const dashClass = (on: boolean) => (on ? 'border-muted-foreground/60' : 'border-border')
 
 const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, onSelect, onToggle, onHack, onUnhack }: {
@@ -161,10 +161,10 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   return (
     <div
       className={cn(
-        'group relative flex cursor-pointer items-center rounded-md pr-2 transition-colors',
+        'group relative flex items-center rounded-md pr-2 transition-colors duration-100',
         selected
-          ? active ? 'bg-selected' : 'bg-muted'
-          : matched ? 'bg-amber-400/15' : 'hover:bg-muted',
+          ? active ? 'bg-selected' : 'bg-hover'
+          : matched ? 'bg-warning-soft' : 'hover:bg-muted',
       )}
       style={{ height: ROW_HEIGHT, paddingLeft: level * INDENT }}
       title={(node.cmdline || node.name) + (compressed ? `\n（第 ${depth} 层）` : '')}
@@ -206,7 +206,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         onClick={e => { e.stopPropagation(); if (hasChildren) onToggle(node.pid) }}
       >
         {hasChildren && (
-          <span className={cn('rounded p-0.5 hover:bg-border', subtreeOn ? 'text-foreground/80' : 'text-muted-foreground')}>
+          <span className={cn('rounded-sm p-0.5 hover:bg-hover', subtreeOn ? 'text-foreground-2' : 'text-faint')}>
             {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           </span>
         )}
@@ -215,12 +215,12 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
         <ProcessIcon name={node.name} className={cn('size-4', iconDim)} />
         {node.hijacked && (
-          <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title={manual ? '手动代理' : '自动代理'} />
+          <span className="size-1.5 shrink-0 rounded-full bg-success" title={manual ? '手动代理' : '自动代理'} />
         )}
         <span className={cn(
-          'min-w-0 truncate font-mono tracking-tight',
-          depth === 0 ? 'text-[13px]' : 'text-xs',
-          selected ? 'font-semibold text-primary' : 'text-foreground',
+          'min-w-0 truncate',
+          depth === 0 ? 'text-ui' : 'text-xs',
+          selected ? 'font-medium text-foreground' : 'text-foreground',
           textDim,
         )} title={node.name}>
           {node.name}
@@ -236,7 +236,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
                 type="button"
                 aria-label="启用代理"
                 onClick={e => { e.stopPropagation(); onHack(node.pid) }}
-                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-border hover:text-amber-500 group-hover:opacity-100 focus-visible:opacity-100"
+                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-hover hover:text-warning group-hover:opacity-100 focus-visible:opacity-100"
               >
                 <Zap className="size-3.5" />
               </button>
@@ -248,14 +248,14 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
                 type="button"
                 aria-label="取消代理"
                 onClick={e => { e.stopPropagation(); onUnhack(node.pid) }}
-                className="mr-1 flex size-6 items-center justify-center rounded text-emerald-500 transition hover:bg-border hover:text-red-500"
+                className="mr-1 flex size-6 items-center justify-center rounded text-success transition hover:bg-hover hover:text-destructive"
               >
                 <ZapOff className="size-3.5" />
               </button>
             </Tooltip>
           )}
           <span className={cn(
-            'font-mono text-[11px] transition',
+            'tabular text-2xs transition',
             selected ? 'text-primary' : 'text-muted-foreground',
             textDim,
             showHack && 'group-hover:opacity-0 peer-focus-visible:opacity-0',

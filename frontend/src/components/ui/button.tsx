@@ -5,14 +5,14 @@ type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
 type Size = 'sm' | 'md' | 'icon'
 
 const variants: Record<Variant, string> = {
-  primary: 'bg-primary text-primary-foreground hover:bg-primary/90',
-  secondary: 'border border-border bg-card text-foreground hover:bg-muted',
-  ghost: 'text-muted-foreground hover:bg-muted hover:text-foreground',
-  danger: 'bg-destructive text-white hover:bg-destructive/90',
+  primary: 'bg-primary text-primary-foreground shadow-xs hover:brightness-[1.08] active:brightness-95',
+  secondary: 'border border-border bg-card text-foreground-2 shadow-xs hover:border-faint hover:bg-surface-2 hover:text-foreground active:bg-muted',
+  ghost: 'text-muted-foreground hover:bg-muted hover:text-foreground active:bg-hover',
+  danger: 'bg-destructive text-white shadow-xs hover:brightness-[1.08] active:brightness-95 dark:text-[#2a1214]',
 }
 const sizes: Record<Size, string> = {
   sm: 'h-7 px-2.5 text-xs gap-1.5',
-  md: 'h-9 px-4 text-sm gap-2',
+  md: 'h-8 px-3.5 text-ui gap-1.5',
   icon: 'size-7 justify-center',
 }
 
@@ -26,8 +26,8 @@ export function Button({ variant = 'secondary', size = 'md', className, type = '
     <button
       type={type}
       className={cn(
-        'inline-flex shrink-0 items-center rounded-lg font-medium transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+        'inline-flex shrink-0 select-none items-center whitespace-nowrap rounded-lg font-medium',
+        'transition-[background-color,border-color,color,filter] duration-150',
         'disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5',
         variants[variant], sizes[size], className,
       )}

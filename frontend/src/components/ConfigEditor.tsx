@@ -100,10 +100,10 @@ export function ConfigEditor() {
 
   return (
     <div className="thin-scrollbar min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto flex max-w-2xl flex-col gap-8 px-5 py-6">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-5 pt-2 pb-6">
         <section>
           <SectionTitle>通用</SectionTitle>
-          <Card className="divide-y divide-border">
+          <Card className="divide-y divide-divider">
             <Row
               title="关闭窗口后保持后台运行"
               description="默认开启，关闭窗口后代理继续运行。点击托盘图标重新打开，右键选择“退出 ProxyClaw”结束运行。设置立即生效。"
@@ -130,7 +130,7 @@ export function ConfigEditor() {
             </Row>
             <Row
               className={autostart.enabled ? 'pl-8' : 'pl-8 opacity-50'}
-              title={<span className="text-xs">启动时隐藏到托盘</span>}
+              title={<span className="text-ui font-normal">启动时隐藏到托盘</span>}
               description="自动启动时仅显示托盘图标；开启“登录 Windows 后自动启动”后生效。"
             >
               <Switch
@@ -145,7 +145,7 @@ export function ConfigEditor() {
 
         <section>
           <SectionTitle>网络</SectionTitle>
-          <Card className="divide-y divide-border">
+          <Card className="divide-y divide-divider">
             <Row
               title="DNS 代理"
               description="通过代理转发 DNS 查询，适用于系统 DNS 无法解析目标服务的情况。此模式会修改系统 DNS，影响整台电脑。"
@@ -184,7 +184,7 @@ export function ConfigEditor() {
 
         <section>
           <SectionTitle>诊断</SectionTitle>
-          <Card className="divide-y divide-border">
+          <Card className="divide-y divide-divider">
             <Row title="日志级别" description="设置日志详细程度，修改后立即生效。调试模式会记录更多连接细节。">
               <Select
                 value={logLevel}
@@ -306,7 +306,7 @@ function RawConfig({ config }: { config: Config | undefined }) {
         <div className="flex items-center gap-2">
           <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">配置文件</h2>
           {dirty && <Badge tone="amber">尚未保存</Badge>}
-          {message && <span className={message.ok ? 'text-xs text-emerald-600' : 'text-xs text-destructive'}>{message.text}</span>}
+          {message && <span className={message.ok ? 'text-xs text-success' : 'text-xs text-destructive'}>{message.text}</span>}
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="primary" disabled={save.isPending || loadError !== null || !dirty} onClick={doSave}>

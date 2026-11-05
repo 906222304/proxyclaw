@@ -114,7 +114,7 @@ function Help({ children }: { children: ReactNode }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-4">
-      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      <h3 className="text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">{title}</h3>
       {children}
     </section>
   )

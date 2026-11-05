@@ -143,7 +143,7 @@ export default function App() {
                     key={key}
                     value={key}
                     className={cn(
-                      'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground outline-offset-2 transition-[background-color,color,box-shadow] duration-150',
+                      'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 transition-[background-color,color,box-shadow] duration-150',
                       'data-[state=inactive]:hover:bg-muted data-[state=inactive]:hover:text-foreground-2 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm',
                       'dark:data-[state=active]:bg-hover',
                     )}

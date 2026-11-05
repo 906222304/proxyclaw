@@ -97,7 +97,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
                       style={{ height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, gridTemplateColumns: template }}
                     >
                       {columns.map(col => (
-                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && (col.key === 'remote' ? 'font-mono text-[11.5px]' : 'tabular text-foreground-2'))}>
+                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && (col.key === 'remote' ? 'font-mono text-[11.5px] text-foreground-2' : 'tabular text-foreground-2'))}>
                           <Cell conn={c} col={col} />
                         </div>
                       ))}
@@ -136,7 +136,7 @@ function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | n
 function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
   switch (col.key) {
     case 'process_name':
-      return <span className="font-medium" title={conn.process_name}>{conn.process_name}</span>
+      return <span title={conn.process_name}>{conn.process_name}</span>
     case 'pid':
       return <>{conn.pid}</>
     case 'protocol':

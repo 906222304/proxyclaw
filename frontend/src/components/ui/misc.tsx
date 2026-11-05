@@ -1,5 +1,7 @@
+import { CircleHelp } from 'lucide-react'
 import type { CSSProperties, HTMLAttributes, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
+import { Tooltip } from './tooltip'
 
 type Tone = 'neutral' | 'green' | 'blue' | 'amber' | 'violet' | 'red'
 const tones: Record<Tone, string> = {
@@ -14,7 +16,7 @@ const tones: Record<Tone, string> = {
 export function Badge({ tone = 'neutral', className, ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: Tone }) {
   return (
     <span
-      className={cn('inline-flex h-[18px] shrink-0 items-center rounded-sm px-1.5 text-2xs font-medium leading-none', tones[tone], className)}
+      className={cn('inline-flex h-4.5 shrink-0 items-center rounded-sm px-1.5 text-2xs font-medium leading-none', tones[tone], className)}
       {...props}
     />
   )
@@ -25,17 +27,26 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('overflow-hidden rounded-xl border border-border bg-card', className)} {...props} />
 }
 
-export function Row({ title, description, children, className }: {
+export function Row({ title, description, hint, children, className }: {
   title: ReactNode
   description?: ReactNode
+  /** Longer caveat, shown in a tooltip behind a ? icon next to the title. */
+  hint?: ReactNode
   children?: ReactNode
   className?: string
 }) {
   return (
-    <div className={cn('flex min-h-12 items-center justify-between gap-6 px-4 py-2.5', className)}>
+    <div className={cn('flex min-h-12 items-center justify-between gap-6 px-4 py-2', className)}>
       <div className="min-w-0">
-        <div className="text-sm font-medium">{title}</div>
-        {description && <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</div>}
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          {title}
+          {hint && (
+            <Tooltip content={hint}>
+              <span tabIndex={0} aria-label="说明" className="text-faint hover:text-muted-foreground"><CircleHelp className="size-3.5" /></span>
+            </Tooltip>
+          )}
+        </div>
+        {description && <div className="mt-0.5 truncate text-2xs text-muted-foreground">{description}</div>}
       </div>
       {children != null && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
@@ -45,20 +56,22 @@ export function Row({ title, description, children, className }: {
 export function SectionTitle({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
   return (
     <div className="mb-1.5 px-1">
-      <h2 className="text-2xs font-semibold uppercase tracking-[.05em] text-muted-foreground">{children}</h2>
-      {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
+      <h2 className="text-2xs font-semibold text-muted-foreground">{children}</h2>
+      {hint && <p className="mt-0.5 text-2xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }
 
-export function Segmented<T extends string>({ value, onChange, options, className }: {
+/** Trackless segmented control: only the active option gets a thumb. */
+export function Segmented<T extends string>({ value, onChange, options, className, size = 'md' }: {
   value: T
   onChange: (v: T) => void
   options: { value: T; label: ReactNode }[]
   className?: string
+  size?: 'sm' | 'md'
 }) {
   return (
-    <div role="radiogroup" className={cn('inline-flex h-7 shrink-0 rounded-lg bg-muted p-0.5', className)}>
+    <div role="radiogroup" className={cn('inline-flex shrink-0 gap-0.5', size === 'sm' ? 'h-6' : 'h-7', className)}>
       {options.map(o => (
         <button
           key={o.value}
@@ -67,8 +80,9 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
           aria-checked={value === o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            'flex-1 whitespace-nowrap rounded-md px-2.5 text-xs transition-[background-color,color,box-shadow] duration-150',
-            value === o.value ? 'bg-card font-medium text-foreground shadow-sm dark:bg-hover' : 'text-muted-foreground hover:text-foreground-2',
+            'flex-1 whitespace-nowrap rounded-md transition-[background-color,color,box-shadow,scale] duration-150 active:scale-97',
+            size === 'sm' ? 'px-2 text-2xs' : 'px-2.5 text-xs',
+            value === o.value ? 'bg-card font-medium text-foreground shadow-sm dark:bg-hover' : 'text-muted-foreground hover:bg-field hover:text-foreground-2',
           )}
         >
           {o.label}
@@ -92,7 +106,7 @@ export function Checkbox({ checked, indeterminate, onChange, label }: {
       aria-label={label}
       onClick={e => { e.stopPropagation(); onChange() }}
       className={cn(
-        'flex size-[15px] shrink-0 items-center justify-center rounded-[4px] border transition-colors duration-150',
+        'flex size-3.5 shrink-0 items-center justify-center rounded-sm border transition-colors duration-150',
         checked || indeterminate ? 'border-primary bg-primary text-primary-foreground' : 'border-faint bg-card hover:border-muted-foreground',
       )}
     >
@@ -104,12 +118,12 @@ export function Checkbox({ checked, indeterminate, onChange, label }: {
 
 export function EmptyState({ icon, title, hint }: { icon?: ReactNode; title: ReactNode; hint?: ReactNode }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-1 px-8 py-14 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-1 px-5 py-9 text-center">
       {icon && (
         <div className="mb-3 flex size-11 items-center justify-center rounded-xl bg-muted text-muted-foreground [&_svg]:size-5">{icon}</div>
       )}
-      <p className="text-sm font-medium text-foreground">{title}</p>
-      {hint && <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">{hint}</p>}
+      <p className="text-xs font-medium text-foreground-2">{title}</p>
+      {hint && <p className="max-w-sm text-2xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }

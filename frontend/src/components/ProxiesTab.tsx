@@ -1,5 +1,5 @@
 import { useIsFetching, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, Globe, Loader2, Pencil, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
+import { ChevronRight, Globe, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { createProxyGroup, deleteProxyGroup, migrateProxyGroup, updateProxyGroup } from '@/api/client'
@@ -9,7 +9,8 @@ import type { AutoRule, GroupInUseError, ProxyGroup, ProxyTestResult } from '@/a
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Badge, Card, EmptyState, Label, ListSkeleton } from '@/components/ui/misc'
+import { EmptyState, Label, ListSkeleton } from '@/components/ui/misc'
+import { MoreMenu } from '@/components/ui/menu'
 import { SearchInput } from '@/components/ui/search-input'
 import { Select } from '@/components/ui/select'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -85,20 +86,22 @@ export function ProxiesTab() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-3 px-5">
-        <SearchInput value={query} onChange={setQuery} placeholder="搜索代理组…" className="w-60" />
-        <span className="tabular ml-auto text-xs text-muted-foreground">{groups.length} 个代理组</span>
+      <div className="flex h-12 shrink-0 items-center gap-3">
+        <SearchInput value={query} onChange={setQuery} placeholder="搜索代理组…" className="w-56" />
+        <span className="tabular ml-auto text-2xs text-muted-foreground">{groups.length} 个代理组</span>
         <Button size="sm" disabled={testingAll || visible.length === 0} onClick={testAll}>
           {testingAll ? <Loader2 className="animate-spin" /> : <RefreshCw />} 全部测速
         </Button>
         <Button size="sm" variant="primary" onClick={() => setEditing('new')}><Plus /> 新建代理组</Button>
       </div>
 
-      <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto px-5 pb-5">
+      <div className="thin-scrollbar min-h-0 flex-1 overflow-auto pb-4">
         {loading && <ListSkeleton rows={2} />}
-        {!loading && visible.length === 0 && <EmptyState icon={<Server />} title="没有找到代理组。" />}
+        {!loading && visible.length === 0 && <EmptyState title="没有找到代理组" />}
+        {visible.length > 0 && (
+          <div className="divide-y divide-divider overflow-hidden rounded-xl border border-border bg-card">
         {visible.map(g => (
-          <GroupCard
+          <GroupRow
             key={g.id}
             group={g}
             rules={rulesByGroup.get(g.id) ?? []}
@@ -108,6 +111,8 @@ export function ProxiesTab() {
             onDelete={() => remove.mutate(g)}
           />
         ))}
+          </div>
+        )}
       </div>
 
       <GroupEditor editing={editing} onClose={() => setEditing(null)} onSaved={refresh} />
@@ -116,7 +121,10 @@ export function ProxiesTab() {
   )
 }
 
-function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
+const latencyTone = (ms: number) => (ms < 300 ? 'text-success' : ms < 1000 ? 'text-warning' : 'text-destructive')
+
+/** 48px row; click expands an inline panel (test URL, last result, rules). */
+function GroupRow({ group, rules, deleting, onTest, onEdit, onDelete }: {
   group: ProxyGroup
   rules: AutoRule[]
   deleting: boolean
@@ -129,70 +137,68 @@ function GroupCard({ group, rules, deleting, onTest, onEdit, onDelete }: {
   const ok = result?.latency_ms != null
 
   return (
-    <Card className="px-4 py-3.5 transition-colors hover:border-faint/70">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold">{group.name}</span>
-        <Badge>SOCKS5</Badge>
-        <Button size="icon" variant="ghost" aria-label="编辑代理组" title="编辑代理组" onClick={onEdit}><Pencil /></Button>
-        {group.id !== 0 && (
-          <Button size="icon" variant="ghost" aria-label="删除代理组" title="删除代理组" className="hover:bg-destructive-soft hover:text-destructive" disabled={deleting} onClick={onDelete}>
-            <Trash2 />
-          </Button>
-        )}
-        <span className="ml-auto text-xs text-muted-foreground">{rules.length} 条规则</span>
-      </div>
-      <div className="mt-0.5 font-mono text-2xs text-muted-foreground">socks5://{group.host}:{group.port}</div>
-
-      <div className="mt-3 flex items-center gap-2 border-t border-divider pt-3">
-        <Globe className="size-3.5 shrink-0 text-faint" />
-        <span className="flex-1 truncate text-xs text-muted-foreground">{group.test_url}</span>
-        {isFetching ? (
-          <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
-        ) : result ? (
-          <Tooltip content={testTooltip(result)}>
-            <button
-              type="button"
-              onClick={onTest}
-              className={cn(
-                'tabular shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold transition-[filter] hover:brightness-95 dark:hover:brightness-110',
-                ok ? 'bg-success-soft text-success' : 'bg-destructive-soft text-destructive',
-              )}
-            >
-              {ok ? `${result.latency_ms}ms` : failedLabel(result)}
-            </button>
-          </Tooltip>
-        ) : (
-          <Button size="icon" variant="ghost" title="测试连通性" aria-label="测试连通性" onClick={onTest}><RefreshCw /></Button>
-        )}
-      </div>
-
-      {!isFetching && result?.stages?.length ? (
-        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-6 font-mono text-2xs text-muted-foreground">
-          {result.stages.map(st => <span key={st.name}>{stageLabel(st.name)} {st.ms}ms</span>)}
-          {result.failed_stage && <span className="text-destructive">{failedLabel(result)}：{result.error}</span>}
+    <div>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v) } }}
+        className={cn('flex min-h-12 items-center gap-3 py-1.5 pr-3 pl-4 outline-none transition-colors duration-100 hover:bg-surface-2 focus-visible:bg-surface-2', expanded && 'bg-surface-2')}
+      >
+        <ChevronRight className={cn('size-3.5 shrink-0 text-faint transition-transform', expanded && 'rotate-90')} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">{group.name}</div>
+          <div className="tabular truncate text-2xs text-muted-foreground">
+            SOCKS5 · {group.host}:{group.port} · {rules.length} 条规则
+          </div>
         </div>
-      ) : null}
+        <div className="flex shrink-0 items-center gap-1" onClick={e => e.stopPropagation()}>
+          {result && !isFetching && (
+            <Tooltip content={testTooltip(result)}>
+              <span tabIndex={0} className={cn('tabular px-1 text-xs font-medium', ok ? latencyTone(result.latency_ms!) : 'text-destructive')}>
+                {ok ? `${result.latency_ms} ms` : failedLabel(result)}
+              </span>
+            </Tooltip>
+          )}
+          <Button size="icon" variant="ghost" title="测试连通性" aria-label="测试连通性" disabled={isFetching} onClick={onTest}>
+            {isFetching ? <Loader2 className="animate-spin text-primary" /> : <RefreshCw />}
+          </Button>
+          <MoreMenu items={[
+            { label: '编辑代理组', icon: <Pencil />, onSelect: onEdit },
+            ...(group.id !== 0 ? [{ label: '删除代理组', icon: <Trash2 />, danger: true, disabled: deleting, onSelect: onDelete }] : []),
+          ]} />
+        </div>
+      </div>
 
-      {rules.length > 0 && (
-        <div className="mt-2">
-          <button type="button" onClick={() => setExpanded(v => !v)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <ChevronDown className={cn('size-3 transition-transform', expanded && 'rotate-180')} />
-            {expanded ? '收起' : '展开'}规则
-          </button>
-          {expanded && (
-            <div className="mt-2 space-y-1 border-l-2 border-divider pl-4">
+      {expanded && (
+        <div className="space-y-2 bg-surface-2 pt-1 pr-4 pb-3 pl-10.5 text-2xs text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Globe className="size-3 shrink-0 text-faint" />
+            <span className="selectable truncate">{group.test_url}</span>
+          </div>
+          {!isFetching && result?.stages?.length ? (
+            <div className="tabular flex flex-wrap gap-x-3 gap-y-0.5">
+              {result.stages.map(st => <span key={st.name}>{stageLabel(st.name)} {st.ms} ms</span>)}
+              {result.failed_stage && <span className="text-destructive">{failedLabel(result)}：{result.error}</span>}
+            </div>
+          ) : null}
+          {rules.length > 0 ? (
+            <div className="space-y-1 pt-1">
               {rules.map(r => (
-                <div key={r.id} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{r.name}</span>
-                  <span className="font-mono">{r.process_name}</span>
-                  {!r.enabled && <Badge>已停用</Badge>}
+                <div key={r.id} className="flex min-w-0 items-center gap-2">
+                  <span className={cn('truncate font-medium', r.enabled ? 'text-foreground-2' : 'text-faint')}>{r.name}</span>
+                  <span className="truncate">{r.process_name}</span>
+                  {!r.enabled && <span className="shrink-0 text-faint">已停用</span>}
                 </div>
               ))}
             </div>
+          ) : (
+            <p>暂无规则使用此代理组</p>
           )}
         </div>
       )}
-    </Card>
+    </div>
   )
 }
 
@@ -251,16 +257,16 @@ function GroupEditor({ editing, onClose, onSaved }: {
         <div className="flex gap-2">
           <div className="flex-1 space-y-1.5">
             <Label htmlFor={`${ids}-h`}>服务器地址</Label>
-            <Input id={`${ids}-h`} placeholder="127.0.0.1" className="font-mono" {...register('host')} />
+            <Input id={`${ids}-h`} placeholder="127.0.0.1" className="tabular" {...register('host')} />
           </div>
           <div className="w-24 space-y-1.5">
             <Label htmlFor={`${ids}-p`}>端口</Label>
-            <Input id={`${ids}-p`} placeholder="7890" inputMode="numeric" className="font-mono" {...register('port')} />
+            <Input id={`${ids}-p`} placeholder="7890" inputMode="numeric" className="tabular" {...register('port')} />
           </div>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor={`${ids}-u`}>测试网址</Label>
-          <Input id={`${ids}-u`} placeholder="https://www.google.com" className="font-mono" {...register('test_url')} />
+          <Input id={`${ids}-u`} placeholder="https://www.google.com" className="tabular" {...register('test_url')} />
         </div>
         <button type="submit" hidden />
       </form>

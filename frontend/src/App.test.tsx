@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyPush } from '@/api/notify'
 import { createQueryClient } from '@/api/queries'
+import { PROXYCLAW_VERSION } from '@/version'
 import App from './App'
 
 // Smoke test: the whole app mounts, renders pushed data and switches tabs
@@ -71,7 +72,10 @@ describe('App', () => {
     await flush()
 
     const text = () => document.body.textContent ?? ''
-    expect(text()).toContain('网络活动')
+    expect(text()).toContain('网络')
+    // Status chip replaces the old footer.
+    expect(host.querySelector('[data-connected]')?.textContent).toContain('18080')
+    expect(host.querySelector('footer')).toBeNull()
     expect(text()).toContain('explorer.exe')
     expect(text()).toContain('全部进程')
     // Connection row: Chinese labels and the dead-process styling.
@@ -90,12 +94,16 @@ describe('App', () => {
     expect(text()).toContain('PID 10')
     expect(text()).toContain('--flag')
 
-    for (const [label, expected] of [['规则', '规则一'], ['代理', 'socks5://127.0.0.1:7890'], ['设置', '关闭窗口后保持后台运行']] as const) {
+    for (const [label, expected] of [['规则', '规则一'], ['代理', 'SOCKS5 · 127.0.0.1:7890 · 1 条规则'], ['设置', `v${PROXYCLAW_VERSION}`]] as const) {
       const tab = [...host.querySelectorAll('[role="tab"]')].find(t => t.textContent?.startsWith(label))!
       click(tab)
       await flush()
       expect(text()).toContain(expected)
       if (label === '规则') {
+        // Rule row: sub-line, inline group select, actions behind ⋯.
+        expect(text()).toContain('app.exe · 进程树 · TCP')
+        expect(host.querySelector('[aria-label="代理组"]')).not.toBeNull()
+        expect(host.querySelector('[aria-label="更多操作"]')).not.toBeNull()
         // The shared rule editor opens with an empty form; save is disabled.
         click([...host.querySelectorAll('button')].find(b => b.textContent?.includes('添加规则'))!)
         await flush()

@@ -27,13 +27,13 @@ export function Select({ value, onValueChange, options, placeholder, id, classNa
         aria-label={ariaLabel}
         className={cn(
           fieldClass,
-          'inline-flex h-8 w-full items-center justify-between gap-2 px-2.5 text-ui data-[placeholder]:text-muted-foreground',
-          'data-[state=open]:border-primary/70 data-[state=open]:ring-3 data-[state=open]:ring-primary/15',
+          'inline-flex h-7 w-full min-w-0 items-center justify-between gap-2 px-2.5 text-xs data-[placeholder]:text-muted-foreground',
+          'data-[state=open]:ring-1 data-[state=open]:ring-inset data-[state=open]:ring-primary [&>span]:truncate',
           className,
         )}
       >
         {display ?? <SelectPrimitive.Value placeholder={placeholder} />}
-        <SelectPrimitive.Icon><ChevronDown className="size-3.5 text-muted-foreground" /></SelectPrimitive.Icon>
+        <SelectPrimitive.Icon><ChevronDown className="size-3.5 shrink-0 text-muted-foreground" /></SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
       <SelectPrimitive.Portal>
         <SelectPrimitive.Content
@@ -46,7 +46,7 @@ export function Select({ value, onValueChange, options, placeholder, id, classNa
               <SelectPrimitive.Item
                 key={o.value}
                 value={o.value}
-                className="relative flex cursor-pointer select-none items-center rounded-md py-1.5 pl-7 pr-2.5 text-ui outline-none data-[highlighted]:bg-muted data-[state=checked]:font-medium"
+                className="relative flex cursor-pointer select-none items-center rounded-md py-1.5 pl-7 pr-2.5 text-xs outline-none data-[highlighted]:bg-muted data-[state=checked]:font-medium"
               >
                 <SelectPrimitive.ItemIndicator className="absolute left-2 text-primary"><Check className="size-3.5" /></SelectPrimitive.ItemIndicator>
                 <SelectPrimitive.ItemText>{o.label}</SelectPrimitive.ItemText>

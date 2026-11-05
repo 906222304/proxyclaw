@@ -1,9 +1,9 @@
 import { Check, ChevronDown, ChevronUp, Copy, FolderOpen, Plus } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { revealFile } from '@/api/client'
 import type { ProcessInfo } from '@/api/types'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/misc'
+import { Tooltip } from '@/components/ui/tooltip'
 import { ProcessIcon } from '@/components/ProcessIcon'
 import { dirOf, exeFromCmdline } from '@/lib/process'
 import { cn } from '@/lib/utils'
@@ -25,9 +25,27 @@ export function describeProcess(node: ProcessInfo) {
   return { cmdline, exeName, imagePath, cwd, args }
 }
 
-export function ProcessContextHeader({ process, onCreateRule }: {
-  process: ProcessInfo | null
+/** Hijack source as a small dot; the tooltip names it. */
+export function HijackDot({ source }: { source?: string | null }) {
+  if (source !== 'manual' && source !== 'auto') return null
+  const label = source === 'manual' ? '手动代理' : '自动代理（规则）'
+  return (
+    <Tooltip content={label}>
+      <span aria-label={label} className={cn('size-1.5 shrink-0 rounded-full', source === 'manual' ? 'bg-success' : 'bg-info')} />
+    </Tooltip>
+  )
+}
+
+/**
+ * 48px header row for the selected process: icon, name, sub-line
+ * "PID · path args" (copy / reveal actions on hover), and 创建规则.
+ * The expand chevron shows the full command line underneath.
+ */
+export function ProcessContextHeader({ process, onCreateRule, children }: {
+  process: ProcessInfo
   onCreateRule: () => void
+  /** Right-aligned extras (search, count) on the same row. */
+  children?: ReactNode
 }) {
   const [copied, setCopied] = useState<'cwd' | 'full' | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -39,7 +57,6 @@ export function ProcessContextHeader({ process, onCreateRule }: {
     return () => clearTimeout(t)
   }, [copied])
 
-  if (!process) return null
   const { cmdline, exeName, imagePath, cwd, args } = describeProcess(process)
   const isLong = args.length > 40 || cmdline.length > 60
 
@@ -54,61 +71,54 @@ export function ProcessContextHeader({ process, onCreateRule }: {
     try { await revealFile(path) } catch { /* ignore */ }
     setTimeout(() => setLocated(false), 1000)
   }
+  const iconBtn = 'flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-field hover:text-foreground'
 
   return (
-    <div className="mx-5 mb-3 rounded-xl border border-border bg-card px-4 py-3">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <ProcessIcon name={process.name} className="size-5" />
-          <span className="truncate text-sm font-semibold">{process.name}</span>
-          {process.hijack_source === 'manual' && <Badge tone="green">手动</Badge>}
-          {process.hijack_source === 'auto' && <Badge tone="blue">自动</Badge>}
-          <span className="tabular rounded-sm bg-muted px-1.5 text-2xs leading-[18px] text-muted-foreground">PID {process.pid}</span>
+    <div className="shrink-0">
+      <div className="flex h-12 items-center gap-3">
+        <ProcessIcon name={process.name} className="size-5.5" />
+        <div className="group/path min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-medium">{process.name}</span>
+            <HijackDot source={process.hijack_source} />
+          </div>
+          <div className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
+            <span className="tabular shrink-0">PID {process.pid}</span>
+            {cmdline && (
+              <>
+                <span className="shrink-0 text-faint">·</span>
+                <span className="selectable min-w-0 truncate" title={cmdline}>
+                  {cwd}<span className="text-foreground-2">{exeName}</span>{args && <> {args}</>}
+                </span>
+                <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/path:opacity-100 focus-within:opacity-100">
+                  <button type="button" onClick={locate} title="打开程序所在文件夹" className={cn(iconBtn, located && 'text-success')}>
+                    <FolderOpen className="size-3" />
+                  </button>
+                  {cwd && (
+                    <button type="button" onClick={() => copy(cwd, 'cwd')} title="复制工作目录" className={iconBtn}>
+                      {copied === 'cwd' ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => copy(cmdline, 'full')} title="复制完整命令行" className={cn(iconBtn, 'w-auto gap-0.5 px-1')}>
+                    {copied === 'full' ? <Check className="size-3 text-success" /> : <><Copy className="size-3" /><span>全部</span></>}
+                  </button>
+                </span>
+                {isLong && (
+                  <button type="button" onClick={() => setExpanded(v => !v)} title={expanded ? '收起命令行' : '展开命令行'} className={iconBtn}>
+                    {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         </div>
+        {children}
         <Button size="sm" variant="ghost" onClick={onCreateRule} title="为此进程创建规则">
           <Plus /> 创建规则
         </Button>
       </div>
-
-      {cmdline && (
-        <div className="group/path mt-2 flex flex-wrap items-center gap-1 text-xs">
-          <button
-            type="button"
-            onClick={locate}
-            title="打开程序所在文件夹"
-            className={cn(
-              'shrink-0 rounded-md p-1 transition-colors',
-              located ? 'bg-success-soft text-success' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-            )}
-          >
-            <FolderOpen className="size-3.5" />
-          </button>
-          <span className="inline-flex shrink-0 items-center font-mono text-2xs">
-            {cwd && <span className="max-w-[220px] truncate rounded-l-md bg-muted px-1.5 py-0.5 text-muted-foreground" title={cwd}>{cwd}</span>}
-            <span className={cn('bg-muted px-1.5 py-0.5 font-medium text-foreground', cwd ? 'rounded-r-md border-l border-border' : 'rounded-md')}>{exeName}</span>
-          </span>
-          {args && (
-            <span className={cn('ml-1 font-mono text-2xs text-muted-foreground', !expanded && isLong ? 'max-w-[12rem] truncate' : 'break-all')}>
-              {args}
-            </span>
-          )}
-          {isLong && (
-            <button type="button" onClick={() => setExpanded(v => !v)} title={expanded ? '收起' : '展开'}
-              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
-              {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-            </button>
-          )}
-          {cwd && (
-            <button type="button" onClick={() => copy(cwd, 'cwd')} title="复制工作目录"
-              className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/path:opacity-100">
-              {copied === 'cwd' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-            </button>
-          )}
-          <button type="button" onClick={() => copy(cmdline, 'full')} title="复制完整命令行"
-            className="flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-2xs text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/path:opacity-100">
-            {copied === 'full' ? <Check className="size-3 text-success" /> : <><Copy className="size-3" /><span>全部</span></>}
-          </button>
-        </div>
+      {expanded && cmdline && (
+        <p className="mb-2 break-all rounded-lg bg-surface-2 px-3 py-2 font-mono text-2xs text-muted-foreground">{cmdline}</p>
       )}
     </div>
   )

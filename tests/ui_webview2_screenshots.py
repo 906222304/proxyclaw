@@ -161,7 +161,8 @@ def main() -> int:
 
             page.wait_for_function("document.querySelector('#root')?.childElementCount > 0", timeout=30000)
             page.get_by_role("tablist", name="主导航").wait_for(timeout=30000)
-            page.locator("footer").get_by_text("已连接", exact=True).wait_for(timeout=30000)
+            # The title-bar status chip (● 18080) replaced the footer.
+            page.locator('[data-connected="true"]').wait_for(timeout=30000)
             # Process tree data arrives over the WebView2 push channel after the
             # ready handshake; wait until at least one process row is shown.
             page.get_by_text(re.compile(r"\.exe$", re.I)).first.wait_for(timeout=30000)
@@ -195,7 +196,7 @@ def main() -> int:
                 expect(page.locator(".cm-editor")).to_have_count(0)
 
             set_dark(True)
-            tab("网络活动")
+            tab("网络")
             shot("network-dark")
             # Select a process (prefer proxyclaw itself) for the per-process view.
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("proxyclaw")
@@ -237,6 +238,10 @@ def main() -> int:
             tab("代理")
             page.get_by_text("香港节点").first.wait_for()
             shot("proxies-dark")
+            # Rows expand inline (test URL, last result, rules).
+            page.get_by_text("香港节点").first.click()
+            shot("proxies-expanded-dark")
+            page.get_by_text("香港节点").first.click()
             page.get_by_role("button", name="新建代理组", exact=True).click()
             page.get_by_role("dialog").wait_for()
             shot("proxy-group-dialog-dark")
@@ -256,7 +261,7 @@ def main() -> int:
             close_json_editor()
 
             set_dark(False)
-            tab("网络活动")
+            tab("网络")
             shot("network-light")
             tab("规则")
             shot("rules-light")
@@ -273,7 +278,7 @@ def main() -> int:
             shot("json-editor-light")
             close_json_editor()
             set_dark(True)
-            tab("网络活动")
+            tab("网络")
 
             if problems:
                 print("FAIL: console/page errors:\n  " + "\n  ".join(problems))

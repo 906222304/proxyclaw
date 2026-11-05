@@ -100,13 +100,14 @@ export function ConfigEditor() {
 
   return (
     <div className="thin-scrollbar min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-5 pt-2 pb-6">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 pt-2 pb-6">
         <section>
           <SectionTitle>通用</SectionTitle>
           <Card className="divide-y divide-divider">
             <Row
               title="关闭窗口后保持后台运行"
-              description="默认开启，关闭窗口后代理继续运行。点击托盘图标重新打开，右键选择“退出 ProxyClaw”结束运行。设置立即生效。"
+              description="关闭窗口后代理继续运行，可从托盘重新打开。"
+              hint="默认开启。点击托盘图标重新打开窗口，右键选择“退出 ProxyClaw”结束运行。设置立即生效。"
             >
               <Switch
                 checked={closeToTray}
@@ -120,7 +121,8 @@ export function ConfigEditor() {
             </Row>
             <Row
               title="登录 Windows 后自动启动"
-              description="以管理员权限启动，无需每次登录时确认。移动 proxyclaw.exe 后，请重新开启此选项。"
+              description="以管理员权限启动，无需每次确认。"
+              hint="移动 proxyclaw.exe 后，请重新开启此选项。"
             >
               <Switch
                 checked={autostart.enabled}
@@ -129,9 +131,9 @@ export function ConfigEditor() {
               />
             </Row>
             <Row
-              className={autostart.enabled ? 'pl-8' : 'pl-8 opacity-50'}
-              title={<span className="text-ui font-normal">启动时隐藏到托盘</span>}
-              description="自动启动时仅显示托盘图标；开启“登录 Windows 后自动启动”后生效。"
+              className="pl-9"
+              title={<span className="text-xs font-normal">启动时隐藏到托盘</span>}
+              description={autostart.enabled ? '自动启动时仅显示托盘图标。' : '需先开启“登录 Windows 后自动启动”。'}
             >
               <Switch
                 checked={autostart.start_minimized}
@@ -148,24 +150,25 @@ export function ConfigEditor() {
           <Card className="divide-y divide-divider">
             <Row
               title="DNS 代理"
-              description="通过代理转发 DNS 查询，适用于系统 DNS 无法解析目标服务的情况。此模式会修改系统 DNS，影响整台电脑。"
+              description="通过代理转发 DNS 查询。"
+              hint="适用于系统 DNS 无法解析目标服务的情况。此模式会修改系统 DNS，影响整台电脑。"
             >
               <Switch checked={dnsEnabled} aria-label="DNS 代理" onCheckedChange={v => saveDns(v)} />
             </Row>
             {dnsEnabled && (
-              <div className="space-y-3 px-4 py-3.5">
+              <div className="space-y-2.5 py-3 pr-4 pl-9">
                 <div className="flex items-center gap-3">
-                  <label htmlFor={`${ids}-mode`} className="w-20 shrink-0 text-xs text-muted-foreground">模式</label>
+                  <label htmlFor={`${ids}-mode`} className="w-20 shrink-0 text-2xs text-muted-foreground">模式</label>
                   <Select
                     id={`${ids}-mode`}
                     value={dnsMode}
                     onValueChange={m => saveDns(dnsEnabled, m)}
-                    className="h-8 w-auto text-xs"
+                    className="w-auto"
                     options={[{ value: 'forwarder', label: '全局转发（系统 DNS → 127.0.0.2）' }]}
                   />
                 </div>
                 <div className="flex items-center gap-3">
-                  <label htmlFor={`${ids}-up`} className="w-20 shrink-0 text-xs text-muted-foreground">上游服务器</label>
+                  <label htmlFor={`${ids}-up`} className="w-20 shrink-0 text-2xs text-muted-foreground">上游服务器</label>
                   <Input
                     id={`${ids}-up`}
                     value={upstreamDraft}
@@ -173,9 +176,9 @@ export function ConfigEditor() {
                     onBlur={() => { if (upstreamDraft !== ((dns.upstream_host as string) || '')) saveDns() }}
                     onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                     placeholder="DNS 服务器地址"
-                    className="h-8 w-44 font-mono"
+                    className="tabular w-44"
                   />
-                  <span className="font-mono text-xs text-muted-foreground">:53</span>
+                  <span className="tabular text-xs text-muted-foreground">:53</span>
                 </div>
               </div>
             )}
@@ -185,11 +188,11 @@ export function ConfigEditor() {
         <section>
           <SectionTitle>诊断</SectionTitle>
           <Card className="divide-y divide-divider">
-            <Row title="日志级别" description="设置日志详细程度，修改后立即生效。调试模式会记录更多连接细节。">
+            <Row title="日志级别" description="修改后立即生效。" hint="调试模式会记录更多连接细节。">
               <Select
                 value={logLevel}
                 onValueChange={lvl => patch.mutate({ fn: c => { c.log_level = lvl }, ok: '日志级别已保存', fail: '保存日志级别失败' })}
-                className="h-8 w-24 text-xs"
+                className="w-24"
                 options={[
                   { value: 'debug', label: '调试' },
                   { value: 'info', label: '信息' },
@@ -198,7 +201,7 @@ export function ConfigEditor() {
                 ]}
               />
             </Row>
-            <Row title="运行日志" description="查看连接、掉线和错误记录，排查代理问题。">
+            <Row title="运行日志" description="连接、掉线和错误记录，用于排查问题。">
               <LogViewer />
             </Row>
           </Card>
@@ -208,8 +211,8 @@ export function ConfigEditor() {
 
         <section>
           <SectionTitle>关于</SectionTitle>
-          <Card className="space-y-1 px-4 py-3.5 text-xs text-muted-foreground">
-            <p>ProxyClaw <span className="font-mono text-foreground">v{PROXYCLAW_VERSION}</span></p>
+          <Card className="space-y-1 px-4 py-3 text-2xs text-muted-foreground">
+            <p><span className="text-sm font-medium text-foreground">ProxyClaw</span> <span className="tabular ml-1 text-foreground-2">v{PROXYCLAW_VERSION}</span></p>
             <p>
               ProxyClaw · Windows 进程级代理与分流 ·{' '}
               <a href="https://github.com/906222304/proxyclaw" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">本项目源码</a>
@@ -292,7 +295,7 @@ function RawConfig({ config }: { config: Config | undefined }) {
       <section>
         <SectionTitle>高级</SectionTitle>
         <Card>
-          <Row title="配置文件" description="直接编辑 JSON 配置，进行高级设置。">
+          <Row title="配置文件" description="直接编辑 JSON 配置。">
             <Button size="sm" onClick={() => void openEditor()}>编辑</Button>
           </Row>
         </Card>
@@ -301,10 +304,10 @@ function RawConfig({ config }: { config: Config | undefined }) {
   }
 
   return (
-    <section className="flex min-h-[420px] flex-col">
+    <section className="flex flex-col">
       <div className="mb-2 flex items-center justify-between gap-3 px-1">
         <div className="flex items-center gap-2">
-          <h2 className="text-2xs font-semibold uppercase tracking-[.05em] text-muted-foreground">配置文件</h2>
+          <h2 className="text-2xs font-semibold text-muted-foreground">配置文件</h2>
           {dirty && <Badge tone="amber">尚未保存</Badge>}
           {message && <span className={message.ok ? 'text-xs text-success' : 'text-xs text-destructive'}>{message.text}</span>}
         </div>
@@ -321,7 +324,7 @@ function RawConfig({ config }: { config: Config | undefined }) {
           <Button size="sm" onClick={() => void openEditor()}>重试</Button>
         </div>
       ) : (
-        <Card className="h-[480px] overflow-hidden">
+        <Card className="h-120 overflow-hidden">
           <Suspense fallback={<p role="status" className="p-4 text-sm text-muted-foreground">正在加载配置编辑器…</p>}>
             <JsonEditor value={text} onChange={setText} onSave={doSave} dark={dark} />
           </Suspense>

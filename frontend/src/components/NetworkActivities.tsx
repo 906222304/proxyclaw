@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, Moon } from 'lucide-react'
+import { ArrowDown, ArrowUp } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { connectionsQuery } from '@/api/queries'
-import type { NetworkConnection } from '@/api/types'
+import type { NetworkConnection, ProcessInfo } from '@/api/types'
+import { ProcessContextHeader } from '@/components/ProcessContextHeader'
 import { EmptyState } from '@/components/ui/misc'
 import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -14,16 +15,20 @@ import {
 } from '@/lib/connections'
 import { cn } from '@/lib/utils'
 
-const ROW_HEIGHT = 30
+const ROW_HEIGHT = 32
 
 const stateDot: Record<ReturnType<typeof stateTone>, string> = {
-  ok: 'bg-success shadow-[0_0_0_2.5px] shadow-success/18',
-  bound: 'bg-violet shadow-[0_0_0_2.5px] shadow-violet/18',
-  wait: 'bg-warning shadow-[0_0_0_2.5px] shadow-warning/18',
+  ok: 'bg-success',
+  bound: 'bg-violet',
+  wait: 'bg-warning',
   idle: 'bg-faint',
 }
 
-export function NetworkActivities({ selectedPid }: { selectedPid: number | undefined }) {
+export function NetworkActivities({ selectedPid, process, onCreateRule }: {
+  selectedPid: number | undefined
+  process: ProcessInfo | null
+  onCreateRule: () => void
+}) {
   // Keyed by PID: switching selection shows an empty table until the new
   // PID's first response, never the previous PID's rows.
   const { data: rows = [] } = useQuery(connectionsQuery(selectedPid))
@@ -45,26 +50,34 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
 
   const processName = rows[0]?.process_name ?? '此进程'
 
+  const tools = (
+    <div className="flex shrink-0 items-center gap-3">
+      {rows.length > 0 && (
+        <span className="tabular text-2xs text-muted-foreground">
+          {view.length === rows.length ? `${rows.length} 条连接` : `${view.length} / ${rows.length} 条连接`}
+        </span>
+      )}
+      <SearchInput value={filterText} onChange={setFilterText} placeholder="筛选地址或状态…" className="w-52" />
+    </div>
+  )
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-5 pb-4">
-      <div className="flex items-center gap-3 pb-3">
-        <SearchInput
-          value={filterText}
-          onChange={setFilterText}
-          placeholder="筛选目标地址或连接状态…"
-          className="w-72"
-        />
-        {rows.length > 0 && (
-          <span className="tabular ml-auto text-xs text-muted-foreground">
-            {view.length === rows.length ? `${rows.length} 条连接` : `${view.length} / ${rows.length} 条连接`}
-          </span>
-        )}
-      </div>
+    <div className="flex min-h-0 flex-1 flex-col pb-4">
+      {process ? (
+        <ProcessContextHeader process={process} onCreateRule={onCreateRule}>{tools}</ProcessContextHeader>
+      ) : (
+        <div className="flex h-12 shrink-0 items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">全部进程</div>
+            <div className="text-2xs text-muted-foreground">所有进程的近期网络连接</div>
+          </div>
+          {tools}
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <EmptyState
-          icon={<Moon />}
-          title={<>暂未检测到{selectedPid != null && ` ${processName} 的`}近期网络活动。</>}
+          title={<>暂未检测到{selectedPid != null && ` ${processName} 的`}近期网络活动</>}
           hint="进程开始访问网络后，连接将显示在此处。请确认代理引擎正在运行。"
         />
       ) : (
@@ -72,7 +85,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
           <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 overflow-auto" role="table" aria-rowcount={view.length}>
             <div
               role="row"
-              className="sticky top-0 z-10 grid min-w-fit border-b border-border bg-surface-2 text-2xs text-muted-foreground"
+              className="sticky top-0 z-10 grid min-w-fit border-b border-divider bg-card text-2xs text-muted-foreground"
               style={{ gridTemplateColumns: template }}
             >
               {columns.map(col => (
@@ -80,7 +93,7 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
               ))}
             </div>
             {view.length === 0 ? (
-              <div className="py-12 text-center text-xs text-muted-foreground">没有匹配的连接。</div>
+              <div className="py-12 text-center text-xs text-muted-foreground">没有匹配的连接</div>
             ) : (
               <div className="relative min-w-fit" style={{ height: virtualizer.getTotalSize() }}>
                 {virtualizer.getVirtualItems().map(item => {
@@ -90,14 +103,14 @@ export function NetworkActivities({ selectedPid }: { selectedPid: number | undef
                       key={item.key}
                       role="row"
                       className={cn(
-                        'absolute inset-x-0 grid items-center border-b border-divider text-xs text-foreground transition-colors duration-100 hover:bg-muted/70',
+                        'absolute inset-x-0 grid items-center border-b border-divider text-xs text-foreground transition-colors duration-100 hover:bg-surface-2',
                         // A socket whose owner exited: struck through and faded.
                         !c.pid_alive && 'line-through opacity-40',
                       )}
                       style={{ height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, gridTemplateColumns: template }}
                     >
                       {columns.map(col => (
-                        <div key={col.key} role="cell" className={cn('truncate px-3', col.mono && (col.key === 'remote' ? 'font-mono text-xs text-foreground-2' : 'tabular text-foreground-2'))}>
+                        <div key={col.key} role="cell" className={cn('truncate px-2.5', col.mono && 'tabular text-foreground-2')}>
                           <Cell conn={c} col={col} />
                         </div>
                       ))}
@@ -122,7 +135,7 @@ function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | n
       aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none'}
       onClick={onSort}
       className={cn(
-        'flex h-8 items-center gap-1 px-3 text-left font-medium tracking-[.02em] transition-colors hover:text-foreground',
+        'flex h-8 items-center gap-1 px-2.5 text-left font-medium transition-colors hover:text-foreground',
         active && 'text-foreground',
       )}
     >
@@ -136,21 +149,24 @@ function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | n
 function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
   switch (col.key) {
     case 'process_name':
-      return <span title={conn.process_name}>{conn.process_name}</span>
+      return (
+        <span title={`${conn.process_name} (PID ${conn.pid})`}>
+          {conn.process_name}
+          <span className="tabular ml-1.5 text-2xs text-faint">{conn.pid}</span>
+        </span>
+      )
     case 'pid':
       return <>{conn.pid}</>
     case 'protocol':
-      return (
-        <span className={cn(
-          'rounded-sm px-1.5 py-px text-2xs font-semibold tracking-[.04em]',
-          conn.protocol === 'UDP' ? 'bg-violet-soft text-violet' : 'bg-info-soft text-info',
-        )}>
-          {conn.protocol}
-        </span>
-      )
+      return <span className="text-2xs text-faint">{conn.protocol}</span>
     case 'remote': {
       const r = remoteOf(conn)
-      return <span title={conn.dest && conn.dest !== r ? conn.dest : r}>{r}</span>
+      return (
+        <span title={conn.dest && conn.dest !== r ? conn.dest : r}>
+          <span className="mr-1.5 inline-block w-7 text-2xs text-faint">{conn.protocol}</span>
+          {r}
+        </span>
+      )
     }
     case 'state':
       return conn.state ? (
@@ -160,15 +176,12 @@ function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
         </span>
       ) : null
     case 'proxy_status': {
-      const label = conn.proxy_status === 'PROXIED' || conn.proxy_status === 'IGNORED' ? PROXY_STATES[conn.proxy_status] : '直连'
-      const tone = conn.proxy_status === 'PROXIED'
-        ? 'bg-success-soft text-success'
-        : conn.proxy_status === 'IGNORED'
-          ? 'bg-warning-soft text-warning'
-          : 'bg-muted text-muted-foreground'
+      const proxied = conn.proxy_status === 'PROXIED'
+      const ignored = conn.proxy_status === 'IGNORED'
+      const label = proxied || ignored ? PROXY_STATES[conn.proxy_status] : '直连'
       return (
         <Tooltip content={ROUTE_REASONS[conn.route_reason ?? '']}>
-          <span className={cn('inline-flex h-[18px] items-center rounded-sm px-1.5 text-2xs font-medium', tone)}>{label}</span>
+          <span className={cn(proxied ? 'font-medium text-success' : ignored ? 'font-medium text-warning' : 'text-faint')}>{label}</span>
         </Tooltip>
       )
     }

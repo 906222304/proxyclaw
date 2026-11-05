@@ -165,7 +165,17 @@ def main() -> int:
             page.locator('[data-connected="true"]').wait_for(timeout=30000)
             # Process tree data arrives over the WebView2 push channel after the
             # ready handshake; wait until at least one process row is shown.
-            page.get_by_text(re.compile(r"\.exe$", re.I)).first.wait_for(timeout=30000)
+            page.locator("[data-depth]").first.wait_for(timeout=30000)
+            # The first snapshot can be partial; wait (softly) for a full tree.
+            try:
+                page.wait_for_function(
+                    "Number(document.querySelector('[data-testid=process-count]')?.textContent) > 60",
+                    timeout=45000)
+            except Exception:
+                pass
+            count = page.evaluate("document.querySelector('[data-testid=process-count]')?.textContent")
+            console.append(f"[info] process count {count}")
+            print(f"process count: {count}")
             page.wait_for_timeout(1000)
 
             def shot(name: str) -> None:
@@ -202,7 +212,7 @@ def main() -> int:
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("proxyclaw")
             page.wait_for_timeout(500)
             # The process tree precedes the connections table in DOM order.
-            page.get_by_text("proxyclaw.exe", exact=True).first.click()
+            page.locator('[data-depth] span[title="proxyclaw.exe"]').first.click(timeout=60000)
             page.wait_for_timeout(1500)
             # Playwright scrolls the clicked (deeply indented) row into view
             # horizontally; a mouse user would not, so undo that.

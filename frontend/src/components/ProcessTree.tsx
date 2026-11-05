@@ -100,7 +100,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
       >
         <Monitor className="size-3.5" />
         全部进程
-        <span className="tabular ml-auto text-2xs text-muted-foreground">{total}</span>
+        <span data-testid="process-count" className="tabular ml-auto text-2xs text-muted-foreground">{total}</span>
       </button>
 
       <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 select-none overflow-y-auto overflow-x-hidden px-2 pb-3">

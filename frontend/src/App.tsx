@@ -116,7 +116,7 @@ export default function App() {
         {/* One 44px bar: brand, centred tabs, status + window controls. The
             whole bar drags the window; interactive parts opt out. */}
         <header className="titlebar flex h-11 shrink-0 items-center bg-background">
-          <div className="flex min-w-0 flex-1 basis-0 items-center gap-2 pl-3.5">
+          <div className="aa-gray flex min-w-0 flex-1 basis-0 items-center gap-2 pl-3.5">
             <img src={appIcon} className="size-4.5 object-contain" alt="" />
             <span className="truncate text-xs font-semibold">ProxyClaw</span>
           </div>
@@ -142,7 +142,7 @@ export default function App() {
             ))}
           </Tabs.List>
 
-          <div className="flex h-full min-w-0 flex-1 basis-0 items-center justify-end">
+          <div className="aa-gray flex h-full min-w-0 flex-1 basis-0 items-center justify-end">
             <Tooltip content={connected ? '代理引擎已连接 · 监听端口 18080' : '未连接到代理引擎'} side="bottom">
               <span
                 tabIndex={0}
@@ -171,7 +171,8 @@ export default function App() {
           </div>
         </header>
 
-        <Tabs.Content value="network" className="view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+        {/* aa-gray on each (transparent) panel: grayscale AA for all page text */}
+        <Tabs.Content value="network" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <Split
             left={<ProcessTree selectedPid={selectedPid} onSelect={setSelectedPid} />}
             right={
@@ -185,13 +186,13 @@ export default function App() {
             }
           />
         </Tabs.Content>
-        <Tabs.Content value="rules" className="view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
+        <Tabs.Content value="rules" className="aa-gray view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
           <AutoRules onAdd={() => openRuleDialog(null)} onEdit={r => openRuleDialog(r)} />
         </Tabs.Content>
-        <Tabs.Content value="proxies" className="view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
+        <Tabs.Content value="proxies" className="aa-gray view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
           <ProxiesTab onEditRule={r => openRuleDialog(r)} />
         </Tabs.Content>
-        <Tabs.Content value="settings" className="view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+        <Tabs.Content value="settings" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <ConfigEditor />
         </Tabs.Content>
       </Tabs.Root>

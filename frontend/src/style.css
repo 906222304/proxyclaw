@@ -274,8 +274,9 @@ html.maximized #root {
 /* Grayscale text AA. A composited layer whose content is not opaque makes
  * Chromium rasterize its text with grayscale AA instead of ClearType, whose
  * colour fringes make dense CJK strokes look amber/blue in dark mode. Applied
- * selectively (tab bar, segmented controls, buttons, dialogs): a layer on the
- * opaque app root would keep ClearType, and per-row layers cost memory. */
+ * selectively (title bar parts, each transparent tab panel, segmented controls,
+ * buttons, dialogs): a layer on the opaque app root would keep ClearType, and
+ * per-row layers would cost memory. */
 .aa-gray {
   will-change: transform;
 }

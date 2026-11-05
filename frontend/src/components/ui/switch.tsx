@@ -6,7 +6,7 @@ export function Switch({ className, ...props }: SwitchPrimitive.SwitchProps) {
     <SwitchPrimitive.Root
       className={cn(
         'peer inline-flex h-4.5 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors duration-150',
-        'bg-faint data-[state=checked]:bg-primary hover:brightness-105',
+        'bg-switch-off data-[state=checked]:bg-primary hover:brightness-105',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}

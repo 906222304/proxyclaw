@@ -24,7 +24,7 @@ export function TagInput({ value, onChange, placeholder, id }: {
   }
 
   return (
-    <div className="flex min-h-9 cursor-text flex-wrap items-center gap-1.5 rounded-lg border border-border bg-input px-2 py-1.5 transition-colors focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20">
+    <div className="flex min-h-control cursor-text flex-wrap items-center gap-1 rounded-md bg-field px-1.5 py-1 transition-[background-color,box-shadow] duration-150 hover:bg-field-hover focus-within:bg-field focus-within:ring-1 focus-within:ring-inset focus-within:ring-primary">
       {value.map((tag, i) => (
         <button
           key={tag}
@@ -43,7 +43,7 @@ export function TagInput({ value, onChange, placeholder, id }: {
         onKeyDown={onKeyDown}
         onBlur={add}
         placeholder={value.length === 0 ? placeholder : ''}
-        className="min-w-[120px] flex-1 tabular bg-transparent text-xs outline-none placeholder:text-muted-foreground/70"
+        className="min-w-[120px] flex-1 tabular bg-transparent text-xs outline-none px-1 placeholder:text-faint"
       />
     </div>
   )

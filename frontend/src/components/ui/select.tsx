@@ -27,7 +27,7 @@ export function Select({ value, onValueChange, options, placeholder, id, classNa
         aria-label={ariaLabel}
         className={cn(
           fieldClass,
-          'inline-flex h-7 w-full min-w-0 items-center justify-between gap-2 px-2.5 text-xs data-[placeholder]:text-muted-foreground',
+          'inline-flex h-control w-full min-w-0 items-center justify-between gap-2 px-2.5 text-xs data-[placeholder]:text-muted-foreground',
           'data-[state=open]:ring-1 data-[state=open]:ring-inset data-[state=open]:ring-primary [&>span]:truncate',
           className,
         )}

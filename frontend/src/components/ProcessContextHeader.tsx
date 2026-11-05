@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronUp, Copy, FolderOpen, Plus } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { revealFile } from '@/api/client'
 import type { ProcessInfo } from '@/api/types'
 import { Button } from '@/components/ui/button'
@@ -39,13 +39,12 @@ export function HijackDot({ source }: { source?: string | null }) {
 /**
  * 48px header row for the selected process: icon, name, sub-line
  * "PID · path args" (copy / reveal actions on hover), and 创建规则.
- * The expand chevron shows the full command line underneath.
+ * The path middle-truncates: the directory ellipsizes, the exe name stays,
+ * arguments give way first. The expand chevron shows the full command line.
  */
-export function ProcessContextHeader({ process, onCreateRule, children }: {
+export function ProcessContextHeader({ process, onCreateRule }: {
   process: ProcessInfo
   onCreateRule: () => void
-  /** Right-aligned extras (search, count) on the same row. */
-  children?: ReactNode
 }) {
   const [copied, setCopied] = useState<'cwd' | 'full' | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -87,8 +86,10 @@ export function ProcessContextHeader({ process, onCreateRule, children }: {
             {cmdline && (
               <>
                 <span className="shrink-0 text-faint">·</span>
-                <span className="selectable min-w-0 truncate" title={cmdline}>
-                  {cwd}<span className="text-foreground-2">{exeName}</span>{args && <> {args}</>}
+                <span className="selectable flex min-w-0 items-baseline" title={cmdline} data-testid="process-path">
+                  {cwd && <span className="min-w-0 truncate">{cwd}</span>}
+                  <span className="shrink-0 text-foreground-2">{exeName}</span>
+                  {args && <span className="min-w-0 shrink-[100] truncate pl-1">{args}</span>}
                 </span>
                 <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/path:opacity-100 focus-within:opacity-100">
                   <button type="button" onClick={locate} title="打开程序所在文件夹" className={cn(iconBtn, located && 'text-success')}>
@@ -112,7 +113,6 @@ export function ProcessContextHeader({ process, onCreateRule, children }: {
             )}
           </div>
         </div>
-        {children}
         <Button size="sm" variant="ghost" onClick={onCreateRule} title="为此进程创建规则">
           <Plus /> 创建规则
         </Button>

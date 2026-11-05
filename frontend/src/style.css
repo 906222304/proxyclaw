@@ -46,6 +46,8 @@
 
   /* 4px spacing grid in px, independent of the root font size. */
   --spacing: 4px;
+  /* One height for every toolbar / form control (inputs, selects, buttons). */
+  --spacing-control: 28px;
 
   /* Content column cap (magpie centres its view at ~1200px). */
   --container-content: 1200px;
@@ -69,6 +71,7 @@
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
   --color-warning: var(--warning);
+  --color-switch-off: var(--switch-off);
   --color-warning-soft: var(--warning-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
@@ -100,6 +103,7 @@
   --hover: #e9e9ee;
   --muted-foreground: #5b616e;
   --faint: #7c818b;
+  --switch-off: #c2c5cc;
   --destructive: #d64545;
   --destructive-soft: #fbe9e9;
   --success: #189a58;
@@ -139,6 +143,7 @@
   --hover: #36363d;
   --muted-foreground: #a1a1aa;
   --faint: #82828c;
+  --switch-off: #52525b;
   --destructive: #f28b82;
   --destructive-soft: #45272a;
   --success: #6fd99b;

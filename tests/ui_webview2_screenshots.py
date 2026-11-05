@@ -228,6 +228,17 @@ def main() -> int:
             print(f"selected tree row: {fit}")
             if not fit or fit["scroll"] > fit["client"] + 1:
                 problems.append(f"process tree name truncated: {fit}")
+            # The header path middle-truncates; the exe name must stay visible.
+            path_fit = page.evaluate("""() => {
+                const box = document.querySelector('[data-testid=process-path]')
+                const exe = box?.querySelector(':scope > .shrink-0')
+                if (!box || !exe) return null
+                const b = box.getBoundingClientRect(), e = exe.getBoundingClientRect()
+                return { exe: exe.textContent, inside: e.right <= b.right + 1 && e.width > 0 }
+            }""")
+            console.append(f"[info] header path {path_fit}")
+            if not path_fit or not path_fit["inside"]:
+                problems.append(f"header exe name clipped: {path_fit}")
             shot("network-selected-process-dark")
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("")
             page.get_by_role("button", name=re.compile("^全部进程")).first.click()

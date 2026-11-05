@@ -11,7 +11,7 @@ import { Tooltip } from '@/components/ui/tooltip'
 import {
   CONNECTION_STATES, PROXY_STATES, ROUTE_REASONS,
   columnsFor, filterRows, nextSort, remoteOf, rowId, sortRows, stateTone,
-  type ColumnDef, type SortState,
+  type ColumnDef, type ColumnKey, type SortState,
 } from '@/lib/connections'
 import { cn } from '@/lib/utils'
 
@@ -50,30 +50,31 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
 
   const processName = rows[0]?.process_name ?? '此进程'
 
+  // Own toolbar row under the header, so the process path gets the full width.
   const tools = (
-    <div className="flex shrink-0 items-center gap-3">
+    <div className="flex h-10 shrink-0 items-center gap-3 pb-2">
+      <SearchInput value={filterText} onChange={setFilterText} placeholder="筛选地址或状态…" className="w-56" />
       {rows.length > 0 && (
-        <span className="tabular text-2xs text-muted-foreground">
+        <span className="tabular ml-auto text-2xs text-muted-foreground" data-testid="connection-count">
           {view.length === rows.length ? `${rows.length} 条连接` : `${view.length} / ${rows.length} 条连接`}
         </span>
       )}
-      <SearchInput value={filterText} onChange={setFilterText} placeholder="筛选地址或状态…" className="w-52" />
     </div>
   )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col pb-4">
       {process ? (
-        <ProcessContextHeader process={process} onCreateRule={onCreateRule}>{tools}</ProcessContextHeader>
+        <ProcessContextHeader process={process} onCreateRule={onCreateRule} />
       ) : (
         <div className="flex h-12 shrink-0 items-center gap-3">
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">全部进程</div>
             <div className="text-2xs text-muted-foreground">所有进程的近期网络连接</div>
           </div>
-          {tools}
         </div>
       )}
+      {tools}
 
       {rows.length === 0 ? (
         <EmptyState
@@ -89,7 +90,7 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
               style={{ gridTemplateColumns: template }}
             >
               {columns.map(col => (
-                <HeaderCell key={col.key} col={col} sort={sort} onSort={() => setSort(s => nextSort(s, col.key))} />
+                <HeaderCell key={col.key} col={col} sort={sort} onSort={key => setSort(s => nextSort(s, key))} />
               ))}
             </div>
             {view.length === 0 ? (
@@ -126,23 +127,37 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
   )
 }
 
-function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | null; onSort: () => void }) {
-  const active = sort?.key === col.key ? sort.dir : null
+function SortButton({ label, dir, onClick, className }: {
+  label: string; dir: 'asc' | 'desc' | null; onClick: () => void; className?: string
+}) {
   return (
     <button
       type="button"
+      onClick={onClick}
+      title={`按${label}排序`}
+      className={cn('flex h-full items-center gap-1 transition-colors hover:text-foreground', dir && 'text-foreground', className)}
+    >
+      {label}
+      {dir === 'asc' && <ArrowUp className="size-3" />}
+      {dir === 'desc' && <ArrowDown className="size-3" />}
+    </button>
+  )
+}
+
+/** Header cell; a folded column (PID, protocol) gets its own small sort target. */
+function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | null; onSort: (key: ColumnKey) => void }) {
+  const dirOf = (key: ColumnKey) => (sort?.key === key ? sort.dir : null)
+  const active = dirOf(col.key) ?? (col.sub ? dirOf(col.sub.key) : null)
+  return (
+    <div
       role="columnheader"
       aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none'}
-      onClick={onSort}
-      className={cn(
-        'flex h-8 items-center gap-1 px-2.5 text-left font-medium transition-colors hover:text-foreground',
-        active && 'text-foreground',
-      )}
+      className="flex h-8 items-center gap-1.5 px-2.5 text-left font-medium"
     >
-      {col.header}
-      {active === 'asc' && <ArrowUp className="size-3" />}
-      {active === 'desc' && <ArrowDown className="size-3" />}
-    </button>
+      {col.sub && col.sub.before && <SortButton label={col.sub.header} dir={dirOf(col.sub.key)} onClick={() => onSort(col.sub!.key)} className="w-7 shrink-0 font-normal text-faint" />}
+      <SortButton label={col.header} dir={dirOf(col.key)} onClick={() => onSort(col.key)} />
+      {col.sub && !col.sub.before && <SortButton label={col.sub.header} dir={dirOf(col.sub.key)} onClick={() => onSort(col.sub!.key)} className="ml-0.5 font-normal text-faint" />}
+    </div>
   )
 }
 

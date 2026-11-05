@@ -100,7 +100,7 @@ export function ConfigEditor() {
 
   return (
     <div className="thin-scrollbar min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 pt-2 pb-6">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 pt-3 pb-6">
         <section>
           <SectionTitle>通用</SectionTitle>
           <Card className="divide-y divide-divider">

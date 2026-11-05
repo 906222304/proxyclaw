@@ -11,9 +11,9 @@ const variants: Record<Variant, string> = {
   danger: 'bg-destructive text-danger-foreground shadow-xs hover:brightness-110 active:brightness-95',
 }
 const sizes: Record<Size, string> = {
-  sm: 'h-7 px-2.5 text-xs gap-1.5',
+  sm: 'h-control px-2.5 text-xs gap-1.5',
   md: 'h-8 px-3 text-xs gap-1.5',
-  icon: 'size-7 justify-center',
+  icon: 'size-control justify-center',
 }
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -29,6 +29,10 @@ export function Button({ variant = 'secondary', size = 'md', className, type = '
         'inline-flex shrink-0 select-none items-center whitespace-nowrap rounded-lg font-medium',
         'transition-[background-color,border-color,color,filter,scale] duration-150 active:scale-97',
         'disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5',
+        // Own (non-opaque, rounded) layer: Chromium then draws grayscale AA
+        // instead of ClearType, whose colour fringes made dense CJK strokes
+        // (测 in 全部测速) look amber/blue at 12px.
+        'will-change-transform',
         variants[variant], sizes[size], className,
       )}
       {...props}

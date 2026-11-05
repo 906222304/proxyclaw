@@ -233,10 +233,10 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             </div>
             <div className="flex gap-2">
               <div className="relative flex-1">
-                <Cpu className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input id={`${ids}-proc`} className="pl-9" {...register('processName')} />
+                <Cpu className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input id={`${ids}-proc`} className="pl-8" {...register('processName')} />
               </div>
-              <Button onClick={onBrowse}><FolderOpen className="size-4" /> 浏览</Button>
+              <Button size="sm" onClick={onBrowse}><FolderOpen /> 浏览</Button>
               <input
                 ref={fileInput}
                 type="file"
@@ -254,12 +254,12 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
                 }}
               />
             </div>
-            <div className={cn('mt-1 flex items-center gap-3 rounded-lg bg-muted px-3 py-2', !useWorkDir && 'opacity-50')}>
-              <Lock className="size-4 shrink-0 text-muted-foreground" />
+            <div className={cn('flex h-control items-center gap-2 rounded-md bg-muted pl-2.5 pr-1.5', !useWorkDir && 'opacity-60')}>
+              <Lock className="size-3.5 shrink-0 text-muted-foreground" />
               <input
                 readOnly
                 aria-label="程序所在目录"
-                className="flex-1 select-all bg-transparent text-xs text-muted-foreground outline-none"
+                className="min-w-0 flex-1 select-all bg-transparent text-xs text-muted-foreground outline-none"
                 placeholder="选择程序后自动填写"
                 {...register('workDir')}
               />
@@ -278,10 +278,10 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
               <span className="text-xs text-muted-foreground">关键词或通配符</span>
             </div>
             <div className="relative">
-              <Terminal className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Terminal className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id={`${ids}-cmd`}
-                className="pl-9"
+                className="pl-8"
                 {...register('cmdlinePattern', {
                   onChange: e => { if ((e.target as HTMLInputElement).value) setValue('useWorkDir', true) },
                 })}

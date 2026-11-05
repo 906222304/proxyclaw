@@ -28,6 +28,8 @@ export interface ColumnDef {
   /** CSS grid track; exactly one column per view is flexible. */
   width: string
   mono?: boolean
+  /** Folded-in column with its own sort target in the header (PID, protocol). */
+  sub?: { key: ColumnKey; header: string; before?: boolean }
 }
 
 export function remoteOf(c: NetworkConnection): string {
@@ -42,9 +44,9 @@ export function remoteOf(c: NetworkConnection): string {
  */
 export function columnsFor(allProcesses: boolean): ColumnDef[] {
   const cols: ColumnDef[] = []
-  if (allProcesses) cols.push({ key: 'process_name', header: '进程', width: 'minmax(140px, 1fr)' })
+  if (allProcesses) cols.push({ key: 'process_name', header: '进程', width: 'minmax(140px, 1fr)', sub: { key: 'pid', header: 'PID' } })
   cols.push(
-    { key: 'remote', header: '远端地址', width: allProcesses ? 'minmax(170px, 250px)' : 'minmax(200px, 1fr)', mono: true },
+    { key: 'remote', header: '远端地址', sub: { key: 'protocol', header: '协议', before: true }, width: allProcesses ? 'minmax(170px, 250px)' : 'minmax(200px, 1fr)', mono: true },
     { key: 'state', header: '连接状态', width: '100px' },
     { key: 'proxy_status', header: '代理', width: '72px' },
     { key: 'local_port', header: '本地端口', width: '76px', mono: true },

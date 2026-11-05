@@ -80,7 +80,7 @@ export function LogViewer() {
               value={level}
               onValueChange={v => setLevel(v as 'all' | 'problems')}
               ariaLabel="日志筛选"
-              className="h-8 w-36 text-xs"
+              className="w-36"
               options={[{ value: 'all', label: '全部日志' }, { value: 'problems', label: '警告和错误' }]}
             />
             <label className="flex items-center gap-2 whitespace-nowrap text-xs">

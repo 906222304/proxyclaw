@@ -86,7 +86,9 @@ export function AutoRules({ onAdd, onEdit }: {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 pl-4 pr-0">
-        <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleAll} label="全选" />
+        <span className="flex w-5 shrink-0 justify-center">
+          <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleAll} label="全选" />
+        </span>
         {selected.size === 0 ? (
           <>
             <SearchInput value={query} onChange={setQuery} placeholder="搜索规则…" className="w-56" />
@@ -168,7 +170,7 @@ export function AutoRules({ onAdd, onEdit }: {
 
 const PROTOCOL_LABEL: Record<string, string> = { tcp: 'TCP', udp: 'UDP', both: 'TCP+UDP' }
 
-/** Rule row: [hover checkbox] icon · name / sub-line · group select · switch · ⋯ */
+/** Rule row: icon (swaps to checkbox on hover / selecting) · name / sub-line · group select · switch · ⋯ */
 function RuleRow({ rule, groups, selected, selecting, onToggleSelect, onToggleEnabled, onGroup, onEdit, onDelete }: {
   rule: AutoRule
   groups: ProxyGroup[]
@@ -196,10 +198,16 @@ function RuleRow({ rule, groups, selected, selecting, onToggleSelect, onToggleEn
       onClick={onEdit}
       className={cn('group flex min-h-13 items-center gap-3 py-2 pr-3 pl-4 transition-colors duration-100', selected ? 'bg-selected' : 'hover:bg-surface-2')}
     >
-      <span className={cn('flex w-3.5 shrink-0 justify-center transition-opacity', selecting || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100')}>
-        <Checkbox checked={selected} onChange={onToggleSelect} label={`选择 ${rule.name}`} />
+      {/* The process icon swaps to the checkbox on hover or while selecting, so there is no gutter. */}
+      <span className="relative flex size-5 shrink-0 items-center justify-center" data-testid="rule-select-slot">
+        <ProcessIcon
+          name={rule.process_name}
+          className={cn('size-5 transition-opacity duration-100', !rule.enabled && 'grayscale', selecting || selected ? 'opacity-0' : 'group-hover:opacity-0 group-focus-within:opacity-0')}
+        />
+        <span className={cn('absolute inset-0 flex items-center justify-center transition-opacity duration-100', selecting || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100')}>
+          <Checkbox checked={selected} onChange={onToggleSelect} label={`选择 ${rule.name}`} />
+        </span>
       </span>
-      <ProcessIcon name={rule.process_name} className={cn('size-5', !rule.enabled && 'grayscale')} />
       <button type="button" aria-label={`编辑规则 ${rule.name}`} className="min-w-0 flex-1 text-left outline-none" onClick={e => { e.stopPropagation(); onEdit() }}>
         <div className={cn('truncate text-sm font-medium', !rule.enabled && 'text-muted-foreground')}>{rule.name}</div>
         <div className="truncate text-2xs text-muted-foreground" title={sub}>{sub}</div>

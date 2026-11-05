@@ -25,6 +25,19 @@ export function describeProcess(node: ProcessInfo) {
   return { cmdline, exeName, imagePath, cwd, args }
 }
 
+/**
+ * Split a directory (with trailing separator) into a head that may ellipsize
+ * and a tail (last folder plus separators) that always stays, so a truncated
+ * path reads `D:\a\proxy…\win\proxyclaw.exe`.
+ */
+export function splitDir(cwd: string): { head: string, tail: string } {
+  if (!cwd) return { head: '', tail: '' }
+  const body = cwd.slice(0, -1)
+  const sep = Math.max(body.lastIndexOf('\\'), body.lastIndexOf('/'))
+  if (sep <= 0) return { head: '', tail: cwd }
+  return { head: body.slice(0, sep), tail: cwd.slice(sep) }
+}
+
 /** Hijack source as a small dot; the tooltip names it. */
 export function HijackDot({ source }: { source?: string | null }) {
   if (source !== 'manual' && source !== 'auto') return null
@@ -38,7 +51,8 @@ export function HijackDot({ source }: { source?: string | null }) {
 
 /**
  * 48px header row for the selected process: icon, name, sub-line
- * "PID · path args" (copy / reveal actions on hover), and 创建规则.
+ * "PID · path args" (copy / reveal actions overlay the path end on hover,
+ * taking no width otherwise), and 创建规则.
  * The path middle-truncates: the directory ellipsizes, the exe name stays,
  * arguments give way first. The expand chevron sits inline right after the path and shows the full
  * command line; copy / reveal actions follow on hover.
@@ -58,6 +72,7 @@ export function ProcessContextHeader({ process, onCreateRule }: {
   }, [copied])
 
   const { cmdline, exeName, imagePath, cwd, args } = describeProcess(process)
+  const dir = splitDir(cwd)
   const isLong = args.length > 40 || cmdline.length > 60
 
   const copy = async (text: string, kind: 'cwd' | 'full') => {
@@ -82,14 +97,15 @@ export function ProcessContextHeader({ process, onCreateRule }: {
             <span className="truncate text-sm font-medium">{process.name}</span>
             <HijackDot source={process.hijack_source} />
           </div>
-          <div className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
+          <div className="relative flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
             <span className="tabular shrink-0">PID {process.pid}</span>
             {cmdline && (
               <>
                 <span className="shrink-0 text-faint">·</span>
                 <span className="selectable flex min-w-0 items-baseline" title={cmdline} data-testid="process-path">
-                  {cwd && <span className="min-w-0 truncate">{cwd}</span>}
-                  <span className="shrink-0 text-foreground-2">{exeName}</span>
+                  {dir.head && <span className="min-w-0 truncate" data-testid="process-path-dir">{dir.head}</span>}
+                  {dir.tail && <span className="shrink-0 whitespace-pre">{dir.tail}</span>}
+                  <span className="shrink-0 text-foreground-2" data-testid="process-path-exe">{exeName}</span>
                   {args && <span className="min-w-0 shrink-[100] truncate pl-1">{args}</span>}
                 </span>
                 {isLong && (
@@ -97,7 +113,8 @@ export function ProcessContextHeader({ process, onCreateRule }: {
                     {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
                   </button>
                 )}
-                <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/path:opacity-100 focus-within:opacity-100">
+                {/* Overlay: takes no width when hidden; fades over the path end on hover. */}
+                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center bg-linear-to-r from-transparent via-background via-40% to-background pl-8 opacity-0 transition-opacity group-hover/path:pointer-events-auto group-hover/path:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
                   <button type="button" onClick={locate} title="打开程序所在文件夹" className={cn(iconBtn, located && 'text-success')}>
                     <FolderOpen className="size-3" />
                   </button>

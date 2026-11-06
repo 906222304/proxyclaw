@@ -14,6 +14,12 @@
   not seen yet (younger than the ETW ProcessStart latency) from the OS
   instead of answering 404.
 
+### Frontend
+
+- Process tree: the PID column has a fixed 5-digit width (row gap 6px -> 4px),
+  so whether a deep name such as proxyclaw.exe fits no longer depends on how
+  many digits its PID has.
+
 ### Tests / CI
 
 - e2e/screenshot/stress harnesses wait for `tree_ready` instead of sleeping;

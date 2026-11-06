@@ -1,10 +1,10 @@
 # ProxyClaw 路线图
 
-> **English summary.** v0.13 makes capability boundaries visible and decisions explainable: IPv6 traffic labelled as not taken over, DNS TCP-only mode with asynchronous enable, per-connection rule-hit explanation, a capped icon cache, and every unit test in CTest. v0.14 widens coverage: end-to-end IPv6 proxying (TCP + UDP), editable app presets, child-process-tree exceptions, and an engine status view with config import / export. Later: a performance baseline first (the stress harness exists and CI publishes a smoke baseline), then WinDivert RecvEx/SendEx batching, resource limits, long-session soak tests and a service mode. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols.
+> **English summary.** v0.14 makes capability boundaries visible and decisions explainable: IPv6 traffic labelled as not taken over, DNS TCP-only mode with asynchronous enable, per-connection rule-hit explanation, a capped icon cache, and every unit test in CTest. v0.15 widens coverage: end-to-end IPv6 proxying (TCP + UDP), editable app presets, child-process-tree exceptions, and an engine status view with config import / export. Later: a performance baseline first (the stress harness exists and CI publishes a smoke baseline), then WinDivert RecvEx/SendEx batching, resource limits, long-session soak tests and a service mode. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols.
 
-当前版本 v0.12.0（2026-11-04）。本文替代此前的各份调研 / 复核文档，只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。
+当前版本 v0.13.0（2026-11-07）。本文替代此前的各份调研 / 复核文档，只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。
 
-## v0.13：能力边界清楚，决定可解释
+## v0.14：能力边界清楚，决定可解释
 
 **目标**：用户不用读日志就能知道某条连接为什么走代理或直连，以及哪些流量 ProxyClaw 目前不接管。
 
@@ -26,7 +26,7 @@
 - 图标缓存在 1 万个不同路径下内存有上界；同名不同路径的程序图标正确。
 - CTest 覆盖全部 C++ 单元测试，CI 绿。
 
-## v0.14：覆盖更多真实场景
+## v0.15：覆盖更多真实场景
 
 **目标**：双栈网络、常见应用和复杂进程树开箱即用，少写规则。
 

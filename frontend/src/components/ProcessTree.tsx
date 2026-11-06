@@ -222,7 +222,9 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         )}
       </span>
 
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      {/* gap-1 (not 1.5): with the PID column below at a fixed 5-digit width,
+          the depth-capped row still fits "proxyclaw.exe" in the 240px sidebar. */}
+      <span className="flex min-w-0 flex-1 items-center gap-1">
         <ProcessIcon name={node.name} className={cn('size-4', iconDim)} />
         <span className={cn(
           'min-w-0 truncate text-xs',
@@ -262,8 +264,11 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
               </button>
             </Tooltip>
           )}
+          {/* Fixed 5-digit width: the name's room must not depend on how many
+              digits this PID happens to have (a 5-digit PID used to truncate
+              names that fit with a 4-digit one). */}
           <span className={cn(
-            'tabular text-2xs transition',
+            'tabular min-w-[5ch] text-right text-2xs transition',
             selected ? 'text-primary' : 'text-faint',
             (showHack || manual) && 'group-hover:opacity-0 peer-focus-visible:opacity-0',
           )}>

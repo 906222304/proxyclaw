@@ -11,7 +11,7 @@ No Playwright. No frontend interaction. Spawns the ETW churn driver
 and reports per-stage backend pipeline latencies.
 
 Setup
-    1. start proxyclaw.exe in an admin shell with log_level=debug
+    1. start proxyclaw.exe (build/Release) in an admin shell with log_level=debug
        (edit proxyclaw.json or use the Settings UI)
     2. in another shell, run this script (no admin required for the
        script itself; only proxyclaw.exe needs admin)
@@ -24,6 +24,16 @@ Usage
 Scenarios
     churn   — high event rate, moderate tree (target=200, life 2-5s)
     steady  — low event rate, large tree (target=500, life 30s)
+
+CI smoke (bounded, self-launching; elevated shell)
+    python tests/stress_backend.py --exe dist/<pkg>/proxyclaw.exe --ci \
+        --duration 45 --summary-json build/stress-summary.json
+    Starts proxyclaw.exe with a throwaway config (log_level=debug), runs the
+    ETW churn driver at modest size, hijack/unhijack cycling and a few
+    threads of concurrent GET load against the API, samples proxyclaw.exe
+    working set + handle count once a second, prints a compact summary and
+    exits non-zero on any request error, a proxyclaw.exe crash, or a dead
+    API at the end. Latency and memory numbers are reported, never gated.
 
 Output
     Per-metric summary: n, min, p50, p95, p99, max (microseconds).
@@ -40,9 +50,13 @@ import ctypes.wintypes as wintypes
 import os
 import pathlib
 import re
+import json
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -57,7 +71,7 @@ import api_token  # noqa: F401  (adds the API session token; see tests/api_token
 
 REPO_ROOT     = pathlib.Path(__file__).resolve().parents[1]
 STRESS_SCRIPT = REPO_ROOT / "tests" / "stress_etw.py"
-LOG_PATH      = REPO_ROOT / "proxyclaw.log"
+LOG_PATH      = REPO_ROOT / "build" / "Release" / "proxyclaw.log"  # --exe: next to that exe
 EXE           = REPO_ROOT / "build" / "Release" / "proxyclaw.exe"
 BASE          = "http://127.0.0.1:18080/api"
 
@@ -191,16 +205,180 @@ def wait_pid_in_clew(pid: int, timeout: float = 5.0) -> bool:
 
 
 def hijack(pid: int) -> tuple[int, float]:
-    t0 = time.monotonic()
+    # perf_counter: time.monotonic() ticks at 15.6 ms on Windows.
+    t0 = time.perf_counter()
     r = requests.post(f"{BASE}/hijack/{pid}",
                       json={"tree": False, "group_id": 0}, timeout=30.0)
-    return r.status_code, (time.monotonic() - t0) * 1e6  # microseconds
+    return r.status_code, (time.perf_counter() - t0) * 1e6  # microseconds
 
 
 def unhijack(pid: int) -> tuple[int, float]:
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     r = requests.delete(f"{BASE}/hijack/{pid}", data="", timeout=30.0)
-    return r.status_code, (time.monotonic() - t0) * 1e6
+    return r.status_code, (time.perf_counter() - t0) * 1e6
+
+
+HIJACK_ERRORS: list[str] = []
+
+
+def _safe(fn, pid: int) -> tuple[int | str, float]:
+    try:
+        return fn(pid)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}", 0.0
+
+
+# ------------------------------------------------- CI smoke: load + sampling
+
+LOAD_PATHS = ["/stats", "/tcp", "/udp", "/hijack", "/auto-rules",
+              "/proxy-groups", "/config"]
+
+
+def pct_ms(values_us: list[float], p: float) -> float | None:
+    if not values_us:
+        return None
+    s = sorted(values_us)
+    idx = min(len(s) - 1, max(0, int(round(p * (len(s) - 1)))))
+    return round(s[idx] / 1000.0, 2)
+
+
+class HttpLoad:
+    """N threads issuing GETs round-robin over LOAD_PATHS until stopped."""
+
+    def __init__(self, workers: int) -> None:
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.lat_us: list[float] = []
+        self.errors: list[str] = []
+        self.threads = [threading.Thread(target=self._run, args=(i,), daemon=True)
+                        for i in range(workers)]
+
+    def start(self) -> None:
+        for t in self.threads:
+            t.start()
+
+    def finish(self) -> None:
+        self.stop.set()
+        for t in self.threads:
+            t.join(timeout=15)
+
+    def _run(self, i: int) -> None:
+        sess = requests.Session()
+        sess.trust_env = False
+        n = i
+        while not self.stop.is_set():
+            path = LOAD_PATHS[n % len(LOAD_PATHS)]
+            n += 1
+            t0 = time.perf_counter()
+            try:
+                r = sess.get(BASE + path, timeout=10)
+                dt = (time.perf_counter() - t0) * 1e6
+                with self.lock:
+                    if r.status_code == 200:
+                        self.lat_us.append(dt)
+                    else:
+                        self.errors.append(f"GET {path} -> {r.status_code}")
+            except Exception as e:  # noqa: BLE001
+                with self.lock:
+                    self.errors.append(f"GET {path} -> {type(e).__name__}")
+
+
+class _PMC(ctypes.Structure):
+    _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+
+
+class ResourceSampler:
+    """Once a second: proxyclaw.exe working set, private bytes, handle count."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.samples: list[tuple[int, int, int]] = []  # (ws, private, handles)
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _sample(self) -> tuple[int, int, int] | None:
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000 | 0x0010, False, self.pid)  # QUERY_LIMITED | VM_READ
+        if not h:
+            return None
+        try:
+            pmc = _PMC()
+            pmc.cb = ctypes.sizeof(_PMC)
+            if not k32.K32GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb):
+                return None
+            hc = wintypes.DWORD()
+            k32.GetProcessHandleCount(h, ctypes.byref(hc))
+            return pmc.WorkingSetSize, pmc.PagefileUsage, hc.value
+        finally:
+            k32.CloseHandle(h)
+
+    def _run(self) -> None:
+        while not self.stop.is_set():
+            s = self._sample()
+            if s:
+                self.samples.append(s)
+            self.stop.wait(1.0)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def finish(self) -> dict:
+        self.stop.set()
+        self.thread.join(timeout=5)
+        if not self.samples:
+            return {}
+        mb = 1024 * 1024
+        ws = [x[0] for x in self.samples]
+        pv = [x[1] for x in self.samples]
+        hd = [x[2] for x in self.samples]
+        return {"samples": len(self.samples),
+                "working_set_mb": {"start": round(ws[0] / mb, 1), "end": round(ws[-1] / mb, 1),
+                                   "peak": round(max(ws) / mb, 1)},
+                "private_mb": {"start": round(pv[0] / mb, 1), "end": round(pv[-1] / mb, 1),
+                               "peak": round(max(pv) / mb, 1)},
+                "handles": {"start": hd[0], "end": hd[-1], "peak": max(hd)}}
+
+
+def find_proxyclaw_pid() -> int | None:
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq proxyclaw.exe", "/FO", "CSV", "/NH"],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = [x.strip('"') for x in line.split('","')]
+        if len(parts) > 1 and parts[1].isdigit():
+            return int(parts[1])
+    return None
+
+
+def launch_proxyclaw(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]:
+    """Start proxyclaw.exe with a throwaway debug config; wait for the API."""
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pc_stress_"))
+    cfg = {"version": 2,
+           "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": 1},
+           "proxy_groups": [{"id": 0, "name": "default", "host": "127.0.0.1",
+                             "port": 1, "type": "socks5"}],
+           "next_group_id": 1, "auto_rules": [], "log_level": "debug",
+           "dns": {"enabled": False}}
+    cfg_path = work / "proxyclaw.json"
+    cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    proc = subprocess.Popen([str(exe), "--minimized", "--config", str(cfg_path)],
+                            cwd=exe.parent, env=dict(os.environ))
+    deadline = time.time() + 30
+    while True:
+        if proc.poll() is not None:
+            raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
+        try:
+            if requests.get(f"{BASE}/stats", timeout=2).status_code == 200:
+                return proc, work
+        except Exception:
+            pass
+        if time.time() > deadline:
+            proc.kill()
+            raise RuntimeError("proxyclaw API did not come up in 30s")
+        time.sleep(0.5)
 
 
 # ----------------------------------------------------------- measurement loop
@@ -221,15 +399,19 @@ def run_phase(label: str, secs: float,
     while time.monotonic() < end_at:
         if time.monotonic() >= next_action:
             if not is_hijacked:
-                code, rtt_us = hijack(target_pid)
+                code, rtt_us = _safe(hijack, target_pid)
                 if code == 200:
                     rtts_hijack.append(rtt_us)
                     is_hijacked = True
+                else:
+                    HIJACK_ERRORS.append(f"hijack -> {code}")
             else:
-                code, rtt_us = unhijack(target_pid)
+                code, rtt_us = _safe(unhijack, target_pid)
                 if code == 200:
                     rtts_unhijack.append(rtt_us)
                     is_hijacked = False
+                else:
+                    HIJACK_ERRORS.append(f"unhijack -> {code}")
             next_action = time.monotonic() + hijack_interval
         time.sleep(0.05)
 
@@ -360,6 +542,7 @@ def report(phase: dict) -> None:
 # -------------------------------------------------------------------- main
 
 def main() -> int:
+    global LOG_PATH
     p = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                 description=__doc__.splitlines()[0])
     p.add_argument("--scenario",  choices=["churn", "steady"], default="churn")
@@ -378,8 +561,51 @@ def main() -> int:
                    help="run minimize/restore cycle midway and bucket results")
     p.add_argument("--no-stress", action="store_true",
                    help="skip stress_etw (useful for baseline/idle measurement)")
+    p.add_argument("--exe", type=pathlib.Path, default=None,
+                   help="launch this proxyclaw.exe (elevated) with a throwaway debug config")
+    p.add_argument("--ci", action="store_true",
+                   help="bounded smoke: churn target 40, life 1-3s, 4 HTTP workers, "
+                        "0.5s hijack cycle; fail on errors/crash, never on numbers")
+    p.add_argument("--duration", type=float, default=None,
+                   help="--ci: total measured seconds (warmup excluded), capped at 60")
+    p.add_argument("--http-workers", type=int, default=None,
+                   help="threads of concurrent GET load during measurement (default 0, --ci 4)")
+    p.add_argument("--summary-json", type=pathlib.Path, default=None,
+                   help="write a machine-readable summary here")
     args = p.parse_args()
 
+    if args.ci:
+        if args.target is None: args.target = 40
+        if args.min_life is None: args.min_life = 1.0
+        if args.max_life is None: args.max_life = 3.0
+        args.warmup_secs = min(args.warmup_secs, 3.0)
+        args.hijack_interval = 0.5
+        args.measure_secs = min(args.duration or 45.0, 60.0)
+        args.visibility_cycle = False
+        if args.http_workers is None: args.http_workers = 4
+    workers = args.http_workers or 0
+
+    proc = work = None
+    if args.exe is not None:
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            print("SKIP: --exe needs an elevated shell (WinDivert)")
+            return 2
+        exe = args.exe.resolve()
+        LOG_PATH = exe.parent / "proxyclaw.log"
+        proc, work = launch_proxyclaw(exe)
+    try:
+        return _run(args, workers, proc)
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
     if not LOG_PATH.exists():
         print(f"ERROR: {LOG_PATH} not found. Start proxyclaw.exe first.", file=sys.stderr)
         return 1
@@ -411,9 +637,16 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    pc_pid = proc.pid if proc is not None else find_proxyclaw_pid()
+    sampler = ResourceSampler(pc_pid) if pc_pid else None
+    if sampler:
+        sampler.start()
+
     stress = None
     if not args.no_stress:
-        cmd = ["uv", "run", "--script", str(STRESS_SCRIPT),
+        runner = (["uv", "run", "--script"] if shutil.which("uv") and not args.ci
+                  else [sys.executable])
+        cmd = [*runner, str(STRESS_SCRIPT),
                "--target", str(target),
                "--min-life", str(min_life),
                "--max-life", str(max_life)]
@@ -426,7 +659,13 @@ def main() -> int:
         print(f"==> warmup {args.warmup_secs}s ...")
         time.sleep(args.warmup_secs)
 
+    load = HttpLoad(workers) if workers > 0 else None
+    if load:
+        print(f"==> HTTP load: {workers} workers over {', '.join(LOAD_PATHS)}")
+        load.start()
+
     phases: list[dict] = []
+    t_start = time.monotonic()
     try:
         if not args.visibility_cycle:
             phases.append(run_phase("steady", args.measure_secs,
@@ -455,6 +694,8 @@ def main() -> int:
                                     args.measure_secs,
                                     target_pid, args.hijack_interval))
     finally:
+        if load:
+            load.finish()
         if stress is not None:
             try:
                 stress.send_signal(signal.CTRL_BREAK_EVENT)
@@ -468,6 +709,8 @@ def main() -> int:
         with contextlib.suppress(Exception):
             helper.kill()
             helper.wait(timeout=2)
+    elapsed = time.monotonic() - t_start
+    resources = sampler.finish() if sampler else {}
 
     print()
     print("=" * 60)
@@ -476,7 +719,60 @@ def main() -> int:
     for phase in phases:
         report(phase)
 
-    return 0
+    # ---- compact summary + pass/fail (errors and crashes only) ----
+    crashed = proc is not None and proc.poll() is not None
+    alive = False
+    with contextlib.suppress(Exception):
+        alive = requests.get(f"{BASE}/stats", timeout=5).status_code == 200
+    rtts = [x for ph in phases for x in ph["rtts_hijack"] + ph["rtts_unhijack"]]
+    lat = load.lat_us if load else []
+    load_errors = load.errors if load else []
+    err_lines = 0
+    if LOG_PATH.exists():
+        t_wall0 = time.time() - elapsed - 5
+        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})\s+\[E\]", line)
+                if m and parse_ts(m.group(1)) >= t_wall0:
+                    err_lines += 1
+    requests_total = len(lat) + len(load_errors) + len(rtts) + len(HIJACK_ERRORS)
+    errors_total = len(load_errors) + len(HIJACK_ERRORS)
+    summary = {
+        "scenario": args.scenario, "ci": bool(args.ci),
+        "duration_s": round(elapsed, 1), "churn_target": target,
+        "churn_life_s": [min_life, max_life], "http_workers": workers,
+        "requests": requests_total, "errors": errors_total,
+        "rps": round(requests_total / elapsed, 1) if elapsed else None,
+        "latency_ms": {"p50": pct_ms(lat, 0.50), "p95": pct_ms(lat, 0.95),
+                       "p99": pct_ms(lat, 0.99), "max": pct_ms(lat, 1.0), "n": len(lat)},
+        "hijack_rtt_ms": {"p50": pct_ms(rtts, 0.50), "p95": pct_ms(rtts, 0.95),
+                          "p99": pct_ms(rtts, 0.99), "n": len(rtts)},
+        "trace_events": sum(len(ph["events"]) for ph in phases),
+        "log_error_lines": err_lines,
+        "proxyclaw": resources,
+        "proxyclaw_crashed": crashed, "api_alive_after": alive,
+        "error_samples": (load_errors + HIJACK_ERRORS)[:10],
+    }
+    ok = errors_total == 0 and not crashed and alive
+    summary["result"] = "pass" if ok else "fail"
+
+    print("\n---- stress smoke summary ----")
+    lm, hm = summary["latency_ms"], summary["hijack_rtt_ms"]
+    print(f"duration={summary['duration_s']}s requests={requests_total} errors={errors_total} "
+          f"rps={summary['rps']}")
+    print(f"GET latency ms: p50={lm['p50']} p95={lm['p95']} p99={lm['p99']} max={lm['max']}")
+    print(f"hijack/unhijack RTT ms: p50={hm['p50']} p95={hm['p95']} p99={hm['p99']} n={hm['n']}")
+    if resources:
+        print(f"proxyclaw.exe: working set MB {resources['working_set_mb']}, "
+              f"private MB {resources['private_mb']}, handles {resources['handles']}")
+    print(f"log [E] lines in window: {err_lines}  crashed={crashed}  api_alive_after={alive}")
+    if summary["error_samples"]:
+        print(f"error samples: {summary['error_samples']}")
+    print(f"RESULT: {summary['result'].upper()}")
+    if args.summary_json:
+        args.summary_json.parent.mkdir(parents=True, exist_ok=True)
+        args.summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

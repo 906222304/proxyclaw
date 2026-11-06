@@ -191,7 +191,24 @@ def spawn_long_lived_helper(seconds: int = 600) -> subprocess.Popen[bytes]:
     )
 
 
-def wait_pid_in_clew(pid: int, timeout: float = 5.0) -> bool:
+def wait_tree_ready(timeout: float = 60.0) -> None:
+    """Block until /api/stats reports the initial rundown verified
+    (tree_ready). Builds without the flag are not waited on."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            s = requests.get(f"{BASE}/stats", timeout=2).json()
+            if s.get("tree_ready", True):
+                return
+        except Exception:
+            pass
+        time.sleep(0.25)
+    print(f"WARN: process tree not ready after {timeout:.0f}s", file=sys.stderr)
+
+
+def wait_pid_in_clew(pid: int, timeout: float = 15.0) -> bool:
+    # ETW ProcessStart latency is 1-3s+ on a loaded CI runner; the deadline
+    # is a ceiling, a healthy box returns in well under a second.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -372,6 +389,7 @@ def launch_proxyclaw(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]
             raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
         try:
             if requests.get(f"{BASE}/stats", timeout=2).status_code == 200:
+                wait_tree_ready()
                 return proc, work
         except Exception:
             pass

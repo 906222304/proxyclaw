@@ -82,6 +82,31 @@ def find_app_page(browser, timeout: float = 30):
 TARGET_EXE = "pc-shot-target.exe"
 
 
+def wait_tree_ready(token: str, proc: subprocess.Popen, timeout: float = 60) -> int:
+    """Wait for the backend to report its initial process rundown verified
+    against the OS process list (/api/stats tree_ready) and return its
+    process count. Run 42180806121 attempt 1 showed a tree stuck at 20 of
+    ~150 processes for the whole session (rundown dropped at startup); the
+    backend now detects and repairs that, and this makes the harness wait
+    for it instead of screenshotting a partial tree."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
+        try:
+            req = urllib.request.Request("http://127.0.0.1:18080/api/stats",
+                                         headers={"X-ProxyClaw-Token": token})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                last = json.load(r)
+            if last.get("tree_ready", True):
+                return int(last.get("process_count") or 0)
+        except Exception:
+            pass
+        time.sleep(0.5)
+    raise RuntimeError(f"backend process tree not ready within {timeout}s: {last}")
+
+
 def main() -> int:
     # The runner console is cp1252; Playwright errors quote Chinese locators.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -183,13 +208,24 @@ def main() -> int:
             # Process tree data arrives over the WebView2 push channel after the
             # ready handshake; wait until at least one process row is shown.
             page.locator("[data-depth]").first.wait_for(timeout=30000)
-            # The first snapshot can be partial; wait (softly) for a full tree.
-            try:
-                page.wait_for_function(
-                    "Number(document.querySelector('[data-testid=process-count]')?.textContent) > 60",
-                    timeout=45000)
-            except Exception:
-                pass
+            # The first push can predate the end of the initial rundown. Wait
+            # for the backend to verify its tree, then for the UI to show (at
+            # least most of) it and stop changing, so every screenshot below
+            # sees the full tree including proxyclaw.exe itself.
+            backend_count = wait_tree_ready(token, proc)
+            want = max(1, int(backend_count * 0.7))
+            page.wait_for_function(
+                f"Number(document.querySelector('[data-testid=process-count]')?.textContent) >= {want}",
+                timeout=30000)
+            settle_start = stable_since = time.time()
+            prev = None
+            while time.time() - stable_since < 1.5:
+                cur = page.evaluate("document.querySelector('[data-testid=process-count]')?.textContent")
+                if cur != prev:
+                    stable_since, prev = time.time(), cur
+                if time.time() - settle_start > 20:  # churn never settles: go on
+                    break
+                page.wait_for_timeout(250)
             count = page.evaluate("document.querySelector('[data-testid=process-count]')?.textContent")
             console.append(f"[info] process count {count}")
             print(f"process count: {count}")
@@ -227,9 +263,10 @@ def main() -> int:
             shot("network-dark")
             # Select a process (prefer proxyclaw itself) for the per-process view.
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("proxyclaw")
-            page.wait_for_timeout(500)
             # The process tree precedes the connections table in DOM order.
-            page.locator('[data-depth] span[title="proxyclaw.exe"]').first.click(timeout=60000)
+            pc_row = page.locator('[data-depth] span[title="proxyclaw.exe"]').first
+            pc_row.wait_for(state="visible", timeout=30000)
+            pc_row.click(timeout=30000)
             page.wait_for_timeout(1500)
             # Playwright scrolls the clicked (deeply indented) row into view
             # horizontally; a mouse user would not, so undo that.

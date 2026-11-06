@@ -19,6 +19,10 @@ nlohmann::json stats_service::get_stats() const {
         nlohmann::json out;
         out["hijacked_pids"]    = m.rules().get_hijacked_pids(m.tree()).size();
         out["auto_rules_count"] = m.rules().auto_rules().size();
+        // Harness readiness signal: initial rundown verified against the OS
+        // process list (see process_tree_manager::schedule_rundown_grace).
+        out["tree_ready"]       = m.is_tree_ready();
+        out["process_count"]    = m.tree().alive_count();
         return out;
     });
     if (traffic_) j["tcp_syn_parking"] = traffic_();

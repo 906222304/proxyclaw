@@ -115,6 +115,20 @@ def collect_log_messages(pattern: re.Pattern,
                 out.append((ts, m_inner))
     return out
 
+
+def wait_log_messages(pattern: re.Pattern, ts_start: float, ts_end: float,
+                      done, timeout: float = 5.0) -> list[tuple[float, re.Match]]:
+    """collect_log_messages, re-read until done(events) or timeout. Quill
+    writes on its backend thread, so a line stamped inside the window can
+    reach the file a few hundred ms later on a loaded runner; a single read
+    after a fixed sleep raced that flush."""
+    deadline = time.monotonic() + timeout
+    while True:
+        events = collect_log_messages(pattern, ts_start, ts_end)
+        if done(events) or time.monotonic() >= deadline:
+            return events
+        time.sleep(0.1)
+
 passed = 0
 failed = 0
 errors = []
@@ -580,17 +594,33 @@ def _iter_pids(nodes) -> Iterator[int]:
         yield from _iter_pids(node.get("children", []))
 
 
-def _wait_pid_in_tree(pid, timeout=3.0):
+def _wait_pid_in_tree(pid, timeout=15.0):
     """Poll the single-PID tree query until pid shows up. Tolerates ETW
-    ProcessStart buffer-flush latency (~hundreds of ms) for processes
-    spawned after the initial NtQuery snapshot."""
+    ProcessStart latency for processes spawned after the initial rundown:
+    1s FlushTimer floor, observed at 2-3s+ on a busy 4-vCPU CI runner
+    (run 42252770650). The deadline is a ceiling, not a wait: a healthy
+    box returns in well under a second."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        r = requests.get(f"{BASE}/processes/{pid}")
+        r = requests.get(f"{BASE}/processes/{pid}", timeout=5)
         if r.status_code == 200:
             return True
         time.sleep(0.1)
     return False
+
+
+def _hijack_when_known(pid, timeout=15.0):
+    """POST /api/hijack/{pid} until it is accepted. The backend resolves a
+    live PID the tree has not seen yet from the OS (resolve_pid_now), so on
+    current builds the first call succeeds; polling keeps the precondition
+    deterministic against older builds in attach mode."""
+    deadline = time.monotonic() + timeout
+    while True:
+        r = requests.post(f"{BASE}/hijack/{pid}",
+                          json={"tree": False, "group_id": 0}, timeout=5)
+        if r.status_code == 200 or time.monotonic() >= deadline:
+            return r
+        time.sleep(0.1)
 
 
 _TREE_CHANGE_RE = re.compile(r'\[tree-change\] source=(?P<source>\w+)')
@@ -632,7 +662,7 @@ def test_batch_hijack_single_notify():
         # before we batch-hijack — and so the etw_start tree-change events
         # finish landing before the measurement window opens.
         for pid in test_pids:
-            assert _wait_pid_in_tree(pid, timeout=3.0), (
+            assert _wait_pid_in_tree(pid), (
                 f"PID {pid} did not appear in tree (ETW backlog?)"
             )
         time.sleep(0.3)  # let etw_start tree-change lines flush
@@ -655,7 +685,11 @@ def test_batch_hijack_single_notify():
             f"missing {sorted(expected - hijacked_after)}"
         )
 
-        events = collect_log_messages(_TREE_CHANGE_RE, ts_start, ts_end)
+        # Window is fixed at [ts_start, ts_end]; only the file read is retried
+        # until the batch line has been flushed, so extra lines still count.
+        events = wait_log_messages(
+            _TREE_CHANGE_RE, ts_start, ts_end,
+            lambda ev: any(m.group("source") == "batch_hijack" for _, m in ev))
         batch_count = sum(1 for _, m in events if m.group("source") == "batch_hijack")
 
         # Exactly one batch_hijack tree-change in the window. ETW events
@@ -705,24 +739,27 @@ def test_delete_under_60ms_serverside():
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
     )
     try:
-        assert _wait_pid_in_tree(p.pid, timeout=3.0), (
-            f"PID {p.pid} did not appear in tree (ETW backlog?)"
-        )
-
-        r = requests.post(f"{BASE}/hijack/{p.pid}",
-                          json={"tree": False, "group_id": 0})
-        assert r.status_code == 200, f"hijack failed: {r.text}"
+        # Precondition, untimed: the PID must be hijacked before we measure.
+        # Only the DELETE round-trip below is under the 60ms cap; ETW
+        # ProcessStart latency for the fresh cmd.exe is not (that was the
+        # 2026-11-06 flake: 'PID did not appear in tree (ETW backlog?)').
+        r = _hijack_when_known(p.pid)
+        assert r.status_code == 200, f"hijack failed: {r.status_code} {r.text}"
+        # Let the hijack's immediate push and the late ETW START (now an
+        # idempotent no-op) drain off the strand so they don't share the
+        # measured window.
+        time.sleep(0.5)
 
         ts_start = time.time()
         r = requests.delete(f"{BASE}/hijack/{p.pid}")
         ts_end = time.time()
         assert r.status_code == 200, f"delete failed: {r.status_code} {r.text}"
 
-        # Allow the log message to flush before we read.
-        time.sleep(0.2)
-
-        events = collect_log_messages(_API_DELETE_RE, ts_start, ts_end + 0.5)
         target = f"/api/hijack/{p.pid}"
+        # Retry the read until quill has flushed the line.
+        events = wait_log_messages(
+            _API_DELETE_RE, ts_start, ts_end + 0.5,
+            lambda ev: any(m.group("path") == target for _, m in ev))
         match = next((m for _, m in events if m.group("path") == target), None)
         assert match is not None, (
             f"no [api] DELETE log line found for {target} in window. "
@@ -969,18 +1006,73 @@ def test_cleanup_rule():
 # ============================================================
 
 def _get_system_dns_servers():
-    """Read DNS servers from active IPv4 interfaces. Returns a set."""
-    cmd = ("Get-DnsClientServerAddress -AddressFamily IPv4 "
-           "| Where-Object { $_.ServerAddresses } "
-           "| ForEach-Object { $_.ServerAddresses } "
-           "| Sort-Object -Unique")
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", cmd],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode != 0:
-        return set()
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    """IPv4 DNS servers of every adapter, via iphlpapi GetAdaptersAddresses.
+
+    In-process and ~1ms. The previous `powershell Get-DnsClientServerAddress`
+    cold-starts PowerShell + the CIM/WMI provider, which on a loaded CI runner
+    blew through a 10s timeout (run 42248783753). This is also the API
+    src/core/system_dns.hpp reads, so test and app see the same view."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SOCKET_ADDRESS(ctypes.Structure):
+        _fields_ = [("lpSockaddr", ctypes.c_void_p), ("iSockaddrLength", ctypes.c_int)]
+
+    class DNS_SERVER(ctypes.Structure):
+        pass
+    DNS_SERVER._fields_ = [("Length", wintypes.ULONG), ("Reserved", wintypes.DWORD),
+                           ("Next", ctypes.POINTER(DNS_SERVER)),
+                           ("Address", SOCKET_ADDRESS)]
+
+    class ADAPTER(ctypes.Structure):
+        pass
+    # Leading fields of IP_ADAPTER_ADDRESSES_LH, up to FirstDnsServerAddress.
+    ADAPTER._fields_ = [("Length", wintypes.ULONG), ("IfIndex", wintypes.DWORD),
+                        ("Next", ctypes.POINTER(ADAPTER)),
+                        ("AdapterName", ctypes.c_char_p),
+                        ("FirstUnicastAddress", ctypes.c_void_p),
+                        ("FirstAnycastAddress", ctypes.c_void_p),
+                        ("FirstMulticastAddress", ctypes.c_void_p),
+                        ("FirstDnsServerAddress", ctypes.POINTER(DNS_SERVER))]
+
+    AF_INET = 2
+    GAA_FLAG_SKIP_UNICAST, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST = 0x1, 0x2, 0x4
+    flags = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST
+    fn = ctypes.windll.iphlpapi.GetAdaptersAddresses
+    size = wintypes.ULONG(32 * 1024)
+    for _ in range(4):
+        buf = ctypes.create_string_buffer(size.value)
+        rc = fn(AF_INET, flags, None, buf, ctypes.byref(size))
+        if rc == 111:  # ERROR_BUFFER_OVERFLOW: size now holds the need
+            continue
+        break
+    if rc != 0:
+        raise OSError(f"GetAdaptersAddresses failed: {rc}")
+    servers = set()
+    node = ctypes.cast(buf, ctypes.POINTER(ADAPTER))
+    while node:
+        dns = node.contents.FirstDnsServerAddress
+        while dns:
+            sa = dns.contents.Address
+            if sa.lpSockaddr and sa.iSockaddrLength >= 8:
+                raw = ctypes.string_at(sa.lpSockaddr, 8)
+                if int.from_bytes(raw[0:2], "little") == AF_INET:
+                    servers.add(".".join(str(b) for b in raw[4:8]))
+            dns = dns.contents.Next
+        node = node.contents.Next
+    return servers
+
+
+def _wait_system_dns(pred, timeout=15.0):
+    """Poll system DNS until pred(servers) holds; return the last reading.
+    Replaces fixed sleeps after PUT /api/config: dns_mgr.apply runs on the
+    config observer and SetInterfaceDnsSettings takes a variable time."""
+    deadline = time.monotonic() + timeout
+    while True:
+        servers = _get_system_dns_servers()
+        if pred(servers) or time.monotonic() >= deadline:
+            return servers
+        time.sleep(0.2)
 
 
 def _query_dns(server_ip, hostname='example.com', timeout=5.0):
@@ -1026,25 +1118,23 @@ def test_dns_proxy_roundtrip():
         r = requests.put(f"{BASE}/config", json=enable_cfg)
         assert r.status_code == 200, f"PUT enable failed: {r.status_code} {r.text}"
 
-        time.sleep(1.0)  # let dns_mgr.apply swap system DNS + start forwarder
-
-        servers_after_enable = _get_system_dns_servers()
+        servers_after_enable = _wait_system_dns(lambda s: "127.0.0.2" in s)
         assert "127.0.0.2" in servers_after_enable, (
             f"127.0.0.2 not in system DNS after enable: "
             f"{sorted(servers_after_enable)} (was {sorted(initial_servers)})"
         )
 
-        ok = _query_dns("127.0.0.2", "example.com", timeout=5.0)
-        assert ok, "DNS forwarder did not respond on 127.0.0.2:53 within 5s"
+        # The forwarder can bind a moment after the system DNS swap; give it a
+        # few query attempts instead of a single shot.
+        ok = any(_query_dns("127.0.0.2", "example.com", timeout=3.0) for _ in range(3))
+        assert ok, "DNS forwarder did not respond on 127.0.0.2:53 (3 x 3s)"
 
         # --- Disable ---
         disable_cfg = dict(raw, dns=dict(original_dns, enabled=False))
         r = requests.put(f"{BASE}/config", json=disable_cfg)
         assert r.status_code == 200, f"PUT disable failed: {r.status_code} {r.text}"
 
-        time.sleep(1.0)  # let dns_mgr.apply restore system DNS
-
-        servers_after_disable = _get_system_dns_servers()
+        servers_after_disable = _wait_system_dns(lambda s: "127.0.0.2" not in s)
         assert "127.0.0.2" not in servers_after_disable, (
             f"127.0.0.2 still in system DNS after disable: "
             f"{sorted(servers_after_disable)}"
@@ -1101,8 +1191,27 @@ def _launch(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]:
             proc.kill()
             raise RuntimeError("proxyclaw API did not come up in 30s")
         time.sleep(0.5)
+    _wait_tree_ready(proc)
     time.sleep(2)  # let the WinDivert layers settle
     return proc, work
+
+
+def _wait_tree_ready(proc=None, timeout=60.0):
+    """Wait for the backend's initial process rundown to be verified
+    (/api/stats tree_ready). Before this, tests that look up pre-existing
+    PIDs (our own python.exe) raced the ETW capture_state. Builds without
+    the flag are not waited on."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
+        s = requests.get(f"{BASE}/stats", timeout=5).json()
+        if s.get("tree_ready", True):
+            print(f"tree ready: {s.get('process_count', '?')} processes")
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"process tree not ready after {timeout:.0f}s: {s}")
+        time.sleep(0.25)
 
 
 def main() -> int:
@@ -1155,6 +1264,7 @@ def _run(name_filter: str | None) -> int:
         print("\nMake sure proxyclaw.exe is running (admin) on port 18080.")
         return 1
 
+    _wait_tree_ready()
     print(f"\nAPI: {BASE}")
     print(f"Proxy: socks5://{PROXY_HOST}:{PROXY_PORT}")
     print(f"Log:   {LOG_PATH}")

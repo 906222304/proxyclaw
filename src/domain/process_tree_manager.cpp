@@ -3,6 +3,9 @@
 #include <chrono>
 #include <system_error>
 #include <utility>
+#include <vector>
+
+#include <psapi.h>
 
 #include "core/log.hpp"
 #include "domain/tree_change_receiver.hpp"
@@ -49,7 +52,8 @@ void process_tree_manager::start() {
     // same callback path as real-time Start/Stop.
     asio::post(strand_, [this]() {
         etw_->request_rundown();
-        schedule_rundown_grace();
+        rundown_attempts_ = 1;
+        schedule_rundown_grace(std::chrono::seconds(5));
     });
 }
 
@@ -77,7 +81,11 @@ void process_tree_manager::notify_tree_changed(std::string_view source, push_urg
 // --- Mutation APIs ---
 
 bool process_tree_manager::hijack_pid(DWORD pid, bool tree_mode, uint32_t gid) {
-    if (tree_.find_by_pid(pid) == INVALID_IDX) return false;
+    // A process younger than the ETW ProcessStart latency (1-3s, more on a
+    // loaded box) is alive but not in the tree yet. Resolve it from the OS
+    // instead of answering 404 for a PID the caller can see running; the
+    // late ETW START is then an idempotent no-op.
+    if (tree_.find_by_pid(pid) == INVALID_IDX && !resolve_pid_now(pid)) return false;
     if (tree_mode) {
         rules_.manual_hijack_tree(tree_, pid, gid);
     } else {
@@ -105,7 +113,8 @@ bool process_tree_manager::batch_hijack(const std::vector<DWORD>& add,
     std::size_t changes = 0;
 
     for (auto pid : add) {
-        if (tree_.find_by_pid(pid) != INVALID_IDX) {
+        // Same young-process fallback as hijack_pid.
+        if (tree_.find_by_pid(pid) != INVALID_IDX || resolve_pid_now(pid)) {
             if (tree_mode) rules_.manual_hijack_tree(tree_, pid, gid);
             else           rules_.manual_hijack(tree_, pid, gid);
             ++changes;
@@ -388,14 +397,34 @@ void process_tree_manager::drain_orphans_for(uint64_t psn, uint32_t parent_idx) 
     orphans_by_parent_psn_.erase(it);
 }
 
-void process_tree_manager::schedule_rundown_grace() {
+void process_tree_manager::count_rundown_coverage(std::size_t& live,
+                                                  std::size_t& missing) const {
+    live = missing = 0;
+    std::vector<DWORD> pids(4096);
+    for (int i = 0; i < 4; ++i) {
+        DWORD bytes = 0;
+        if (!K32EnumProcesses(pids.data(), static_cast<DWORD>(pids.size() * sizeof(DWORD)), &bytes)) {
+            return;  // unknown: treat as covered
+        }
+        const std::size_t n = bytes / sizeof(DWORD);
+        if (n < pids.size()) { pids.resize(n); break; }
+        pids.resize(pids.size() * 2);
+    }
+    for (DWORD pid : pids) {
+        if (pid == 0) continue;  // Idle has no ProcessRundown
+        ++live;
+        if (tree_.find_by_pid(pid) == INVALID_IDX) ++missing;
+    }
+}
+
+void process_tree_manager::schedule_rundown_grace(std::chrono::milliseconds delay) {
     // capture_state issuance returns immediately, but the kernel takes ~2s
     // to enumerate live processes and emit ProcessRundown events. The grace
     // timer must be long enough to outlast that delay so any cross-event
     // ordering quirks (child before parent inside the rundown stream) get
     // resolved before we flush surviving orphans to root. 5s is comfortably
     // above the observed 2s envelope on a typical box.
-    rundown_grace_timer_.expires_after(std::chrono::seconds(5));
+    rundown_grace_timer_.expires_after(delay);
     rundown_grace_timer_.async_wait([this](std::error_code ec) {
         if (ec) return;
         if (!started_) return;
@@ -421,6 +450,37 @@ void process_tree_manager::schedule_rundown_grace() {
             PC_LOG_INFO("[TreeMgr] Rundown grace: no orphans (clean tree, {} alive)",
                          tree_.alive_count());
         }
+
+        // Coverage check. Observed on CI (2026-11-06): CAPTURE_STATE issued
+        // ~1ms after StartTrace, before ProcessTrace attached the real-time
+        // consumer; the kernel dropped nearly the whole rundown without any
+        // EventsLost on our side, and the tree stayed at ~20 processes (only
+        // what the SOCKET-layer sync-resolve inserted) for the whole session.
+        // Compare against the OS PID list and re-issue capture_state when
+        // the tree is clearly short. Rundown is idempotent per (pid, psn),
+        // so a re-issue only fills gaps. The slack covers processes born or
+        // exited inside the ETW latency window.
+        std::size_t live = 0, missing = 0;
+        count_rundown_coverage(live, missing);
+        constexpr int kMaxRundownAttempts = 5;
+        const bool short_tree = missing > 8 && missing * 5 > live;  // >20% absent
+        if (short_tree && rundown_attempts_ < kMaxRundownAttempts && etw_) {
+            ++rundown_attempts_;
+            PC_LOG_WARN("[TreeMgr] Rundown incomplete: {} of {} live processes missing "
+                        "from tree; re-issuing capture_state (attempt {}/{})",
+                        missing, live, rundown_attempts_, kMaxRundownAttempts);
+            etw_->request_rundown();
+            schedule_rundown_grace(std::chrono::seconds(3));
+            return;
+        }
+        if (short_tree) {
+            PC_LOG_WARN("[TreeMgr] Rundown still incomplete after {} attempts: "
+                        "{} of {} live processes missing", rundown_attempts_, missing, live);
+        } else {
+            PC_LOG_INFO("[TreeMgr] Rundown verified: {} live, {} missing, {} in tree "
+                        "(attempts={})", live, missing, tree_.alive_count(), rundown_attempts_);
+        }
+        tree_ready_ = true;
     });
 }
 

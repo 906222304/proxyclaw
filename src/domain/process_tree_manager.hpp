@@ -10,7 +10,13 @@
 //   - Parent linkage uses (parent_pid, parent_psn). When the parent isn't yet
 //     known we park the child in orphans_by_parent_psn_ and resolve on the
 //     parent's first event arrival. Surviving orphans are flushed to root
-//     1s after capture_state via rundown_grace_timer_.
+//     5s after capture_state via rundown_grace_timer_.
+//   - The same grace timer verifies the rundown actually covered the live
+//     process set (EnumProcesses PID count vs tree). A capture_state issued
+//     before the real-time consumer has attached can be dropped by the
+//     kernel, leaving a tree of ~20 sync-resolved processes; the check
+//     re-issues capture_state until coverage is reached (bounded), then
+//     flips is_tree_ready().
 //   - EventsLost from the ETW buffer callback debounces a re-issue of
 //     capture_state via lost_debounce_timer_.
 //
@@ -30,6 +36,7 @@
 #include <asio.hpp>
 #include <asio/steady_timer.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -103,6 +110,10 @@ public:
     // HTTP API can serve from the partial state — UI startup time greatly
     // exceeds rundown processing time, so users observe a complete tree.
     [[nodiscard]] bool is_initialized() const noexcept { return started_; }
+    // tree_ready: the initial rundown has been verified against the OS
+    // process list (or the bounded retries ran out). Exposed via /api/stats
+    // so harnesses can wait for a complete tree instead of sleeping.
+    [[nodiscard]] bool is_tree_ready() const noexcept { return tree_ready_; }
 
 private:
     void notify_tree_changed(std::string_view source, push_urgency urgency);
@@ -115,7 +126,9 @@ private:
                                  bool notify = true);
     void handle_stop(const etw_process_event& evt);
     void handle_lost(const etw_process_event& evt);
-    void schedule_rundown_grace();
+    void schedule_rundown_grace(std::chrono::milliseconds delay);
+    // Count live OS PIDs (EnumProcesses) and how many of them the tree lacks.
+    void count_rundown_coverage(std::size_t& live, std::size_t& missing) const;
 
     // Attach a new entry to its parent given (parent_pid, parent_psn).
     // Falls back to orphans_by_parent_psn_ when the parent is unknown.
@@ -143,6 +156,8 @@ private:
 
     bool started_{false};
     bool lost_pending_{false};   // simple debounce guard
+    bool tree_ready_{false};
+    int  rundown_attempts_{0};
 };
 
 } // namespace domain

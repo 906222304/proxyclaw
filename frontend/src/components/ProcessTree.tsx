@@ -6,7 +6,7 @@ import { hijackProcess, unhijackProcess } from '@/api/client'
 import { activityQuery, autoRulesQuery, isActive, useProcessTree } from '@/api/queries'
 import { ProcessIcon } from '@/components/ProcessIcon'
 import { Segmented } from '@/components/ui/misc'
-import { ExcludedBadge, HijackDot } from '@/components/ProcessContextHeader'
+import { ExcludedDot, HijackDot } from '@/components/ProcessContextHeader'
 import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
@@ -234,7 +234,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         {node.hijacked && (manual || auto
           ? <HijackDot source={node.hijack_source} />
           : <span className="size-1.5 shrink-0 rounded-full bg-success" title="已代理" />)}
-        {excluded && <ExcludedBadge />}
+        {excluded && <ExcludedDot />}
         {/* The hover-only hack button sits on top of the PID (which fades out)
             instead of taking width, so hovering never squeezes the name. */}
         <span className="relative ml-auto flex shrink-0 items-center pl-1.5">

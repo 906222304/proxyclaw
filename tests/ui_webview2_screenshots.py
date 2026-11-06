@@ -273,6 +273,7 @@ def main() -> int:
                 item.click()
                 header_badge = page.locator('[data-testid="excluded-badge"]')
                 expect(header_badge.first).to_be_visible(timeout=15000)
+                expect(page.locator('[data-testid="excluded-dot"]').first).to_be_visible(timeout=15000)
                 page.wait_for_timeout(600)
                 shot("network-process-excluded-dark")
                 menu.click()

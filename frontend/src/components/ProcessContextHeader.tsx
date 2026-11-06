@@ -69,6 +69,18 @@ export function ExcludedBadge({ className }: { className?: string }) {
   )
 }
 
+/**
+ * Tree-row variant: a hollow ring with the same tooltip, so deep rows keep
+ * their name width.
+ */
+export function ExcludedDot() {
+  return (
+    <Tooltip content={EXCLUDED_TOOLTIP}>
+      <span data-testid="excluded-dot" aria-label="已排除" className="size-1.5 shrink-0 rounded-full border border-muted-foreground" />
+    </Tooltip>
+  )
+}
+
 /** The ⋯ menu entries for the exclude / restore action (none when not applicable). */
 export function excludeMenuItems(action: ExcludeAction | null, run: (a: ExcludeAction) => void, busy = false): MenuItem[] {
   if (!action) return []

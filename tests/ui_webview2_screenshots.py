@@ -161,10 +161,21 @@ def main() -> int:
 
             page.wait_for_function("document.querySelector('#root')?.childElementCount > 0", timeout=30000)
             page.get_by_role("tablist", name="主导航").wait_for(timeout=30000)
-            page.locator("footer").get_by_text("已连接", exact=True).wait_for(timeout=30000)
+            # The title-bar status chip (● 18080) replaced the footer.
+            page.locator('[data-connected="true"]').wait_for(timeout=30000)
             # Process tree data arrives over the WebView2 push channel after the
             # ready handshake; wait until at least one process row is shown.
-            page.get_by_text(re.compile(r"\.exe$", re.I)).first.wait_for(timeout=30000)
+            page.locator("[data-depth]").first.wait_for(timeout=30000)
+            # The first snapshot can be partial; wait (softly) for a full tree.
+            try:
+                page.wait_for_function(
+                    "Number(document.querySelector('[data-testid=process-count]')?.textContent) > 60",
+                    timeout=45000)
+            except Exception:
+                pass
+            count = page.evaluate("document.querySelector('[data-testid=process-count]')?.textContent")
+            console.append(f"[info] process count {count}")
+            print(f"process count: {count}")
             page.wait_for_timeout(1000)
 
             def shot(name: str) -> None:
@@ -195,13 +206,13 @@ def main() -> int:
                 expect(page.locator(".cm-editor")).to_have_count(0)
 
             set_dark(True)
-            tab("网络活动")
+            tab("网络")
             shot("network-dark")
             # Select a process (prefer proxyclaw itself) for the per-process view.
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("proxyclaw")
             page.wait_for_timeout(500)
             # The process tree precedes the connections table in DOM order.
-            page.get_by_text("proxyclaw.exe", exact=True).first.click()
+            page.locator('[data-depth] span[title="proxyclaw.exe"]').first.click(timeout=60000)
             page.wait_for_timeout(1500)
             # Playwright scrolls the clicked (deeply indented) row into view
             # horizontally; a mouse user would not, so undo that.
@@ -217,6 +228,17 @@ def main() -> int:
             print(f"selected tree row: {fit}")
             if not fit or fit["scroll"] > fit["client"] + 1:
                 problems.append(f"process tree name truncated: {fit}")
+            # The header path middle-truncates; the exe name must stay visible.
+            path_fit = page.evaluate("""() => {
+                const box = document.querySelector('[data-testid=process-path]')
+                const exe = box?.querySelector(':scope > .shrink-0')
+                if (!box || !exe) return null
+                const b = box.getBoundingClientRect(), e = exe.getBoundingClientRect()
+                return { exe: exe.textContent, inside: e.right <= b.right + 1 && e.width > 0 }
+            }""")
+            console.append(f"[info] header path {path_fit}")
+            if not path_fit or not path_fit["inside"]:
+                problems.append(f"header exe name clipped: {path_fit}")
             shot("network-selected-process-dark")
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("")
             page.get_by_role("button", name=re.compile("^全部进程")).first.click()
@@ -237,6 +259,10 @@ def main() -> int:
             tab("代理")
             page.get_by_text("香港节点").first.wait_for()
             shot("proxies-dark")
+            # Rows expand inline (test URL, last result, rules).
+            page.get_by_text("香港节点").first.click()
+            shot("proxies-expanded-dark")
+            page.get_by_text("香港节点").first.click()
             page.get_by_role("button", name="新建代理组", exact=True).click()
             page.get_by_role("dialog").wait_for()
             shot("proxy-group-dialog-dark")
@@ -256,7 +282,7 @@ def main() -> int:
             close_json_editor()
 
             set_dark(False)
-            tab("网络活动")
+            tab("网络")
             shot("network-light")
             tab("规则")
             shot("rules-light")
@@ -273,7 +299,7 @@ def main() -> int:
             shot("json-editor-light")
             close_json_editor()
             set_dark(True)
-            tab("网络活动")
+            tab("网络")
 
             if problems:
                 print("FAIL: console/page errors:\n  " + "\n  ".join(problems))

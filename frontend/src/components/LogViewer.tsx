@@ -80,7 +80,7 @@ export function LogViewer() {
               value={level}
               onValueChange={v => setLevel(v as 'all' | 'problems')}
               ariaLabel="日志筛选"
-              className="h-8 w-36 text-xs"
+              className="w-36"
               options={[{ value: 'all', label: '全部日志' }, { value: 'problems', label: '警告和错误' }]}
             />
             <label className="flex items-center gap-2 whitespace-nowrap text-xs">
@@ -102,7 +102,7 @@ export function LogViewer() {
               const el = e.currentTarget
               follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32
             }}
-            className="thin-scrollbar min-h-[200px] flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-3 font-mono text-xs leading-5"
+            className="thin-scrollbar min-h-[200px] flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-divider bg-surface-2 p-3 font-mono text-xs leading-5"
           >
             {filtered || placeholder}
           </pre>

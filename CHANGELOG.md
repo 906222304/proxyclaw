@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Frontend
+
+- Layout restructured after magpie: the title bar and tabs are one 44px bar
+  (logo, centred tabs 网络 · 规则 · 代理 · 设置, a `● 18080` status chip,
+  theme and window buttons). The footer is gone; the version moved to
+  设置 › 关于. Tab bodies are centred (max 1200px) and fade in on switch.
+- The process tree shows only on the Network tab, at a fixed 240px
+  (resizable, no border). Guide lines only for active subtrees, idle rows
+  muted instead of faded, search matches in bold, 手动/自动 as a dot with a
+  tooltip.
+- Network: the selected process is a 48px header row (PID · path, 创建规则)
+  above the search and count. The path middle-truncates inside the
+  directory only (`D:\a\proxy…\win\proxyclaw.exe`); copy and reveal
+  overlay the path end on hover with a fade and take no width otherwise. The
+  table has 5 columns and 32px rows without pills: protocol is a faint
+  prefix of the remote address, PID a muted suffix of the process name.
+- Rules: one list of ~52px rows with the process icon, a sub-line, an
+  inline proxy-group select, the switch and a ⋯ menu (edit, delete). The
+  icon swaps to a checkbox on hover or while selecting, so there is no
+  checkbox gutter; bulk actions are unchanged.
+- Proxies: one list of 48px rows (`SOCKS5 · host:port · N 条规则`, latency,
+  test, ⋯); a row expands inline to show the test URL, the last result and
+  its rules; clicking a rule opens the shared rule editor.
+- Primitives: 13px base text, filled borderless fields with an inset focus
+  ring, trackless segmented controls, press feedback on buttons, text-only
+  empty states, no text selection on app chrome, monospace only for the
+  JSON editor, logs and command lines, 4px spacing grid.
+
 ## v0.12.0 (2026-11-04)
 
 ### Frontend

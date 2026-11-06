@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createAutoRule, deleteAutoRule, updateAutoRule } from './client'
 import { queryKeys } from './queryKeys'
-import type { AutoRule } from './types'
+import type { AutoRule, ProxyGroup } from './types'
 
 export type RulePayload = Omit<AutoRule, 'id' | 'matched_count' | 'excluded_count' | 'matched_pids'>
 
@@ -28,6 +28,19 @@ export function useSetRulesEnabled() {
   return useMutation({
     mutationFn: ({ ids, enabled }: { ids: string[]; enabled: boolean }) =>
       Promise.all(ids.map(id => updateAutoRule(id, { enabled }))),
+    onSettled: changed,
+  })
+}
+
+/** Point a rule at another proxy group (its address follows the group). */
+export function useSetRuleGroup() {
+  const changed = useRulesChanged()
+  return useMutation({
+    mutationFn: ({ id, group }: { id: string; group: ProxyGroup }) =>
+      updateAutoRule(id, {
+        proxy_group_id: group.id,
+        proxy: { type: group.type ?? 'socks5', host: group.host, port: group.port },
+      }),
     onSettled: changed,
   })
 }

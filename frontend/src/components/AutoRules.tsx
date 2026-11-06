@@ -1,12 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
-import { ClipboardList, Pencil, Plus, Power, PowerOff, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Power, PowerOff, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { useDeleteRules, useSetRulesEnabled } from '@/api/mutations'
+import { useDeleteRules, useSetRuleGroup, useSetRulesEnabled } from '@/api/mutations'
 import { autoRulesQuery, proxyGroupsQuery } from '@/api/queries'
-import type { AutoRule } from '@/api/types'
+import type { AutoRule, ProxyGroup } from '@/api/types'
+import { ProcessIcon } from '@/components/ProcessIcon'
+import { MoreMenu } from '@/components/ui/menu'
+import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Badge, Checkbox, EmptyState, Segmented } from '@/components/ui/misc'
+import { Checkbox, EmptyState, ListSkeleton, Segmented } from '@/components/ui/misc'
 import { SearchInput } from '@/components/ui/search-input'
 import { Switch } from '@/components/ui/switch'
 import { pushError } from '@/lib/toast'
@@ -27,9 +30,8 @@ export function AutoRules({ onAdd, onEdit }: {
   onAdd: () => void
   onEdit: (rule: AutoRule) => void
 }) {
-  const { data: rules = [] } = useQuery(autoRulesQuery)
+  const { data: rules = [], isPending: loading } = useQuery(autoRulesQuery)
   const { data: groups = [] } = useQuery(proxyGroupsQuery)
-  const groupName = useMemo(() => new Map(groups.map(g => [g.id, g.name])), [groups])
 
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusFilter>('all')
@@ -37,6 +39,7 @@ export function AutoRules({ onAdd, onEdit }: {
   const [pendingDelete, setPendingDelete] = useState<{ ids: string[]; label: string } | null>(null)
 
   const setEnabled = useSetRulesEnabled()
+  const setGroup = useSetRuleGroup()
   const del = useDeleteRules()
 
   const visible = useMemo(() => filterRules(rules, status, query), [rules, status, query])
@@ -66,6 +69,12 @@ export function AutoRules({ onAdd, onEdit }: {
       onError: e => pushError(e, '切换规则失败'),
     })
   }
+  const changeGroup = (rule: AutoRule, id: string) => {
+    const g = groups.find(x => String(x.id) === id)
+    if (!g) return
+    setGroup.mutate({ id: rule.id, group: g }, { onError: e => pushError(e, '切换代理组失败') })
+  }
+  const selecting = selected.size > 0
   const confirmDelete = () => {
     if (!pendingDelete) return
     const { ids } = pendingDelete
@@ -76,11 +85,13 @@ export function AutoRules({ onAdd, onEdit }: {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-3 px-5">
-        <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleAll} label="全选" />
+      <div className="flex h-12 shrink-0 items-center gap-3 pl-4 pr-0">
+        <span className="flex w-5 shrink-0 justify-center">
+          <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleAll} label="全选" />
+        </span>
         {selected.size === 0 ? (
           <>
-            <SearchInput value={query} onChange={setQuery} placeholder="搜索规则…" className="w-60" />
+            <SearchInput value={query} onChange={setQuery} placeholder="搜索规则…" className="w-56" />
             <Segmented
               value={status}
               onChange={setStatus}
@@ -113,58 +124,30 @@ export function AutoRules({ onAdd, onEdit }: {
         )}
       </div>
 
-      <div className="thin-scrollbar min-h-0 flex-1 overflow-auto px-5 pb-5">
-        {visible.length === 0 ? (
+      <div className="thin-scrollbar min-h-0 flex-1 overflow-auto pb-4">
+        {loading ? (
+          <ListSkeleton rows={3} />
+        ) : visible.length === 0 ? (
           <EmptyState
-            icon={<ClipboardList />}
             title={query || status !== 'all'
-              ? '没有找到匹配的规则。'
-              : <>暂无规则，点击 <strong>添加规则</strong> 创建第一条规则。</>}
+              ? '没有找到匹配的规则'
+              : <>暂无规则，点击 <strong>添加规则</strong> 创建第一条规则</>}
           />
         ) : (
-          <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+          <div className="divide-y divide-divider overflow-hidden rounded-xl border border-border bg-card">
             {visible.map(rule => (
-              <div
+              <RuleRow
                 key={rule.id}
-                className={cn('group flex items-center gap-3 px-4 py-3 transition-colors', selected.has(rule.id) ? 'bg-selected' : 'hover:bg-muted/50')}
-              >
-                <Checkbox checked={selected.has(rule.id)} onChange={() => toggleOne(rule.id)} label={`选择 ${rule.name}`} />
-                <Switch
-                  checked={rule.enabled}
-                  onCheckedChange={() => toggleRule(rule)}
-                  aria-label={rule.enabled ? '停用规则' : '启用规则'}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={cn('truncate text-sm font-medium', !rule.enabled && 'text-muted-foreground')}>{rule.name}</span>
-                    {rule.protocol === 'udp' && <Badge tone="green">UDP</Badge>}
-                    {rule.protocol === 'both' && <Badge tone="violet">TCP+UDP</Badge>}
-                    {(rule.matched_count ?? 0) > 0 && (
-                      <Badge tone="blue" title="当前匹配的进程数">{rule.matched_count} 个进程</Badge>
-                    )}
-                  </div>
-                  <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="truncate font-mono">{rule.process_name}</span>
-                    <span>·</span>
-                    <span className="shrink-0">{groupName.get(rule.proxy_group_id) ?? '默认'}</span>
-                    <span>·</span>
-                    <span className="shrink-0">进程树</span>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                  <Button size="icon" variant="ghost" title="编辑规则" aria-label="编辑规则" onClick={() => onEdit(rule)}><Pencil /></Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    title="删除规则"
-                    aria-label="删除规则"
-                    className="hover:text-destructive"
-                    onClick={() => setPendingDelete({ ids: [rule.id], label: rule.name || rule.id })}
-                  >
-                    <Trash2 />
-                  </Button>
-                </div>
-              </div>
+                rule={rule}
+                groups={groups}
+                selected={selected.has(rule.id)}
+                selecting={selecting}
+                onToggleSelect={() => toggleOne(rule.id)}
+                onToggleEnabled={() => toggleRule(rule)}
+                onGroup={id => changeGroup(rule, id)}
+                onEdit={() => onEdit(rule)}
+                onDelete={() => setPendingDelete({ ids: [rule.id], label: rule.name || rule.id })}
+              />
             ))}
           </div>
         )}
@@ -181,6 +164,73 @@ export function AutoRules({ onAdd, onEdit }: {
           <Button variant="danger" onClick={confirmDelete}>删除</Button>
         </>}
       />
+    </div>
+  )
+}
+
+const PROTOCOL_LABEL: Record<string, string> = { tcp: 'TCP', udp: 'UDP', both: 'TCP+UDP' }
+
+/** Rule row: icon (swaps to checkbox on hover / selecting) · name / sub-line · group select · switch · ⋯ */
+function RuleRow({ rule, groups, selected, selecting, onToggleSelect, onToggleEnabled, onGroup, onEdit, onDelete }: {
+  rule: AutoRule
+  groups: ProxyGroup[]
+  selected: boolean
+  selecting: boolean
+  onToggleSelect: () => void
+  onToggleEnabled: () => void
+  onGroup: (id: string) => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const group = groups.find(g => g.id === rule.proxy_group_id)
+  // A rule saved with a custom address keeps its last group id; show it as 自定义.
+  const custom = !!group && (rule.proxy.host !== group.host || rule.proxy.port !== group.port)
+  const matched = rule.matched_count ?? 0
+  const sub = [
+    rule.process_name,
+    '进程树',
+    PROTOCOL_LABEL[rule.protocol ?? 'tcp'] ?? 'TCP',
+    matched > 0 ? `${matched} 个进程` : null,
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <div
+      onClick={onEdit}
+      className={cn('group flex min-h-13 items-center gap-3 py-2 pr-3 pl-4 transition-colors duration-100', selected ? 'bg-selected' : 'hover:bg-surface-2')}
+    >
+      {/* The process icon swaps to the checkbox on hover or while selecting, so there is no gutter. */}
+      <span className="relative flex size-5 shrink-0 items-center justify-center" data-testid="rule-select-slot">
+        <ProcessIcon
+          name={rule.process_name}
+          className={cn('size-5 transition-opacity duration-100', !rule.enabled && 'grayscale', selecting || selected ? 'opacity-0' : 'group-hover:opacity-0 group-focus-within:opacity-0')}
+        />
+        <span className={cn('absolute inset-0 flex items-center justify-center transition-opacity duration-100', selecting || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100')}>
+          <Checkbox checked={selected} onChange={onToggleSelect} label={`选择 ${rule.name}`} />
+        </span>
+      </span>
+      <button type="button" aria-label={`编辑规则 ${rule.name}`} className="min-w-0 flex-1 text-left outline-none" onClick={e => { e.stopPropagation(); onEdit() }}>
+        <div className={cn('truncate text-sm font-medium', !rule.enabled && 'text-muted-foreground')}>{rule.name}</div>
+        <div className="truncate text-2xs text-muted-foreground" title={sub}>{sub}</div>
+      </button>
+      <div className="flex shrink-0 items-center gap-2" onClick={e => e.stopPropagation()}>
+        <Select
+          ariaLabel="代理组"
+          value={String(rule.proxy_group_id)}
+          onValueChange={onGroup}
+          className="w-32"
+          display={custom ? <span className="truncate">自定义</span> : undefined}
+          options={groups.map(g => ({ value: String(g.id), label: g.name }))}
+        />
+        <Switch
+          checked={rule.enabled}
+          onCheckedChange={onToggleEnabled}
+          aria-label={rule.enabled ? '停用规则' : '启用规则'}
+        />
+        <MoreMenu items={[
+          { label: '编辑规则', icon: <Pencil />, onSelect: onEdit },
+          { label: '删除规则', icon: <Trash2 />, danger: true, onSelect: onDelete },
+        ]} />
+      </div>
     </div>
   )
 }

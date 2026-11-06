@@ -28,6 +28,8 @@ export interface ColumnDef {
   /** CSS grid track; exactly one column per view is flexible. */
   width: string
   mono?: boolean
+  /** Folded-in column with its own sort target in the header (PID, protocol). */
+  sub?: { key: ColumnKey; header: string; before?: boolean }
 }
 
 export function remoteOf(c: NetworkConnection): string {
@@ -35,20 +37,19 @@ export function remoteOf(c: NetworkConnection): string {
 }
 
 /**
- * Columns for the view. Every column except Process has a bounded content
- * width; Process absorbs the slack. In the per-PID view there is no Process
- * column, so Remote flexes instead.
+ * Columns for the view. Protocol is folded into Remote (faint prefix) and
+ * PID into Process (muted suffix), so the all-processes view has 5 columns.
+ * Every column except the first text column has a bounded width; Process
+ * (or Remote in the per-PID view) absorbs the slack.
  */
 export function columnsFor(allProcesses: boolean): ColumnDef[] {
   const cols: ColumnDef[] = []
-  if (allProcesses) cols.push({ key: 'process_name', header: '进程', width: 'minmax(120px, 1fr)' })
+  if (allProcesses) cols.push({ key: 'process_name', header: '进程', width: 'minmax(140px, 1fr)', sub: { key: 'pid', header: 'PID' } })
   cols.push(
-    { key: 'pid', header: 'PID', width: '68px', mono: true },
-    { key: 'protocol', header: '协议', width: '64px' },
-    { key: 'remote', header: '远端地址', width: allProcesses ? 'minmax(130px, 210px)' : 'minmax(160px, 1fr)', mono: true },
-    { key: 'state', header: '连接状态', width: '124px' },
-    { key: 'proxy_status', header: '代理状态', width: '96px' },
-    { key: 'local_port', header: '本地端口', width: '96px', mono: true },
+    { key: 'remote', header: '远端地址', sub: { key: 'protocol', header: '协议', before: true }, width: allProcesses ? 'minmax(170px, 250px)' : 'minmax(200px, 1fr)', mono: true },
+    { key: 'state', header: '连接状态', width: '100px' },
+    { key: 'proxy_status', header: '代理', width: '72px' },
+    { key: 'local_port', header: '本地端口', width: '76px', mono: true },
   )
   return cols
 }

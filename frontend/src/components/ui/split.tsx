@@ -1,14 +1,17 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react'
 
-const STORAGE_KEY = 'clew-main-split'
+const STORAGE_KEY = 'proxyclaw-sidebar-px'
 
 function loadSize(fallback: number, min: number, max: number): number {
   const v = Number(localStorage.getItem(STORAGE_KEY))
   return Number.isFinite(v) && v >= min && v <= max ? v : fallback
 }
 
-/** Two-pane horizontal split; left width in percent, persisted. */
-export function Split({ left, right, defaultSize = 24, min = 16, max = 45 }: {
+/**
+ * Sidebar + content split. The sidebar has a fixed pixel width (persisted)
+ * and no border; the handle is an invisible hit area that tints on hover.
+ */
+export function Split({ left, right, defaultSize = 240, min = 200, max = 360 }: {
   left: ReactNode
   right: ReactNode
   defaultSize?: number
@@ -26,13 +29,13 @@ export function Split({ left, right, defaultSize = 24, min = 16, max = 45 }: {
     const move = (ev: PointerEvent) => {
       const rect = box.current?.getBoundingClientRect()
       if (!rect || rect.width === 0) return
-      last = Math.min(max, Math.max(min, ((ev.clientX - rect.left) / rect.width) * 100))
+      last = Math.round(Math.min(max, Math.max(min, ev.clientX - rect.left)))
       setSize(last)
     }
     const up = () => {
       handle.removeEventListener('pointermove', move)
       handle.removeEventListener('pointerup', up)
-      localStorage.setItem(STORAGE_KEY, String(Math.round(last * 10) / 10))
+      localStorage.setItem(STORAGE_KEY, String(last))
     }
     handle.addEventListener('pointermove', move)
     handle.addEventListener('pointerup', up)
@@ -40,15 +43,15 @@ export function Split({ left, right, defaultSize = 24, min = 16, max = 45 }: {
 
   return (
     <div ref={box} className="flex min-h-0 flex-1">
-      <div className="flex min-h-0 min-w-0 flex-col" style={{ width: `${size}%` }}>{left}</div>
+      <div className="flex min-h-0 shrink-0 flex-col" style={{ width: size }}>{left}</div>
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-valuenow={Math.round(size)}
+        aria-valuenow={size}
         onPointerDown={onPointerDown}
-        className="group relative w-px shrink-0 cursor-col-resize bg-border"
+        className="group relative w-px shrink-0 cursor-col-resize"
       >
-        <div className="absolute inset-y-0 -left-1.5 -right-1.5 group-hover:bg-primary/10" />
+        <div className="absolute inset-y-0 -left-1 -right-1 transition-colors group-hover:bg-primary/15" />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">{right}</div>
     </div>

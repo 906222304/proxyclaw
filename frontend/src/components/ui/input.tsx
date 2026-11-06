@@ -1,11 +1,15 @@
 import { forwardRef, type InputHTMLAttributes } from 'react'
 import { cn } from '@/lib/utils'
 
-export const inputClass = cn(
-  'h-9 w-full rounded-lg border border-border bg-input px-3 text-sm text-foreground',
-  'placeholder:text-muted-foreground/70 outline-none transition-colors',
-  'focus:border-ring/60 focus:ring-2 focus:ring-ring/20 disabled:opacity-50',
+/** Shared field look (magpie): borderless filled pill, inset accent ring on focus. */
+export const fieldClass = cn(
+  'rounded-md border-0 bg-field text-foreground outline-none',
+  'transition-[background-color,box-shadow] duration-150 hover:bg-field-hover',
+  'focus:bg-field focus:ring-1 focus:ring-inset focus:ring-primary',
+  'disabled:pointer-events-none disabled:opacity-50',
 )
+
+export const inputClass = cn(fieldClass, 'h-control w-full px-2.5 text-xs placeholder:text-faint')
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => <input ref={ref} className={cn(inputClass, className)} {...props} />,

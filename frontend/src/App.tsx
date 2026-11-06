@@ -1,6 +1,6 @@
 import * as Tabs from '@radix-ui/react-tabs'
 import { useQuery } from '@tanstack/react-query'
-import { Copy, Minus, Moon, Settings, Square, Sun, Waypoints, Wifi, ListChecks, X } from 'lucide-react'
+import { Copy, Minus, Moon, Square, Sun, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Toaster } from 'sonner'
 import { useDeleteRules, useSaveRule, type RulePayload } from '@/api/mutations'
@@ -11,25 +11,23 @@ import appIcon from '@/assets/proxyclaw-icon.png'
 import { AutoRules } from '@/components/AutoRules'
 import { ConfigEditor } from '@/components/ConfigEditor'
 import { NetworkActivities } from '@/components/NetworkActivities'
-import { ProcessContextHeader } from '@/components/ProcessContextHeader'
 import { ProcessTree } from '@/components/ProcessTree'
 import { ProxiesTab } from '@/components/ProxiesTab'
 import { RuleEditorDialog } from '@/components/RuleEditorDialog'
 import { Split } from '@/components/ui/split'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
 import { useDocumentVisibility } from '@/hooks/useDocumentVisibility'
 import { toggleTheme, useIsDark } from '@/hooks/useTheme'
 import { dirOf, exeFromCmdline, findInTree } from '@/lib/process'
 import { pushError } from '@/lib/toast'
 import { cn } from '@/lib/utils'
-import { PROXYCLAW_VERSION } from '@/version'
 
 type TabKey = 'network' | 'rules' | 'proxies' | 'settings'
-const TABS: { key: TabKey; label: string; icon: typeof Wifi }[] = [
-  { key: 'network', label: '网络活动', icon: Wifi },
-  { key: 'rules', label: '规则', icon: ListChecks },
-  { key: 'proxies', label: '代理', icon: Waypoints },
-  { key: 'settings', label: '设置', icon: Settings },
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'network', label: '网络' },
+  { key: 'rules', label: '规则' },
+  { key: 'proxies', label: '代理' },
+  { key: 'settings', label: '设置' },
 ]
 
 function windowCmd(cmd: 'minimize' | 'maximize' | 'close') {
@@ -110,77 +108,94 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-screen w-full flex-col overflow-hidden bg-background text-foreground">
-        <header className="titlebar flex h-10 shrink-0 select-none items-center justify-between border-b border-border">
-          <div className="no-drag flex items-center gap-2 pl-4">
-            <img src={appIcon} className="size-5 object-contain" alt="ProxyClaw" />
-            <span className="text-sm font-semibold">ProxyClaw</span>
-            <span className="text-xs text-muted-foreground">v{PROXYCLAW_VERSION}</span>
+      <Tabs.Root
+        value={tab}
+        onValueChange={v => setTab(v as TabKey)}
+        className="flex h-screen w-full flex-col overflow-hidden bg-background text-foreground"
+      >
+        {/* One 44px bar: brand, centred tabs, status + window controls. The
+            whole bar drags the window; interactive parts opt out. */}
+        <header className="titlebar flex h-11 shrink-0 items-center bg-background">
+          <div className="aa-gray flex min-w-0 flex-1 basis-0 items-center gap-2 pl-3.5">
+            <img src={appIcon} className="size-4.5 object-contain" alt="" />
+            <span className="truncate text-xs font-semibold">ProxyClaw</span>
           </div>
-          <div className="no-drag flex h-full items-center text-muted-foreground [&>button]:h-full [&>button]:px-3 [&>button]:transition-colors">
-            <button type="button" onClick={toggleTheme} title="切换主题" className="hover:bg-muted hover:text-foreground">
-              {dark ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
-            </button>
-            <button type="button" onClick={() => windowCmd('minimize')} title="最小化" className="hover:bg-muted hover:text-foreground">
-              <Minus className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => windowCmd('maximize')} title="最大化 / 还原" className="hover:bg-muted hover:text-foreground">
-              {maximized ? <Copy className="size-3" /> : <Square className="size-3" />}
-            </button>
-            <button type="button" onClick={() => windowCmd('close')} title="关闭" className="hover:bg-red-500 hover:text-white">
-              <X className="size-3.5" />
-            </button>
+
+          {/* aa-gray: own transparent layer -> grayscale AA, no ClearType fringes on CJK */}
+          <Tabs.List aria-label="主导航" className="aa-gray no-drag flex shrink-0 items-center gap-0.5">
+            {TABS.map(({ key, label }) => (
+              <Tabs.Trigger
+                key={key}
+                value={key}
+                className={cn(
+                  'flex h-7 items-center gap-1.5 rounded-md px-3 text-xs text-muted-foreground transition-[background-color,color,box-shadow,scale] duration-150 active:scale-97',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
+                  'data-[state=inactive]:hover:bg-field data-[state=inactive]:hover:text-foreground-2',
+                  'data-[state=active]:bg-card data-[state=active]:font-medium data-[state=active]:text-foreground data-[state=active]:shadow-sm dark:data-[state=active]:bg-hover',
+                )}
+              >
+                {label}
+                {key === 'rules' && rulesCount > 0 && (
+                  <span className="tabular text-2xs font-normal text-faint">{rulesCount}</span>
+                )}
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
+
+          <div className="aa-gray flex h-full min-w-0 flex-1 basis-0 items-center justify-end">
+            <Tooltip content={connected ? '代理引擎已连接 · 监听端口 18080' : '未连接到代理引擎'} side="bottom">
+              <span
+                tabIndex={0}
+                data-connected={connected}
+                aria-label={connected ? '已连接' : '未连接'}
+                className="no-drag mr-1 flex h-6 items-center gap-1.5 rounded-md px-2 text-2xs text-muted-foreground hover:bg-field"
+              >
+                <span className={cn('size-1.5 rounded-full', connected ? 'bg-success' : 'bg-destructive')} />
+                <span className="tabular">18080</span>
+              </span>
+            </Tooltip>
+            <div className="no-drag flex h-full items-center text-muted-foreground [&>button]:inline-flex [&>button]:h-full [&>button]:w-11 [&>button]:items-center [&>button]:justify-center [&>button]:transition-colors [&>button]:duration-150">
+              <button type="button" onClick={toggleTheme} title="切换主题" className="hover:bg-field hover:text-foreground">
+                {dark ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
+              </button>
+              <button type="button" onClick={() => windowCmd('minimize')} title="最小化" className="hover:bg-field hover:text-foreground">
+                <Minus className="size-3.5" />
+              </button>
+              <button type="button" onClick={() => windowCmd('maximize')} title="最大化 / 还原" className="hover:bg-field hover:text-foreground">
+                {maximized ? <Copy className="size-3" /> : <Square className="size-3" />}
+              </button>
+              <button type="button" onClick={() => windowCmd('close')} title="关闭" className="hover:bg-titlebar-close hover:text-white">
+                <X className="size-3.5" />
+              </button>
+            </div>
           </div>
         </header>
 
-        <Split
-          left={<ProcessTree selectedPid={selectedPid} onSelect={setSelectedPid} />}
-          right={
-            <Tabs.Root value={tab} onValueChange={v => setTab(v as TabKey)} className="flex min-h-0 flex-1 flex-col bg-background">
-              <Tabs.List aria-label="主导航" className="flex shrink-0 items-center gap-1 px-5 pt-3 pb-3">
-                {TABS.map(({ key, label, icon: Icon }) => (
-                  <Tabs.Trigger
-                    key={key}
-                    value={key}
-                    className={cn(
-                      'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-muted-foreground transition-colors',
-                      'hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm',
-                    )}
-                  >
-                    <Icon className="size-4" />
-                    {label}
-                    {key === 'rules' && rulesCount > 0 && (
-                      <span className="rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground">{rulesCount}</span>
-                    )}
-                  </Tabs.Trigger>
-                ))}
-              </Tabs.List>
-
-              <Tabs.Content value="network" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-                <ProcessContextHeader process={selectedProcess} onCreateRule={onCreateRuleFromProcess} />
-                <NetworkActivities selectedPid={selectedPid} />
-              </Tabs.Content>
-              <Tabs.Content value="rules" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-                <AutoRules onAdd={() => openRuleDialog(null)} onEdit={r => openRuleDialog(r)} />
-              </Tabs.Content>
-              <Tabs.Content value="proxies" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-                <ProxiesTab />
-              </Tabs.Content>
-              <Tabs.Content value="settings" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-                <ConfigEditor />
-              </Tabs.Content>
-            </Tabs.Root>
-          }
-        />
-
-        <footer className="flex h-7 shrink-0 select-none items-center justify-between border-t border-border px-4 text-[11px] text-muted-foreground">
-          <span>监听端口 <span className="font-mono text-foreground/80">18080</span></span>
-          <span className="flex items-center gap-1.5">
-            <span className={cn('size-1.5 rounded-full', connected ? 'bg-emerald-500' : 'bg-red-500')} />
-            {connected ? '已连接' : '未连接'}
-          </span>
-        </footer>
-      </div>
+        {/* aa-gray on each (transparent) panel: grayscale AA for all page text */}
+        <Tabs.Content value="network" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+          <Split
+            left={<ProcessTree selectedPid={selectedPid} onSelect={setSelectedPid} />}
+            right={
+              <div className="mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4">
+                <NetworkActivities
+                  selectedPid={selectedPid}
+                  process={selectedProcess}
+                  onCreateRule={onCreateRuleFromProcess}
+                />
+              </div>
+            }
+          />
+        </Tabs.Content>
+        <Tabs.Content value="rules" className="aa-gray view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
+          <AutoRules onAdd={() => openRuleDialog(null)} onEdit={r => openRuleDialog(r)} />
+        </Tabs.Content>
+        <Tabs.Content value="proxies" className="aa-gray view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
+          <ProxiesTab onEditRule={r => openRuleDialog(r)} />
+        </Tabs.Content>
+        <Tabs.Content value="settings" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+          <ConfigEditor />
+        </Tabs.Content>
+      </Tabs.Root>
 
       <RuleEditorDialog
         open={ruleDialog.open}

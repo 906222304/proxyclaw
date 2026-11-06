@@ -5,7 +5,8 @@ import { memo, useMemo, useRef, useState } from 'react'
 import { hijackProcess, unhijackProcess } from '@/api/client'
 import { activityQuery, isActive, useProcessTree } from '@/api/queries'
 import { ProcessIcon } from '@/components/ProcessIcon'
-import { Badge, Segmented } from '@/components/ui/misc'
+import { Segmented } from '@/components/ui/misc'
+import { HijackDot } from '@/components/ProcessContextHeader'
 import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
@@ -15,9 +16,9 @@ import {
 import { pushError } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
-const ROW_HEIGHT = 28
+const ROW_HEIGHT = 30
 // One indent step; the cap (MAX_INDENT_DEPTH) bounds the total to 55 px so
-// deep names still fit the ~247 px sidebar.
+// deep names still fit the 240 px sidebar.
 const INDENT = 11
 // Guide-line x offset inside a step: centre of the 14 px chevron gutter.
 const LINE_X = 7
@@ -84,27 +85,27 @@ export function ProcessTree({ selectedPid, onSelect }: {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="space-y-2 px-3 pt-3 pb-2">
+      <div className="space-y-1.5 px-3 pt-1 pb-2">
         <SearchInput value={query} onChange={setQuery} placeholder="搜索 PID 或进程名称…" />
-        <Segmented value={filter} onChange={setFilter} options={FILTERS} className="flex w-full" />
+        <Segmented value={filter} onChange={setFilter} options={FILTERS} size="sm" className="flex w-full" />
       </div>
 
       <button
         type="button"
         onClick={() => onSelect(undefined)}
         className={cn(
-          'mx-2 mb-1 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
-          selectedPid == null ? 'bg-selected font-medium text-primary' : 'text-muted-foreground hover:bg-muted',
+          'mx-2 mb-1 flex h-7.5 items-center gap-2 rounded-md px-2.5 text-xs transition-colors duration-150',
+          selectedPid == null ? 'bg-selected font-medium text-foreground [&>svg]:text-primary' : 'text-foreground-2 hover:bg-field',
         )}
       >
-        <Monitor className="size-4" />
+        <Monitor className="size-3.5" />
         全部进程
-        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{total}</span>
+        <span data-testid="process-count" className="tabular ml-auto text-2xs text-muted-foreground">{total}</span>
       </button>
 
       <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 select-none overflow-y-auto overflow-x-hidden px-2 pb-3">
         {rows.length === 0 ? (
-          <div className="px-3 py-4 text-center text-xs text-muted-foreground">没有找到进程。</div>
+          <div className="px-3 py-8 text-center text-2xs text-muted-foreground">没有找到进程</div>
         ) : (
           <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
             <div style={{ transform: `translateY(${items[0]?.start ?? 0}px)` }}>
@@ -133,8 +134,10 @@ export function ProcessTree({ selectedPid, onSelect }: {
   )
 }
 
-const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/60' : 'bg-border')
-const dashClass = (on: boolean) => (on ? 'border-muted-foreground/60' : 'border-border')
+// Guide lines are drawn only for subtrees with network activity; idle
+// branches stay unlined so the tree reads as a plain list.
+const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/45' : 'bg-transparent')
+const dashClass = (on: boolean) => (on ? 'border-muted-foreground/50' : 'border-transparent')
 
 const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, onSelect, onToggle, onHack, onUnhack }: {
   row: FlatRow
@@ -152,19 +155,20 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   const elbowX = (level - 1) * INDENT + LINE_X
   const manual = node.hijack_source === 'manual'
   const auto = node.hijack_source === 'auto'
+  const idle = !selected && !active
   const showHack = !node.hijacked && !auto
   const subtreeOn = activeSubtree.has(node.pid)
-  // Text dims on self-idle; the icon dims only when the whole subtree is idle.
-  const textDim = !selected && !active ? 'opacity-50' : ''
-  const iconDim = !selected && !subtreeOn ? 'opacity-50' : ''
+  // Idle text is muted (not faded); the icon greys only when the whole
+  // subtree is idle.
+  const iconDim = !selected && !subtreeOn ? 'grayscale' : ''
 
   return (
     <div
       className={cn(
-        'group relative flex cursor-pointer items-center rounded-md pr-2 transition-colors',
+        'group relative flex items-center rounded-md pr-2 transition-colors duration-100',
         selected
-          ? active ? 'bg-selected' : 'bg-muted'
-          : matched ? 'bg-amber-400/15' : 'hover:bg-muted',
+          ? active ? 'bg-selected' : 'bg-hover'
+          : 'hover:bg-field',
       )}
       style={{ height: ROW_HEIGHT, paddingLeft: level * INDENT }}
       title={(node.cmdline || node.name) + (compressed ? `\n（第 ${depth} 层）` : '')}
@@ -206,7 +210,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         onClick={e => { e.stopPropagation(); if (hasChildren) onToggle(node.pid) }}
       >
         {hasChildren && (
-          <span className={cn('rounded p-0.5 hover:bg-border', subtreeOn ? 'text-foreground/80' : 'text-muted-foreground')}>
+          <span className={cn('rounded-sm p-0.5 hover:bg-field-hover', subtreeOn ? 'text-foreground-2' : 'text-faint')}>
             {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           </span>
         )}
@@ -214,19 +218,16 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
 
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
         <ProcessIcon name={node.name} className={cn('size-4', iconDim)} />
-        {node.hijacked && (
-          <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title={manual ? '手动代理' : '自动代理'} />
-        )}
         <span className={cn(
-          'min-w-0 truncate font-mono tracking-tight',
-          depth === 0 ? 'text-[13px]' : 'text-xs',
-          selected ? 'font-semibold text-primary' : 'text-foreground',
-          textDim,
+          'min-w-0 truncate text-xs',
+          selected ? 'font-medium text-foreground' : idle ? 'text-muted-foreground' : 'text-foreground',
+          matched && 'font-semibold text-foreground',
         )} title={node.name}>
           {node.name}
         </span>
-        {manual && <Badge tone="green" className="h-4 px-1 text-[10px]">手动</Badge>}
-        {auto && <Badge tone="blue" className="h-4 px-1 text-[10px]">自动</Badge>}
+        {node.hijacked && (manual || auto
+          ? <HijackDot source={node.hijack_source} />
+          : <span className="size-1.5 shrink-0 rounded-full bg-success" title="已代理" />)}
         {/* The hover-only hack button sits on top of the PID (which fades out)
             instead of taking width, so hovering never squeezes the name. */}
         <span className="relative ml-auto flex shrink-0 items-center pl-1.5">
@@ -236,7 +237,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
                 type="button"
                 aria-label="启用代理"
                 onClick={e => { e.stopPropagation(); onHack(node.pid) }}
-                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-border hover:text-amber-500 group-hover:opacity-100 focus-visible:opacity-100"
+                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-field-hover hover:text-warning group-hover:opacity-100 focus-visible:opacity-100"
               >
                 <Zap className="size-3.5" />
               </button>
@@ -248,17 +249,16 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
                 type="button"
                 aria-label="取消代理"
                 onClick={e => { e.stopPropagation(); onUnhack(node.pid) }}
-                className="mr-1 flex size-6 items-center justify-center rounded text-emerald-500 transition hover:bg-border hover:text-red-500"
+                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-success opacity-0 transition hover:bg-field-hover hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
               >
                 <ZapOff className="size-3.5" />
               </button>
             </Tooltip>
           )}
           <span className={cn(
-            'font-mono text-[11px] transition',
-            selected ? 'text-primary' : 'text-muted-foreground',
-            textDim,
-            showHack && 'group-hover:opacity-0 peer-focus-visible:opacity-0',
+            'tabular text-2xs transition',
+            selected ? 'text-primary' : 'text-faint',
+            (showHack || manual) && 'group-hover:opacity-0 peer-focus-visible:opacity-0',
           )}>
             {node.pid}
           </span>

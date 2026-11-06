@@ -17,6 +17,13 @@ const rows = [
 ]
 
 describe('sorting', () => {
+  it('keeps PID and protocol sortable through the folded columns', () => {
+    const [proc, remote] = columnsFor(true)
+    expect(proc!.sub?.key).toBe('pid')
+    expect(remote!.sub?.key).toBe('protocol')
+    expect(columnsFor(false)[0]!.sub?.key).toBe('protocol')
+  })
+
   it('cycles asc → desc → none per column and restarts on a new column', () => {
     let s = nextSort(null, 'pid')
     expect(s).toEqual({ key: 'pid', dir: 'asc' })

@@ -114,7 +114,7 @@ function Help({ children }: { children: ReactNode }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-4">
-      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      <h3 className="text-2xs font-semibold text-muted-foreground">{title}</h3>
       {children}
     </section>
   )
@@ -124,7 +124,7 @@ function GroupChip({ group }: { group: ProxyGroup }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
       <span className="font-medium">{group.name}</span>
-      <span className="truncate font-mono text-xs text-muted-foreground">socks5://{group.host}:{group.port}</span>
+      <span className="tabular truncate text-xs text-muted-foreground">socks5://{group.host}:{group.port}</span>
     </span>
   )
 }
@@ -217,7 +217,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
         </Button>
       </>}
     >
-      <form className="space-y-7 pt-2" onSubmit={e => { e.preventDefault(); void submit() }}>
+      <form className="space-y-7" onSubmit={e => { e.preventDefault(); void submit() }}>
         <Section title="基本信息">
           <div className="space-y-1.5">
             <Label htmlFor={`${ids}-name`} hint={<Help>规则的显示名称，仅用于识别。</Help>}>规则名称</Label>
@@ -233,10 +233,10 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             </div>
             <div className="flex gap-2">
               <div className="relative flex-1">
-                <Cpu className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input id={`${ids}-proc`} className="pl-9 font-mono" {...register('processName')} />
+                <Cpu className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input id={`${ids}-proc`} className="pl-8" {...register('processName')} />
               </div>
-              <Button onClick={onBrowse}><FolderOpen className="size-4" /> 浏览</Button>
+              <Button size="sm" onClick={onBrowse}><FolderOpen /> 浏览</Button>
               <input
                 ref={fileInput}
                 type="file"
@@ -254,12 +254,12 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
                 }}
               />
             </div>
-            <div className={cn('mt-1 flex items-center gap-3 rounded-lg bg-muted px-3 py-2', !useWorkDir && 'opacity-50')}>
-              <Lock className="size-4 shrink-0 text-muted-foreground" />
+            <div className={cn('flex h-control items-center gap-2 rounded-md bg-muted pl-2.5 pr-1.5', !useWorkDir && 'opacity-60')}>
+              <Lock className="size-3.5 shrink-0 text-muted-foreground" />
               <input
                 readOnly
                 aria-label="程序所在目录"
-                className="flex-1 select-all bg-transparent font-mono text-xs text-muted-foreground outline-none"
+                className="min-w-0 flex-1 select-all bg-transparent text-xs text-muted-foreground outline-none"
                 placeholder="选择程序后自动填写"
                 {...register('workDir')}
               />
@@ -278,10 +278,10 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
               <span className="text-xs text-muted-foreground">关键词或通配符</span>
             </div>
             <div className="relative">
-              <Terminal className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Terminal className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id={`${ids}-cmd`}
-                className="pl-9 font-mono"
+                className="pl-8"
                 {...register('cmdlinePattern', {
                   onChange: e => { if ((e.target as HTMLInputElement).value) setValue('useWorkDir', true) },
                 })}
@@ -334,7 +334,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
                     else { setValue('custom', false); field.onChange(v) }
                   }}
                   display={custom
-                    ? <span className="flex items-center gap-2"><span className="font-medium">自定义</span><span className="font-mono text-xs text-muted-foreground">{customHost || '—'}</span></span>
+                    ? <span className="flex items-center gap-2"><span className="font-medium">自定义</span><span className="tabular text-xs text-muted-foreground">{customHost || '—'}</span></span>
                     : selectedGroup ? <GroupChip group={selectedGroup} /> : <span className="text-muted-foreground">选择代理组…</span>}
                   options={[
                     ...groups.map(g => ({ value: String(g.id), label: <GroupChip group={g} /> })),
@@ -345,9 +345,9 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             />
             {custom && (
               <div className="flex overflow-hidden rounded-lg border border-border focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20">
-                <span className="flex items-center bg-muted px-3 font-mono text-xs text-muted-foreground">socks5://</span>
+                <span className="flex items-center bg-muted px-3 text-xs text-muted-foreground">socks5://</span>
                 <input
-                  className="flex-1 bg-input px-3 py-2 font-mono text-sm outline-none"
+                  className="tabular flex-1 bg-input px-3 py-1.5 text-xs outline-none"
                   spellCheck={false}
                   autoComplete="off"
                   placeholder="127.0.0.1:7890"

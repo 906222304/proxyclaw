@@ -27,7 +27,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 40
     outputs:
       tag: ${{ steps.metadata.outputs.tag }}
       publish: ${{ steps.metadata.outputs.publish }}
@@ -129,6 +129,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/ui_webview2_screenshots.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/ui-screenshots
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: API e2e test (packaged app)
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          python -m pip install --disable-pip-version-check -q requests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/e2e_api_test.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stress smoke (packaged app, bounded)
+        shell: pwsh
+        timeout-minutes: 4
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          New-Item -ItemType Directory -Force build/stress | Out-Null
+          python -u tests/stress_backend.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --ci --duration 45 --summary-json build/stress/stress-summary.json 2>&1 | Tee-Object -FilePath build/stress/stress-output.txt
+          $code = $LASTEXITCODE
+          if (Test-Path build/stress/stress-summary.json) { Get-Content build/stress/stress-summary.json | Write-Output }
+          exit $code
+      - name: Upload stress summary
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: stress-summary
+          path: build/stress/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload UI screenshots
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

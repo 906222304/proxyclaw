@@ -2,12 +2,26 @@
 ProxyClaw E2E API Test
 =====================
 Tests the core flow: rule creation → process hijack → traffic interception → proxy routing.
-Requires: ProxyClaw running (admin), SOCKS5 proxy (fclash on 7890).
 
-Usage:
-    python e2e_api_test.py
+Two modes:
+
+* Attach (local dev): proxyclaw.exe already running elevated on :18080 with
+  the same PROXYCLAW_API_TOKEN, plus a real SOCKS5 proxy on 127.0.0.1:7890
+  whose exit IP differs from the direct one. Routing is judged by exit IP.
+
+      python tests/e2e_api_test.py [-k SUBSTR]
+
+* Launch (CI): --exe starts proxyclaw.exe itself (elevated shell required)
+  with a throwaway config whose default group points at a recording SOCKS5
+  server run in-process (tests/e2e_rule_policy.py's Socks5Server). Routing is
+  judged by whether that server saw the probe's CONNECT, so no external
+  proxy or second exit IP is needed.
+
+      python tests/e2e_api_test.py --exe dist/<pkg>/proxyclaw.exe
 """
 
+import ctypes
+import json
 import os
 import pathlib
 import queue
@@ -30,6 +44,12 @@ from typing import Iterator
 BASE = "http://127.0.0.1:18080/api"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 7890
+
+# Launch mode (--exe): in-process recording SOCKS5 server; routing verdicts
+# come from its CONNECT log instead of the exit IP.
+RECORDER = None
+RECORDER_URL = "http://1.1.1.1/"
+RECORDER_DST = ("1.1.1.1", 80)
 
 # Traffic probe: a private copy of curl.exe under a name only this suite
 # matches. The user's own instance usually carries a `curl.exe` rule; the
@@ -321,6 +341,10 @@ def _resolve_ip_oracle() -> dict:
     global _oracle
     if _oracle is not None:
         return _oracle
+    if RECORDER is not None:
+        _oracle = {"url": RECORDER_URL, "direct_ip": "direct", "proxy_ip": "proxy"}
+        print(f"    oracle: {RECORDER_URL} judged by the recording SOCKS5 server")
+        return _oracle
     override = os.environ.get("PROXYCLAW_E2E_IP_URL")
     candidates = [override] if override else IP_URL_CANDIDATES
     tried = []
@@ -355,7 +379,23 @@ def _parking_stats() -> dict | None:
     return s.get("tcp_syn_parking")
 
 
+def _reset_routing() -> None:
+    if RECORDER is not None:
+        RECORDER.take()
+
+
 def _assert_all_exit(results: list[tuple[int, str]], want_ip: str, label: str) -> None:
+    if RECORDER is not None:
+        time.sleep(0.3)
+        seen = sum(1 for d in RECORDER.take() if d == RECORDER_DST)
+        n = len(results)
+        bad_rc = [(i, rc) for i, (rc, _) in enumerate(results) if rc != 0]
+        want = n if want_ip == "proxy" else 0
+        print(f"    {label}: {n - len(bad_rc)}/{n} completed, "
+              f"{seen}/{n} seen by SOCKS5 (want {want})")
+        assert not bad_rc, f"probes failed: {bad_rc[:10]}"
+        assert seen == want, f"{seen}/{n} probes went via the proxy, expected {want}"
+        return
     bad = [(i, rc, ip) for i, (rc, ip) in enumerate(results) if ip != want_ip]
     n = len(results)
     print(f"    {label}: {n - len(bad)}/{n} exit={want_ip}")
@@ -394,6 +434,7 @@ CTRL_N  = 5
 def test_probe_sequential():
     o = _resolve_ip_oracle()
     before = _parking_stats()
+    _reset_routing()
     results = [_run_probe(o["url"]) for _ in range(SEQ_N)]
     _assert_all_exit(results, o["proxy_ip"], "sequential")
     _assert_parking_delta(before, SEQ_N)
@@ -403,6 +444,7 @@ def test_probe_sequential():
 def test_probe_burst():
     o = _resolve_ip_oracle()
     before = _parking_stats()
+    _reset_routing()
     procs = [_spawn_probe(o["url"]) for _ in range(BURST_N)]
     results = [_finish_probe(p) for p in procs]
     _assert_all_exit(results, o["proxy_ip"], "burst")
@@ -422,6 +464,7 @@ def test_probe_rule_disabled_goes_direct():
     assert r.status_code == 200, f"disable failed: {r.status_code} {r.text}"
     try:
         time.sleep(0.3)
+        _reset_routing()
         results = [_run_probe(o["url"]) for _ in range(CTRL_N)]
         _assert_all_exit(results, o["direct_ip"], "rule disabled")
     finally:
@@ -1023,20 +1066,86 @@ def test_dns_proxy_roundtrip():
 # Runner
 # ============================================================
 
-if __name__ == "__main__":
+def _launch(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]:
+    """Start proxyclaw.exe with a throwaway config routed at RECORDER."""
+    global PROXY_PORT, LOG_PATH
+    PROXY_PORT = RECORDER.port
+    LOG_PATH = exe.parent / "proxyclaw.log"
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pc_e2e_api_"))
+    config = {
+        "version": 2,
+        "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": PROXY_PORT},
+        "proxy_groups": [
+            {"id": 0, "name": "default", "host": "127.0.0.1", "port": PROXY_PORT,
+             "type": "socks5", "test_url": "http://1.1.1.1/"},
+        ],
+        "next_group_id": 1,
+        "auto_rules": [],
+        "log_level": "debug",
+        "dns": {"enabled": False},
+    }
+    cfg_path = work / "proxyclaw.json"
+    cfg_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    proc = subprocess.Popen([str(exe), "--minimized", "--config", str(cfg_path)],
+                            cwd=exe.parent, env=dict(os.environ))
+    deadline = time.time() + 30
+    while True:
+        if proc.poll() is not None:
+            raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
+        try:
+            if requests.get(f"{BASE}/stats", timeout=2).status_code == 200:
+                break
+        except Exception:
+            pass
+        if time.time() > deadline:
+            proc.kill()
+            raise RuntimeError("proxyclaw API did not come up in 30s")
+        time.sleep(0.5)
+    time.sleep(2)  # let the WinDivert layers settle
+    return proc, work
+
+
+def main() -> int:
+    global RECORDER
+    import argparse
+    ap = argparse.ArgumentParser(description="ProxyClaw E2E API test")
+    ap.add_argument("-k", dest="name_filter", default=None,
+                    help="run only cases whose function name contains SUBSTR")
+    ap.add_argument("--exe", type=pathlib.Path, default=None,
+                    help="launch this proxyclaw.exe (elevated) with a recording SOCKS5 server")
+    args = ap.parse_args()
+    name_filter = args.name_filter.lower() if args.name_filter else None
+
     print("=" * 60)
     print("ProxyClaw E2E API Test")
     print("=" * 60)
 
-    # -k SUBSTR: run only cases whose name contains SUBSTR (case-insensitive).
-    # The rule create/cleanup cases are always kept as setup/teardown.
-    name_filter = None
-    if len(sys.argv) >= 3 and sys.argv[1] == "-k":
-        name_filter = sys.argv[2].lower()
-    elif len(sys.argv) > 1:
-        print("usage: e2e_api_test.py [-k SUBSTR]", file=sys.stderr)
-        sys.exit(2)
+    proc = work = None
+    if args.exe is not None:
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            print("SKIP: --exe needs an elevated shell (WinDivert)")
+            return 2
+        from e2e_rule_policy import Socks5Server
+        RECORDER = Socks5Server()
+        proc, work = _launch(args.exe.resolve())
+    try:
+        return _run(name_filter)
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            if failed and LOG_PATH.exists():
+                print("---- proxyclaw.log ([E]/[W] lines, last 60) ----")
+                lines = [l for l in LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+                         if " [E] " in l or " [W] " in l]
+                print("\n".join(lines[-60:]))
+            shutil.rmtree(work, ignore_errors=True)
 
+
+def _run(name_filter: str | None) -> int:
     # Check connectivity first
     try:
         requests.get(f"{BASE}/stats", timeout=2)
@@ -1044,7 +1153,7 @@ if __name__ == "__main__":
         print(f"\nERROR: Cannot reach ProxyClaw API at {BASE}")
         print(f"  {e}")
         print("\nMake sure proxyclaw.exe is running (admin) on port 18080.")
-        sys.exit(1)
+        return 1
 
     print(f"\nAPI: {BASE}")
     print(f"Proxy: socks5://{PROXY_HOST}:{PROXY_PORT}")
@@ -1109,9 +1218,8 @@ if __name__ == "__main__":
             t()
     finally:
         _remove_probe()
-        # Always restore log_level — verify.py reuses the same proxyclaw.exe
-        # process across phases, and a leftover debug level would persist
-        # into proxyclaw.json on disk via config_store::mutate.
+        # Always restore log_level: in attach mode a leftover debug level
+        # would persist into the user's proxyclaw.json via config_store::mutate.
         try:
             cfg2 = requests.get(f"{BASE}/config").json()
             if cfg2.get("log_level") != original_log_level:
@@ -1128,4 +1236,8 @@ if __name__ == "__main__":
             print(f"  - {e}")
     print(f"{'=' * 60}")
 
-    sys.exit(0 if failed == 0 else 1)
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

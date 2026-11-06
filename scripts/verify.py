@@ -5,10 +5,11 @@ Stages, each with its own wall-clock budget:
   2. native build (cmake --build build --config Release)
   3. unit tests (ctest)
   4. layering checks (scripts/check_layering.py)
-  5. HTTP e2e (tests/run_all.py; launches proxyclaw.exe)
-  6. Playwright + WebView2 e2e (tests/playwright_e2e/run_pw.py via uv)
+  5. real-WinDivert e2e (tests/e2e_rule_policy.py, tests/e2e_api_test.py;
+     each launches its own proxyclaw.exe)
+  6. optional stress smoke (--stress: tests/stress_backend.py --ci, ~1 min)
 
-Stages 5-6 need an administrator shell; skip them with --no-e2e. The build
+Stages 5 and 6 need an administrator shell; skip 5 with --no-e2e. The build
 directory must already be configured (cmake --preset windows).
 """
 from __future__ import annotations
@@ -35,7 +36,8 @@ def run(label: str, seconds: int, command: list[str], cwd: Path = ROOT) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--no-e2e", action="store_true", help="skip the elevated e2e stages")
+    parser.add_argument("--no-e2e", action="store_true", help="skip the elevated e2e stage")
+    parser.add_argument("--stress", action="store_true", help="also run the bounded stress smoke (admin)")
     args = parser.parse_args()
 
     if not (ROOT / "build").is_dir():
@@ -47,10 +49,11 @@ def main() -> None:
     run("unit tests", 300, ["ctest", "--test-dir", "build", "-C", "Release", "--output-on-failure"])
     run("layering checks", 30, [sys.executable, "scripts/check_layering.py"])
     if not args.no_e2e:
-        run("HTTP e2e", 240, [sys.executable, "tests/run_all.py"])
-        if not shutil.which("uv"):
-            sys.exit("FAIL: uv not found on PATH (required for the PEP 723 Playwright script)")
-        run("Playwright e2e", 300, ["uv", "run", "--script", "tests/playwright_e2e/run_pw.py"])
+        run("e2e rule policy", 300, [sys.executable, "tests/e2e_rule_policy.py", "--exe", "build/Release/proxyclaw.exe"])
+        run("e2e API", 300, [sys.executable, "tests/e2e_api_test.py", "--exe", "build/Release/proxyclaw.exe"])
+    if args.stress:
+        run("stress smoke", 180, [sys.executable, "tests/stress_backend.py", "--exe", "build/Release/proxyclaw.exe",
+                                  "--ci", "--duration", "45", "--summary-json", "build/stress/stress-summary.json"])
     print("\nALL GREEN")
 
 

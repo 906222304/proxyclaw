@@ -6,6 +6,10 @@ import { cn } from '@/lib/utils'
 export interface MenuItem {
   label: ReactNode
   icon?: ReactNode
+  /** Faint trailing note, e.g. a caveat about the action. */
+  hint?: ReactNode
+  /** Native tooltip for the item. */
+  title?: string
   onSelect: () => void
   danger?: boolean
   disabled?: boolean
@@ -39,6 +43,7 @@ export function MoreMenu({ items, label = '更多操作', className }: { items: 
               key={i}
               disabled={it.disabled}
               onSelect={it.onSelect}
+              title={it.title}
               className={cn(
                 'flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-xs outline-none data-[disabled]:opacity-50 [&_svg]:size-3.5',
                 it.danger ? 'text-destructive data-[highlighted]:bg-destructive-soft' : 'data-[highlighted]:bg-field',
@@ -46,6 +51,7 @@ export function MoreMenu({ items, label = '更多操作', className }: { items: 
             >
               {it.icon}
               {it.label}
+              {it.hint && <span className="ml-auto pl-4 text-2xs text-faint">{it.hint}</span>}
             </DropdownMenu.Item>
           ))}
         </DropdownMenu.Content>

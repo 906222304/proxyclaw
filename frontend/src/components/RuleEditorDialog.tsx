@@ -5,8 +5,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import * as z from 'zod/mini'
 import { browseExe } from '@/api/client'
-import type { RulePayload } from '@/api/mutations'
-import { proxyGroupsQuery } from '@/api/queries'
+import { useRestoreProcess, type RulePayload } from '@/api/mutations'
+import { autoRulesQuery, proxyGroupsQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
 import type { AutoRule, ProxyGroup, ProxyTarget } from '@/api/types'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,7 @@ import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
 import { TagInput } from './TagInput'
+import { pushError, pushSuccess } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 const schema = z.object({
@@ -384,8 +385,57 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             )}
           </div>
         </Section>
+
+        {rule && <MatchedProcesses ruleId={rule.id} fallback={rule} />}
       </form>
     </Dialog>
+  )
+}
+
+/** Processes the rule matches right now (live from the rule list), sorted excluded-last. */
+export function matchedProcessList(rule: AutoRule | undefined): { pid: number; name: string; excluded: boolean }[] {
+  return [...(rule?.matched_pids ?? [])].sort((a, b) => Number(a.excluded) - Number(b.excluded) || a.name.localeCompare(b.name) || a.pid - b.pid)
+}
+
+/**
+ * Read-only list of the processes an existing rule currently matches.
+ * Excluded ones are dimmed and offer 恢复. Hidden when nothing matches.
+ */
+function MatchedProcesses({ ruleId, fallback }: { ruleId: string; fallback: AutoRule }) {
+  const { data: rules } = useQuery(autoRulesQuery)
+  const live = rules?.find(r => r.id === ruleId) ?? fallback
+  const list = matchedProcessList(live)
+  const restore = useRestoreProcess()
+  if (list.length === 0) return null
+  return (
+    <Section title={`当前匹配的进程（${list.length}）`}>
+      <ul data-testid="rule-matched-processes" className="thin-scrollbar max-h-40 space-y-0.5 overflow-y-auto">
+        {list.map(p => (
+          <li key={p.pid} className={cn('flex h-7 items-center gap-2 rounded-md px-2 text-xs hover:bg-field', p.excluded && 'text-muted-foreground')}>
+            <span className={cn('min-w-0 truncate', p.excluded && 'opacity-60')}>{p.name}</span>
+            <span className={cn('tabular text-2xs text-faint', p.excluded && 'opacity-60')}>PID {p.pid}</span>
+            {p.excluded && (
+              <>
+                <span className="text-2xs text-faint">已排除</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto h-6 px-2 text-2xs"
+                  disabled={restore.isPending}
+                  onClick={() => restore.mutate({ pid: p.pid, ruleIds: [ruleId] }, {
+                    onSuccess: () => pushSuccess(`${p.name} 已恢复代理`),
+                    onError: e => pushError(e, '恢复代理失败'),
+                  })}
+                >
+                  恢复
+                </Button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Section>
   )
 }
 

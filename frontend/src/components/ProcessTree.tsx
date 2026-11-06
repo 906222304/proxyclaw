@@ -3,16 +3,17 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronDown, ChevronRight, Monitor, Zap, ZapOff } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
 import { hijackProcess, unhijackProcess } from '@/api/client'
-import { activityQuery, isActive, useProcessTree } from '@/api/queries'
+import { activityQuery, autoRulesQuery, isActive, useProcessTree } from '@/api/queries'
 import { ProcessIcon } from '@/components/ProcessIcon'
 import { Segmented } from '@/components/ui/misc'
-import { HijackDot } from '@/components/ProcessContextHeader'
+import { ExcludedBadge, HijackDot } from '@/components/ProcessContextHeader'
 import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
   countProcesses, filterTree, flattenTree, matchedPids, rowIndent, subtreeActive,
   type FlatRow, type ProcessFilter,
 } from '@/lib/process'
+import { excludedPids, hijackKind } from '@/lib/exclusion'
 import { pushError } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
@@ -36,6 +37,8 @@ export function ProcessTree({ selectedPid, onSelect }: {
   const queryClient = useQueryClient()
   const processes = useProcessTree()
   const { data: activity } = useQuery(activityQuery(queryClient))
+  const { data: rules } = useQuery(autoRulesQuery)
+  const excluded = useMemo(() => excludedPids(rules), [rules])
 
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ProcessFilter>('all')
@@ -119,6 +122,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
                     active={activeSelf(row.node.pid)}
                     activeSubtree={activeSubtree}
                     matched={matched.has(row.node.pid)}
+                    excluded={!row.node.hijacked && excluded.has(row.node.pid)}
                     onSelect={onSelect}
                     onToggle={toggle}
                     onHack={hack.mutate}
@@ -139,12 +143,13 @@ export function ProcessTree({ selectedPid, onSelect }: {
 const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/45' : 'bg-transparent')
 const dashClass = (on: boolean) => (on ? 'border-muted-foreground/50' : 'border-transparent')
 
-const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, onSelect, onToggle, onHack, onUnhack }: {
+const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, excluded, onSelect, onToggle, onHack, onUnhack }: {
   row: FlatRow
   selected: boolean
   active: boolean
   activeSubtree: Set<number>
   matched: boolean
+  excluded: boolean
   onSelect: (pid: number) => void
   onToggle: (pid: number) => void
   onHack: (pid: number) => void
@@ -153,8 +158,9 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   const { node, depth, hasChildren, expanded, nextSibling } = row
   const { level, compressed, rails } = rowIndent(row)
   const elbowX = (level - 1) * INDENT + LINE_X
-  const manual = node.hijack_source === 'manual'
-  const auto = node.hijack_source === 'auto'
+  const kind = hijackKind(node.hijack_source)
+  const manual = kind === 'manual'
+  const auto = kind === 'auto'
   const idle = !selected && !active
   const showHack = !node.hijacked && !auto
   const subtreeOn = activeSubtree.has(node.pid)
@@ -228,6 +234,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         {node.hijacked && (manual || auto
           ? <HijackDot source={node.hijack_source} />
           : <span className="size-1.5 shrink-0 rounded-full bg-success" title="已代理" />)}
+        {excluded && <ExcludedBadge />}
         {/* The hover-only hack button sits on top of the PID (which fades out)
             instead of taking width, so hovering never squeezes the name. */}
         <span className="relative ml-auto flex shrink-0 items-center pl-1.5">

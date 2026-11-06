@@ -1,6 +1,7 @@
 export type ProxyProtocol = 'socks5' | 'http'
 export type RuleProtocol = 'tcp' | 'udp' | 'both'
-export type HijackSource = 'manual' | 'auto' | ''
+/** 'auto:<rule id>' from current backends; bare 'auto' from older ones. */
+export type HijackSource = 'manual' | 'auto' | '' | `auto:${string}` | `tree:${string}`
 
 export interface ProcessInfo {
   pid: number

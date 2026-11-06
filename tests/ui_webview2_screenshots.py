@@ -79,6 +79,9 @@ def find_app_page(browser, timeout: float = 30):
     raise RuntimeError(f"app page not found among CDP targets: {urls}")
 
 
+TARGET_EXE = "pc-shot-target.exe"
+
+
 def main() -> int:
     # The runner console is cp1252; Playwright errors quote Chinese locators.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -111,6 +114,11 @@ def main() -> int:
              "process_name": "chrome.exe", "proxy_group_id": 0},
             {"id": "ui-shot-2", "name": "Python direct", "enabled": False,
              "process_name": "python.exe", "proxy_group_id": 1},
+            # Matches only the idle helper spawned below (a renamed ping.exe:
+            # ICMP only, so proxying it changes nothing) for the
+            # per-process exclude screenshots.
+            {"id": "ui-shot-3", "name": "Exclude demo", "enabled": True,
+             "process_name": TARGET_EXE, "proxy_group_id": 0},
         ],
         "log_level": "info",
         "dns": {"enabled": False},
@@ -122,6 +130,15 @@ def main() -> int:
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token,
                WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={args.port}")
+    # Long-lived helper process the "Exclude demo" rule matches.
+    target = None
+    try:
+        target_exe = work / TARGET_EXE
+        shutil.copy2(pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "PING.EXE", target_exe)
+        target = subprocess.Popen([str(target_exe), "-n", "900", "127.0.0.1"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        print(f"(exclude demo target not started: {e})")
     proc = subprocess.Popen([str(exe), "--config", str(cfg_path)], cwd=exe.parent, env=env)
 
     console: list[str] = []
@@ -240,6 +257,29 @@ def main() -> int:
             if not path_fit or not path_fit["inside"]:
                 problems.append(f"header exe name clipped: {path_fit}")
             shot("network-selected-process-dark")
+
+            # Per-process exclude: an auto-proxied process offers 此进程不走代理
+            # in the header ⋯ menu; afterwards it shows 已排除 and offers 恢复代理.
+            if target is not None:
+                page.get_by_placeholder("搜索 PID 或进程名称…").fill(TARGET_EXE.removesuffix(".exe"))
+                page.wait_for_timeout(500)
+                page.locator(f'[data-depth] span[title="{TARGET_EXE}"]').first.click(timeout=60000)
+                page.wait_for_timeout(1000)
+                menu = page.get_by_role("button", name="进程操作")
+                menu.click(timeout=30000)
+                item = page.get_by_role("menuitem", name=re.compile("此进程不走代理"))
+                item.wait_for(timeout=10000)
+                shot("network-process-exclude-menu-dark")
+                item.click()
+                header_badge = page.locator('[data-testid="excluded-badge"]')
+                expect(header_badge.first).to_be_visible(timeout=15000)
+                expect(page.locator('[data-testid="excluded-dot"]').first).to_be_visible(timeout=15000)
+                page.wait_for_timeout(600)
+                shot("network-process-excluded-dark")
+                menu.click()
+                page.get_by_role("menuitem", name="恢复代理").click(timeout=10000)
+                expect(header_badge).to_have_count(0, timeout=15000)
+                page.keyboard.press("Escape")
             page.get_by_placeholder("搜索 PID 或进程名称…").fill("")
             page.get_by_role("button", name=re.compile("^全部进程")).first.click()
             page.evaluate("document.querySelectorAll('*').forEach(e => { if (e.scrollLeft) e.scrollLeft = 0 })")
@@ -323,6 +363,8 @@ def main() -> int:
         print(f"FAIL harness: {e!r}")
         rc = 1
     finally:
+        if target is not None and target.poll() is None:
+            target.kill()
         if not close_requested and proc.poll() is None:
             proc.terminate()
         try:

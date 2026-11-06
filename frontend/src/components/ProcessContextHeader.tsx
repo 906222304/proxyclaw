@@ -1,11 +1,17 @@
-import { Check, ChevronDown, ChevronUp, Copy, FolderOpen, Plus } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { Check, ChevronDown, ChevronUp, CircleSlash, Copy, FolderOpen, Plus, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { revealFile } from '@/api/client'
+import { useExcludeProcess, useRestoreProcess } from '@/api/mutations'
+import { autoRulesQuery } from '@/api/queries'
 import type { ProcessInfo } from '@/api/types'
 import { Button } from '@/components/ui/button'
+import { MoreMenu, type MenuItem } from '@/components/ui/menu'
 import { Tooltip } from '@/components/ui/tooltip'
 import { ProcessIcon } from '@/components/ProcessIcon'
+import { excludeActionFor, hijackKind, type ExcludeAction } from '@/lib/exclusion'
 import { dirOf, exeFromCmdline } from '@/lib/process'
+import { pushError, pushSuccess } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 /** Split a process into its directory, exe name and arguments. */
@@ -40,19 +46,54 @@ export function splitDir(cwd: string): { head: string, tail: string } {
 
 /** Hijack source as a small dot; the tooltip names it. */
 export function HijackDot({ source }: { source?: string | null }) {
-  if (source !== 'manual' && source !== 'auto') return null
-  const label = source === 'manual' ? '手动代理' : '自动代理（规则）'
+  const kind = hijackKind(source)
+  if (!kind) return null
+  const label = kind === 'manual' ? '手动代理' : '自动代理（规则）'
   return (
     <Tooltip content={label}>
-      <span aria-label={label} className={cn('size-1.5 shrink-0 rounded-full', source === 'manual' ? 'bg-success' : 'bg-info')} />
+      <span aria-label={label} className={cn('size-1.5 shrink-0 rounded-full', kind === 'manual' ? 'bg-success' : 'bg-info')} />
+    </Tooltip>
+  )
+}
+
+/** Exclusion is runtime-only on the backend; say so wherever it is offered. */
+export const EXCLUDE_HINT = '进程重启后恢复'
+export const EXCLUDED_TOOLTIP = `已排除：此进程不走代理（${EXCLUDE_HINT}）`
+
+/** Small muted "已排除" tag for a process excluded from its auto rule(s). */
+export function ExcludedBadge({ className }: { className?: string }) {
+  return (
+    <Tooltip content={EXCLUDED_TOOLTIP}>
+      <span data-testid="excluded-badge" className={cn('shrink-0 rounded border border-border px-1 text-2xs leading-4 text-muted-foreground', className)}>已排除</span>
     </Tooltip>
   )
 }
 
 /**
+ * Tree-row variant: a hollow ring with the same tooltip, so deep rows keep
+ * their name width.
+ */
+export function ExcludedDot() {
+  return (
+    <Tooltip content={EXCLUDED_TOOLTIP}>
+      <span data-testid="excluded-dot" aria-label="已排除" className="size-1.5 shrink-0 rounded-full border border-muted-foreground" />
+    </Tooltip>
+  )
+}
+
+/** The ⋯ menu entries for the exclude / restore action (none when not applicable). */
+export function excludeMenuItems(action: ExcludeAction | null, run: (a: ExcludeAction) => void, busy = false): MenuItem[] {
+  if (!action) return []
+  return action.kind === 'exclude'
+    ? [{ label: '此进程不走代理', icon: <CircleSlash />, hint: EXCLUDE_HINT, title: `仅对此 PID 生效，不影响子进程；已建立的连接会保持到关闭。${EXCLUDE_HINT}`, onSelect: () => run(action), disabled: busy }]
+    : [{ label: '恢复代理', icon: <Undo2 />, onSelect: () => run(action), disabled: busy }]
+}
+
+/**
  * 48px header row for the selected process: icon, name, sub-line
  * "PID · path args" (copy / reveal actions overlay the path end on hover,
- * taking no width otherwise), and 创建规则.
+ * taking no width otherwise), 创建规则, and a ⋯ menu with 此进程不走代理 /
+ * 恢复代理 when an auto rule matches the process.
  * The path middle-truncates: the directory ellipsizes, the exe name stays,
  * arguments give way first. The expand chevron sits inline right after the path and shows the full
  * command line; copy / reveal actions follow on hover.
@@ -86,6 +127,27 @@ export function ProcessContextHeader({ process, onCreateRule }: {
     try { await revealFile(path) } catch { /* ignore */ }
     setTimeout(() => setLocated(false), 1000)
   }
+  const { data: rules } = useQuery(autoRulesQuery)
+  const action = excludeActionFor(process, rules)
+  const excludeMut = useExcludeProcess()
+  const restoreMut = useRestoreProcess()
+  const busy = excludeMut.isPending || restoreMut.isPending
+  const runAction = (a: ExcludeAction) => {
+    const vars = { pid: process.pid, ruleIds: a.ruleIds }
+    if (a.kind === 'exclude') {
+      excludeMut.mutate(vars, {
+        onSuccess: () => pushSuccess(`${process.name} 已不走代理（${EXCLUDE_HINT}）`),
+        onError: e => pushError(e, '排除进程失败'),
+      })
+    } else {
+      restoreMut.mutate(vars, {
+        onSuccess: () => pushSuccess(`${process.name} 已恢复代理`),
+        onError: e => pushError(e, '恢复代理失败'),
+      })
+    }
+  }
+  const menuItems = excludeMenuItems(action, runAction, busy)
+
   const iconBtn = 'flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-field hover:text-foreground'
 
   return (
@@ -96,6 +158,7 @@ export function ProcessContextHeader({ process, onCreateRule }: {
           <div className="flex items-center gap-1.5">
             <span className="truncate text-sm font-medium">{process.name}</span>
             <HijackDot source={process.hijack_source} />
+            {action?.kind === 'restore' && <ExcludedBadge />}
           </div>
           <div className="relative flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
             <span className="tabular shrink-0">PID {process.pid}</span>
@@ -134,6 +197,7 @@ export function ProcessContextHeader({ process, onCreateRule }: {
         <Button size="sm" variant="ghost" onClick={onCreateRule} title="为此进程创建规则">
           <Plus /> 创建规则
         </Button>
+        {menuItems.length > 0 && <MoreMenu items={menuItems} label="进程操作" />}
       </div>
       {expanded && cmdline && (
         <p className="mb-2 break-all rounded-lg bg-surface-2 px-3 py-2 font-mono text-2xs text-muted-foreground">{cmdline}</p>

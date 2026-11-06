@@ -36,6 +36,19 @@ nlohmann::json rule_entry_to_json(const AutoRule& rule, const flat_tree& tree) {
         p["excluded"] = rule.excluded_pids.contains(pid);
         pids.push_back(std::move(p));
     }
+    // The engine drops an excluded PID from matched_pids, so list live
+    // excluded processes here too (excluded=true) — the UI needs them to
+    // offer 恢复代理. Dead PIDs are skipped: a stale exclusion is invisible.
+    for (DWORD pid : rule.excluded_pids) {
+        if (rule.matched_pids.contains(pid)) continue;
+        uint32_t idx = tree.find_by_pid(pid);
+        if (idx == INVALID_IDX || !tree.at(idx).alive) continue;
+        nlohmann::json p;
+        p["pid"]      = pid;
+        p["name"]     = std::string(tree.at(idx).name_u8);
+        p["excluded"] = true;
+        pids.push_back(std::move(p));
+    }
     rj["matched_pids"] = std::move(pids);
     return rj;
 }

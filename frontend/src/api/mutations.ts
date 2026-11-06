@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { createAutoRule, deleteAutoRule, updateAutoRule } from './client'
+import { createAutoRule, deleteAutoRule, excludePid, unexcludePid, updateAutoRule } from './client'
 import { queryKeys } from './queryKeys'
 import type { AutoRule, ProxyGroup } from './types'
 
@@ -56,6 +56,31 @@ export function useDeleteRules() {
       const drop = new Set(ids)
       qc.setQueryData<AutoRule[]>(queryKeys.autoRules, old => old?.filter(r => !drop.has(r.id)))
     },
+    onSettled: changed,
+  })
+}
+
+/**
+ * Make one process skip the proxy although auto rules match it: exclude the
+ * PID from every rule that matches it. Runtime only (cleared when the
+ * process exits). The backend re-applies rules and pushes a fresh process
+ * tree itself; the rule list (matched_pids / excluded) is refetched here.
+ */
+export function useExcludeProcess() {
+  const changed = useRulesChanged()
+  return useMutation({
+    mutationFn: ({ pid, ruleIds }: { pid: number; ruleIds: string[] }) =>
+      Promise.all(ruleIds.map(id => excludePid(id, pid))),
+    onSettled: changed,
+  })
+}
+
+/** Undo useExcludeProcess for the given rules. */
+export function useRestoreProcess() {
+  const changed = useRulesChanged()
+  return useMutation({
+    mutationFn: ({ pid, ruleIds }: { pid: number; ruleIds: string[] }) =>
+      Promise.all(ruleIds.map(id => unexcludePid(id, pid))),
     onSettled: changed,
   })
 }

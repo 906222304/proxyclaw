@@ -4,6 +4,15 @@
 
 ### Frontend
 
+- Network: per-process exclude. When an auto rule proxies the selected
+  process, the header ⋯ menu offers 此进程不走代理 (excludes that PID from
+  every matching rule; runtime only, 进程重启后恢复) and 恢复代理 to undo
+  it. Excluded processes show an 已排除 tag in the header and a hollow dot
+  (tooltip 已排除) in the process tree;
+  the rule editor lists the processes a rule matches, with 恢复 on excluded
+  ones. The auto-proxy dot now also shows for `auto:<rule>` sources.
+  Backend: `GET /api/auto-rules` now also lists live excluded PIDs in
+  `matched_pids` (`excluded: true`).
 - Layout restructured after magpie: the title bar and tabs are one 44px bar
   (logo, centred tabs 网络 · 规则 · 代理 · 设置, a `● 18080` status chip,
   theme and window buttons). The footer is gone; the version moved to

@@ -30,6 +30,20 @@
   empty states, no text selection on app chrome, monospace only for the
   JSON editor, logs and command lines, 4px spacing grid.
 
+### Docs and CI
+
+- README.md / README.en.md rewritten around the current React UI with new
+  screenshots taken by the CI WebView2 screenshot test; new
+  `docs/ROADMAP.md` (v0.13, v0.14, later). One-off review / fix notes,
+  `docs/history`, `tools/research`, the bundled WinDivert HTML doc,
+  `sonar-project.properties` and the Vue-era screenshots are removed.
+- Local-only test scripts that neither CI nor CTest ran are removed;
+  `scripts/verify.py` runs `tests/e2e_rule_policy.py` as its e2e stage.
+- CI now runs the API e2e test (`tests/e2e_api_test.py --exe`, with a
+  recording SOCKS5 server) and a bounded 45 s stress smoke
+  (`tests/stress_backend.py --ci`) against the packaged app, and uploads a
+  `stress-summary` artifact. Build job timeout raised to 40 minutes.
+
 ## v0.12.0 (2026-11-04)
 
 ### Frontend

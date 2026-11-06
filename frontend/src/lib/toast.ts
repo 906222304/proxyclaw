@@ -10,7 +10,3 @@ export function pushError(e: unknown, prefix?: string) {
 export function pushSuccess(text: string) {
   toast.success(text)
 }
-
-export function pushInfo(text: string) {
-  toast(text)
-}

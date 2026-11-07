@@ -81,6 +81,43 @@ def find_app_page(browser, timeout: float = 30):
 
 TARGET_EXE = "pc-shot-target.exe"
 
+# Page.wait_for_function defaults to requestAnimationFrame polling, and rAF
+# only fires when the compositor produces a frame. Run 42372296123 timed out
+# waiting for #root after the reload although the reloaded app was demonstrably
+# alive (ready handshake, /api polls every few seconds): the predicate was never
+# re-evaluated because no frame was produced for the (CI, possibly occluded)
+# window. Poll on a timer instead so readiness never depends on painting.
+POLL_MS = 200
+
+# Chromium flags that keep an occluded / unfocused CI window rendering at full
+# rate (native occlusion tracking otherwise stops frames, and with them rAF and
+# screenshots).
+RENDER_ARGS = ("--disable-features=CalculateNativeWinOcclusion "
+               "--disable-backgrounding-occluded-windows "
+               "--disable-renderer-backgrounding "
+               "--disable-background-timer-throttling")
+
+DIAG_JS = """async () => {
+  const raf = await Promise.race([
+    new Promise(r => requestAnimationFrame(() => r(true))),
+    new Promise(r => setTimeout(() => r(false), 2000)),
+  ]);
+  const root = document.querySelector('#root');
+  return {url: location.href.replace(/token=[^&#]+/, 'token=***'),
+          readyState: document.readyState, visibility: document.visibilityState,
+          focus: document.hasFocus(), rafFired: raf,
+          root: root ? root.childElementCount : null,
+          scripts: [...document.scripts].map(s => s.src.split('/').pop())};
+}"""
+
+
+def page_diag(page) -> str:
+    """Snapshot of the page state for a failed wait (evaluate does not need rAF)."""
+    try:
+        return json.dumps(page.evaluate(DIAG_JS), ensure_ascii=False)
+    except Exception as e:  # noqa: BLE001
+        return f"diag unavailable: {e!r}"
+
 
 def wait_tree_ready(token: str, proc: subprocess.Popen, timeout: float = 60) -> int:
     """Wait for the backend to report its initial process rundown verified
@@ -154,7 +191,7 @@ def main() -> int:
     cfg_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token,
-               WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={args.port}")
+               WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={args.port} {RENDER_ARGS}")
     # Long-lived helper process the "Exclude demo" rule matches.
     target = None
     try:
@@ -201,7 +238,11 @@ def main() -> int:
             console.append(f"[info] viewport {vp}")
             print(f"viewport (real window client area): {vp}")
 
-            page.wait_for_function("document.querySelector('#root')?.childElementCount > 0", timeout=30000)
+            try:
+                page.wait_for_function("document.querySelector('#root')?.childElementCount > 0",
+                                       polling=POLL_MS, timeout=30000)
+            finally:
+                console.append(f"[info] after reload {page_diag(page)}")
             page.get_by_role("tablist", name="主导航").wait_for(timeout=30000)
             # The title-bar status chip (● 18080) replaced the footer.
             page.locator('[data-connected="true"]').wait_for(timeout=30000)
@@ -216,7 +257,7 @@ def main() -> int:
             want = max(1, int(backend_count * 0.7))
             page.wait_for_function(
                 f"Number(document.querySelector('[data-testid=process-count]')?.textContent) >= {want}",
-                timeout=30000)
+                polling=POLL_MS, timeout=30000)
             settle_start = stable_since = time.time()
             prev = None
             while time.time() - stable_since < 1.5:
@@ -242,7 +283,8 @@ def main() -> int:
                 if page.evaluate("document.documentElement.classList.contains('dark')") != want:
                     page.get_by_title("切换主题").click()
                 page.wait_for_function(
-                    f"document.documentElement.classList.contains('dark') === {str(want).lower()}")
+                    f"document.documentElement.classList.contains('dark') === {str(want).lower()}",
+                    polling=POLL_MS)
 
             def tab(name: str) -> None:
                 page.get_by_role("tab", name=re.compile("^" + name)).click()

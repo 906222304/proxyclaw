@@ -27,6 +27,13 @@
   via GetAdaptersAddresses instead of a cold PowerShell
   `Get-DnsClientServerAddress`; log-scan asserts retry the read until quill
   has flushed.
+- WebView2 screenshot harness: `wait_for_function` polls on a 200 ms timer
+  instead of requestAnimationFrame (run 42372296123 timed out on `#root`
+  after the reload while the reloaded app was alive and polling the API: no
+  frame was produced, so the rAF predicate never re-ran), the CI WebView2
+  is started with occlusion / background throttling disabled, and the page
+  state after the reload (visibility, focus, rAF, `#root` children) is
+  written to console.log.
 
 ## v0.13.0 (2026-11-07)
 

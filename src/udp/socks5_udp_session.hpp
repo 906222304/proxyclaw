@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "config/proxy_host.hpp"
 #include "core/log.hpp"
 #include "proxy/connection_health.hpp"
 
@@ -87,7 +88,7 @@ private:
         if (closing_) throw asio::system_error(asio::error::operation_aborted);
         tcp::resolver resolver(strand_);
         auto endpoints = co_await resolver.async_resolve(
-            proxy_host_, std::to_string(proxy_port_), asio::use_awaitable);
+            normalize_proxy_host(proxy_host_), std::to_string(proxy_port_), asio::use_awaitable);
         if (closing_) throw asio::system_error(asio::error::operation_aborted);
         co_await asio::async_connect(tcp_control_, endpoints, asio::use_awaitable);
         enable_tcp_keepalive(tcp_control_);

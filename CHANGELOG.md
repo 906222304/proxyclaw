@@ -24,6 +24,43 @@
 
 ### Backend
 
+- IPv6 is kept out of the decision path. The TCP SOCKET layer read an IPv6
+  remote's low 32 bits as an IPv4 address, evaluated rules against it and
+  could publish a bogus "proxied" decision for the port (the flow itself
+  went direct). Both SOCKET layers now ignore CONNECTs to real IPv6 remotes
+  and count them; `GET /api/stats` gains `ipv6_unmanaged: {tcp, udp}`. The
+  TCP and UDP NETWORK filters gain `ip and`, so IPv6 packets are no longer
+  diverted to user mode just to be re-injected. IPv6 traffic still goes
+  direct (not proxied).
+- Per-process rule exclusions (此进程不走代理) are runtime state owned by the
+  rule engine, keyed by (pid, process sequence number). They were written
+  into the config copy, only the engine copy was cleaned on process exit,
+  and every later config change copied dead PIDs back, where a recycled PID
+  inherited the exclusion. Now: never persisted or read from the config,
+  kept across rule reloads, dropped on process exit, ignored for a recycled
+  PID. `POST /api/auto-rules/{id}/exclude/{pid}` answers 404 for a process
+  that is not running. The API/UI contract (`excluded: true` in rule JSON)
+  is unchanged.
+- Process tree: children waiting for a not-yet-seen parent (orphans) are
+  tracked by (pid, psn) instead of a tree index that compaction renumbers,
+  which could re-parent an unrelated process (wrong tree-rule inheritance).
+  Orphans now expire after 10 s (also swept after each lost-event rundown)
+  and are capped at 4096; before, they were only flushed once at startup.
+  The tree manager's timers now run on its strand.
+- Proxied TCP :53 (e.g. Chrome's built-in resolver over TCP) is sent to
+  `dns.upstream_host:dns.upstream_port` instead of a hardcoded 8.8.8.8:53,
+  whether or not the DNS proxy is enabled. Falls back to 8.8.8.8:53 (with a
+  log warning) when the upstream is not a usable IPv4 address.
+- Proxy group validation (`POST/PUT /api/proxy-groups`, and `proxy_groups`
+  in `PUT /api/config`): 400 with `details.field` for a port outside
+  1-65535 (70000 used to be stored as 4464), an empty host or `host:port`,
+  a type other than `socks5`, or a non-empty user/password (only SOCKS5
+  without authentication is implemented). `[v6]` hosts are stored without
+  brackets, and the relay, UDP session and speed test resolve the same
+  normalised host.
+- `POST /api/hijack/{pid}` and `/api/hijack/batch` answer 400 for a
+  `group_id` that does not exist, instead of hijacking the process into a
+  group whose connections the relay then drops.
 - Process tree: the initial ETW rundown is now verified against the OS
   process list. A CAPTURE_STATE issued before the real-time consumer had
   attached could be dropped by the kernel, leaving the tree at ~20 of ~150
@@ -52,6 +89,10 @@
 
 ### Frontend
 
+- Proxy group dialog validates the form: port must be an integer 1-65535
+  (no silent fallback to 7890), the host must not be empty or include a
+  port; errors show under the field. The dialog notes that only SOCKS5
+  without authentication is supported.
 - Settings: the autostart switch is disabled with an explanation when the
   install folder is not admin-only, and an existing task that points at an
   unsafe folder shows a warning (turning it off still works).
@@ -60,6 +101,14 @@
   many digits its PID has.
 
 ### Tests / CI
+
+- New CTest `runtime_state_tests`: exclusion keying and PID reuse, orphan
+  resolution after compaction, orphan expiry/cap, group validation, IPv6
+  event classification, TCP :53 upstream selection. `tcp_redirect` checks
+  that the NETWORK filter no longer matches IPv6. e2e: group validation
+  (POST/PUT/config), hijack into a missing group, exclusion surviving a
+  config reload and ending with the process, `ipv6_unmanaged` in stats.
+  vitest: proxy group form validation.
 
 - e2e/screenshot/stress harnesses wait for `tree_ready` instead of sleeping;
   the DELETE <60ms check times only the API round-trip; system DNS is read

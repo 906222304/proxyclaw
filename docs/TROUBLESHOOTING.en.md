@@ -25,7 +25,7 @@ Ordered by how often users actually hit the issue, most common first.
 **Walk through these checks in order**:
 
 1. **Is the rule toggle ON?** New rules default to OFF — you need to flip the switch on. The Rules page shows the state.
-2. **Does the SOCKS5 backend actually work?** Each proxy group has a latency-test button (the small refresh-style icon). Use it to verify the backend is reachable. A failure names the stage: "connect" means the proxy is not listening at that host/port; "handshake" usually means it wants authentication or is not SOCKS5; "remote" means the proxy works but cannot reach the test URL.
+2. **Does the SOCKS5 backend actually work?** Each proxy group has a latency-test button (the small refresh-style icon). Use it to verify the backend is reachable. A failure names the stage: "connect" means the proxy is not listening at that host/port; "handshake" usually means it wants authentication or is not SOCKS5 (ProxyClaw supports SOCKS5 without authentication only; saving a group with type http or a user/password is rejected); "remote" means the proxy works but cannot reach the test URL.
 3. **Process matched but traffic doesn't go through proxy**:
    - Check the `Protocol` field on the rule. If it's TCP only, UDP traffic won't be proxied; pick `Both` for full coverage.
    - Is the destination on a local / loopback network? By design `default_exclude_cidrs` excludes 127/8 + 10/8 + 172.16/12 + 192.168/16 + 169.254/16, so traffic to those ranges stays direct (avoids breaking local services). To proxy a specific intranet range, edit `default_exclude_cidrs` to remove that CIDR.
@@ -76,6 +76,8 @@ The explicit `.exe` suffix avoids collision with PowerShell's built-in `Set-Cont
 3. **Can't get ProxyClaw running / never want to use this feature again**: reset DNS manually — `Control Panel → Network and Sharing Center → Change adapter settings → right-click your network adapter → Properties → IPv4 → Obtain DNS automatically`.
 
 **Root cause to fix**: DNS Proxy startup failure is usually because the upstream is unreachable. `Settings → DNS Proxy → upstream` defaults to `8.8.8.8:53`. If your network blocks 8.8.8.8 (common in some regions), change it to `1.1.1.1:53` or your ISP's DNS.
+
+**TCP port 53 from proxied processes** (e.g. Chrome's built-in resolver falling back to TCP) does not go through the DNS Proxy: the TCP relay sends it to the same `upstream` (`dns.upstream_host:dns.upstream_port`) through that process's proxy group, whether or not DNS Proxy is on. The relay can only use an IPv4 address, so if upstream is a hostname, IPv6, `127.x` or `0.0.0.0`, it falls back to `8.8.8.8:53` and logs a warning. Before v0.13.1 this was always `8.8.8.8:53`, and changing upstream had no effect on it.
 
 ## 5. Reading the log
 

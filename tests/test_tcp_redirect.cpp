@@ -113,7 +113,19 @@ int main() {
         check(!WinDivertHelperEvalFilter(filter.c_str(), reply.bytes.data(), UINT(reply.bytes.size()), &reply.address), "ordinary loopback traffic captured");
         reply.address.Loopback = 0;
         check(WinDivertHelperEvalFilter(filter.c_str(), reply.bytes.data(), UINT(reply.bytes.size()), &reply.address), "non-loopback traffic omitted");
-        std::cout << "PASS localhost TCP handoff: physical/TUN tuples, both localhost addresses, original app address, interface, checksums, payload, port reuse, exclusions, filter\n";
+        // IPv6 is not proxied (v0.13.1): the NETWORK filter must not divert it.
+        std::vector<uint8_t> v6(60, 0);
+        auto* ip6 = reinterpret_cast<PWINDIVERT_IPV6HDR>(v6.data());
+        ip6->Version = 6; ip6->Length = htons(20); ip6->NextHdr = IPPROTO_TCP; ip6->HopLimit = 64;
+        ip6->SrcAddr[0] = htonl(0x20010db8); ip6->SrcAddr[3] = htonl(1);
+        ip6->DstAddr[0] = htonl(0x20010db8); ip6->DstAddr[3] = htonl(2);
+        auto* tcp6 = reinterpret_cast<PWINDIVERT_TCPHDR>(v6.data() + 40);
+        tcp6->SrcPort = htons(app_port); tcp6->DstPort = htons(443); tcp6->HdrLength = 5; tcp6->Syn = 1;
+        WINDIVERT_ADDRESS addr6{};
+        addr6.Outbound = 1; addr6.IPv6 = 1;
+        WinDivertHelperCalcChecksums(v6.data(), UINT(v6.size()), &addr6, 0);
+        check(!WinDivertHelperEvalFilter(filter.c_str(), v6.data(), UINT(v6.size()), &addr6), "IPv6 TCP captured by NETWORK filter");
+        std::cout << "PASS localhost TCP handoff: physical/TUN tuples, both localhost addresses, original app address, interface, checksums, payload, port reuse, exclusions, filter (IPv4 only)\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

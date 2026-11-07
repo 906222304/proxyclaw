@@ -25,6 +25,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include "core/ip_family.hpp"
 #include "core/log.hpp"
 
 #include "process/flat_tree.hpp"
@@ -125,6 +126,8 @@ public:
 
     uint64_t event_count() const { return event_count_; }
     uint64_t match_count() const { return match_count_; }
+    // IPv6 CONNECTs ignored (not proxied). Written on the strand, read by /api/stats.
+    uint64_t ipv6_unmanaged_count() const { return ipv6_unmanaged_count_.load(std::memory_order_relaxed); }
 
 private:
     asio::io_context& ioc_;
@@ -148,6 +151,7 @@ private:
 
     uint64_t event_count_{0};
     uint64_t match_count_{0};
+    std::atomic<uint64_t> ipv6_unmanaged_count_{0};
 
     // ---- Asio IOCP async path ----
 
@@ -229,6 +233,16 @@ private:
                 tracker_.clear(port);
                 notify(port);   // anything still parked for a closed socket goes direct
             }
+            return;
+        }
+
+        // A CONNECT to a real IPv6 remote is not managed: the NETWORK filter
+        // only diverts IPv4, and the per-destination checks read the remote
+        // as IPv4. BIND carries no remote and stays a per-port decision, since
+        // a dual-stack socket bound on the IPv6 layer may still send IPv4.
+        if (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT &&
+            is_unmanaged_ipv6(addr.IPv6 != 0, addr.Socket.RemoteAddr)) {
+            ipv6_unmanaged_count_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 

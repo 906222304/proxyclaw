@@ -260,7 +260,11 @@ nlohmann::json app::traffic_stats() const {
             {"late_rejected",         s.late_rejected},
             {"late_rejected_proxied", s.late_rejected_proxied},
             {"close_while_pending",   s.close_while_pending},
+            {"ipv6_unmanaged",        s.ipv6_unmanaged},
         };
+    }
+    if (wd_socket_udp_) {
+        j["udp_socket"] = {{"ipv6_unmanaged", wd_socket_udp_->ipv6_unmanaged_count()}};
     }
     if (parker_) {
         const auto c = parker_->snapshot();

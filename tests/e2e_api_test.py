@@ -188,6 +188,10 @@ def test_stats():
     data = r.json()
     assert "hijacked_pids" in data
     assert "auto_rules_count" in data
+    # v0.13.1: IPv6 is kept out of the decision path and counted instead.
+    v6 = data.get("ipv6_unmanaged")
+    assert isinstance(v6, dict) and isinstance(v6.get("tcp"), int) \
+        and isinstance(v6.get("udp"), int), f"ipv6_unmanaged missing: {data}"
 
 
 @test("TCP table returns data")
@@ -986,6 +990,146 @@ def test_group_test_endpoint():
     print(f"    group 0 test -> {body}")
 
 
+@test("Proxy group input validation returns 400 (v0.13.1)")
+def test_group_validation():
+    _purge_e2e_groups()
+    before = requests.get(f"{BASE}/proxy-groups").json()
+    bad_bodies = [
+        ({"port": 70000}, "port"),
+        ({"port": 0}, "port"),
+        ({"port": "abc"}, "port"),
+        ({"host": ""}, "host"),
+        ({"host": "127.0.0.1:1080"}, "host"),
+        ({"type": "http"}, "type"),
+        ({"user": "alice", "password": "secret"}, "user"),
+    ]
+    for extra, field in bad_bodies:
+        body = {"name": E2E_GROUP + "_bad", "host": "127.0.0.1", "port": 1080, "type": "socks5"}
+        body.update(extra)
+        r = requests.post(f"{BASE}/proxy-groups", json=body)
+        assert r.status_code == 400, f"{extra}: expected 400, got {r.status_code} {r.text}"
+        err = r.json()
+        assert err.get("details", {}).get("field") == field, f"{extra}: unexpected body {err}"
+    after = requests.get(f"{BASE}/proxy-groups").json()
+    assert len(after) == len(before), "a rejected create still added a group"
+
+    # Valid create; IPv6 brackets are normalised away.
+    r = requests.post(f"{BASE}/proxy-groups", json={
+        "name": E2E_GROUP + "_v6", "host": "[::1]", "port": 1080, "type": "socks5"})
+    assert r.status_code == 200, f"create failed: {r.status_code} {r.text}"
+    gid = r.json()["id"]
+    try:
+        r = requests.put(f"{BASE}/proxy-groups/{gid}", json={"port": 65536})
+        assert r.status_code == 400, f"update port 65536: {r.status_code} {r.text}"
+        my = next(g for g in requests.get(f"{BASE}/proxy-groups").json() if g["id"] == gid)
+        assert my["host"] == "::1" and my["port"] == 1080, f"unexpected stored group: {my}"
+
+        # The settings editor path validates proxy_groups the same way.
+        cfg = requests.get(f"{BASE}/config").json()
+        bad = json.loads(json.dumps(cfg))
+        for g in bad["proxy_groups"]:
+            if g["id"] == gid:
+                g["port"] = 70000
+        r = requests.put(f"{BASE}/config", json=bad)
+        assert r.status_code == 400, f"PUT /config with port 70000: {r.status_code} {r.text}"
+        my = next(g for g in requests.get(f"{BASE}/proxy-groups").json() if g["id"] == gid)
+        assert my["port"] == 1080, f"config PUT applied anyway: {my}"
+    finally:
+        requests.delete(f"{BASE}/proxy-groups/{gid}")
+
+
+@test("Hijack with a non-existent group id returns 400 (v0.13.1)")
+def test_hijack_unknown_group():
+    test_pid = os.getpid()
+    assert _wait_pid_in_tree(test_pid), f"PID {test_pid} not in tree"
+    missing = max(g["id"] for g in requests.get(f"{BASE}/proxy-groups").json()) + 1000
+    r = requests.post(f"{BASE}/hijack/{test_pid}", json={"group_id": missing})
+    assert r.status_code == 400, f"expected 400, got {r.status_code} {r.text}"
+    r = requests.post(f"{BASE}/hijack/batch",
+                      json={"pids": [test_pid], "action": "hijack", "group_id": missing})
+    assert r.status_code == 400, f"batch: expected 400, got {r.status_code} {r.text}"
+    hijacked = [p["pid"] for p in requests.get(f"{BASE}/hijack").json()]
+    assert test_pid not in hijacked, "process was hijacked into a missing group"
+
+
+@test("Rule exclusion is runtime-only and survives a config reload (v0.13.1)")
+def test_rule_exclusion_runtime():
+    import socket as sk
+    name = "clew_e2e_excl.exe"
+    exe = PROBE_DIR / name
+    shutil.copy2(PROBE_EXE, exe)
+    _purge_e2e_rules("e2e_excl_rule")
+    # A local listener that never answers keeps the process alive; loopback
+    # is never intercepted, so the rule's group is irrelevant.
+    srv = sk.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    port = srv.getsockname()[1]
+    rr = requests.post(f"{BASE}/auto-rules", json={
+        "name": "e2e_excl_rule", "enabled": True, "process_name": name,
+        "cmdline_pattern": "", "image_path_pattern": "", "hack_tree": False,
+        "protocol": "tcp", "proxy_group_id": 0,
+        "dst_filter": {"include_cidrs": [], "exclude_cidrs": [],
+                       "include_ports": [], "exclude_ports": []},
+        "proxy": {"type": "socks5", "host": "127.0.0.1", "port": PROXY_PORT},
+    })
+    assert rr.status_code == 200, f"rule create failed: {rr.text}"
+    proc = subprocess.Popen([str(exe), "-s", "-m", "60", f"http://127.0.0.1:{port}/"],
+                            env=_probe_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def rule_entry():
+        return next(x for x in requests.get(f"{BASE}/auto-rules").json()
+                    if x["name"] == "e2e_excl_rule")
+
+    def pid_state():
+        for p in rule_entry().get("matched_pids", []):
+            if p["pid"] == proc.pid:
+                return "excluded" if p["excluded"] else "matched"
+        return None
+
+    def wait_for(state, timeout=15.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if pid_state() == state:
+                return True
+            time.sleep(0.1)
+        return False
+
+    try:
+        assert _wait_pid_in_tree(proc.pid), "probe not in tree"
+        assert wait_for("matched"), f"rule never matched pid {proc.pid}: {rule_entry()}"
+        rid = rule_entry()["id"]
+        r = requests.post(f"{BASE}/auto-rules/{rid}/exclude/{proc.pid}")
+        assert r.status_code == 200, f"exclude failed: {r.status_code} {r.text}"
+        assert pid_state() == "excluded", f"not excluded: {rule_entry()}"
+
+        # Any config mutation reloads the rules; the exclusion must survive
+        # and must never be written to the config.
+        cfg = requests.get(f"{BASE}/config").json()
+        r = requests.put(f"{BASE}/config", json=cfg)
+        assert r.status_code == 200, f"config PUT failed: {r.text}"
+        time.sleep(0.3)
+        assert pid_state() == "excluded", f"exclusion lost on reload: {rule_entry()}"
+        raw = json.dumps(requests.get(f"{BASE}/config").json())
+        assert "excluded" not in raw, "exclusion leaked into the config"
+
+        r = requests.post(f"{BASE}/auto-rules/{rid}/exclude/4000000000")
+        assert r.status_code == 404, f"exclude of a dead PID: {r.status_code} {r.text}"
+
+        proc.kill()
+        proc.wait(10)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and rule_entry().get("excluded_count", 0) != 0:
+            time.sleep(0.2)
+        assert rule_entry().get("excluded_count", 0) == 0, \
+            f"exclusion outlived the process: {rule_entry()}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        srv.close()
+        _purge_e2e_rules("e2e_excl_rule")
+
+
 # ============================================================
 # 6. Cleanup
 # ============================================================
@@ -1364,6 +1508,9 @@ def _run(name_filter: str | None) -> int:
         test_group_delete_in_use,
         test_group_migrate,
         test_group_test_endpoint,
+        test_group_validation,
+        test_hijack_unknown_group,
+        test_rule_exclusion_runtime,
         # Final cleanup
         test_cleanup_rule,
         # DNS round-trip last — mutates system DNS, has its own cleanup

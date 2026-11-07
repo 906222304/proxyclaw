@@ -63,7 +63,8 @@ public:
     ~windivert_network_udp() { close(); }
 
     bool open() {
-        const char* filter = "udp and outbound and !loopback";
+        // IPv4 only: IPv6 UDP is not proxied and is left on the kernel path.
+        const char* filter = "ip and udp and outbound and !loopback";
 
         handle_ = WinDivertOpen(filter, WINDIVERT_LAYER_NETWORK, 0, 0);
         if (handle_ == INVALID_HANDLE_VALUE) {

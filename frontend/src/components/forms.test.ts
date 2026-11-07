@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AutoRule, ProxyGroup } from '@/api/types'
 import { dnsPatch, patchConfig } from './ConfigEditor'
 import { filterLog } from './LogViewer'
-import { failedLabel, testTooltip } from './ProxiesTab'
+import { failedLabel, groupFormSchema, groupFormToPayload, normalizeProxyHost, testTooltip } from './ProxiesTab'
 import { formToPayload, ruleToForm } from './RuleEditorDialog'
 import { filterRules } from './AutoRules'
 
@@ -69,5 +69,38 @@ describe('settings helpers', () => {
     expect(testTooltip({ latency_ms: 50, stages: [{ name: 'connect', ms: 10 }], detail: 'HTTP 204' }))
       .toBe('连接代理：10 ms\n合计 50 ms（HTTP 204）')
     expect(failedLabel({ failed_stage: 'handshake', error: 'x' })).toBe('SOCKS5 握手失败')
+  })
+})
+
+describe('proxy group form validation', () => {
+  const base = { name: 'g', host: '127.0.0.1', port: '1080', test_url: '' }
+  const issues = (f: typeof base) => {
+    const r = groupFormSchema.safeParse(f)
+    return r.success ? [] : r.error.issues.map(i => `${String(i.path[0])}: ${i.message}`)
+  }
+
+  it('rejects ports outside 1-65535 and non-integers instead of defaulting', () => {
+    for (const port of ['0', '65536', '70000', 'abc', '', '80.5', '-1', '1e3']) {
+      expect(issues({ ...base, port }).some(m => m.startsWith('port:')), port).toBe(true)
+    }
+    for (const port of ['1', '1080', '65535', ' 7890 ']) {
+      expect(issues({ ...base, port }), port).toEqual([])
+    }
+  })
+
+  it('rejects an empty host and host:port, accepts IPv6 literals with or without brackets', () => {
+    expect(issues({ ...base, host: '  ' }).some(m => m.startsWith('host:'))).toBe(true)
+    expect(issues({ ...base, host: '10.0.0.1:1080' }).some(m => m.startsWith('host:'))).toBe(true)
+    expect(issues({ ...base, host: 'a b' }).some(m => m.startsWith('host:'))).toBe(true)
+    expect(issues({ ...base, host: '[::1]' })).toEqual([])
+    expect(issues({ ...base, host: '2001:db8::1' })).toEqual([])
+    expect(issues({ ...base, host: 'proxy.example.com' })).toEqual([])
+  })
+
+  it('normalises the host and sends a numeric port, socks5 only', () => {
+    expect(normalizeProxyHost(' [::1] ')).toBe('::1')
+    expect(groupFormToPayload({ ...base, host: '[::1]', port: ' 1080 ' })).toEqual({
+      name: 'g', host: '::1', port: 1080, type: 'socks5', test_url: '',
+    })
   })
 })

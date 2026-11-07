@@ -16,8 +16,10 @@
 #include <format>
 #include "core/log.hpp"
 
+#include "config/proxy_host.hpp"
 #include "core/port_tracker.hpp"
 #include "proxy/proxy_group_table.hpp"
+#include "proxy/tcp_dns_upstream.hpp"
 #include "proxy/socks5_async.hpp"
 #include "proxy/connection_health.hpp"
 
@@ -129,14 +131,16 @@ handle_connection(tcp::socket client_sock,
     auto dest_addr = entry->remote_addr[0];
     auto dest_port = entry->remote_port;
 
-    // DNS redirect: TCP:53 connections from proxied processes → use clean DNS server
+    // DNS redirect: TCP:53 from proxied processes goes to the configured DNS
+    // upstream (dns.upstream_host, fallback 8.8.8.8; proxy/tcp_dns_upstream.hpp).
     // Prevents DNS pollution when Chromium's built-in resolver queries local DNS directly
     if (dest_port == 53) {
-        // 8.8.8.8 in host byte order = 0x08080808
+        const auto up = tcp_dns::current();
         auto orig = dest_addr;
-        dest_addr = 0x08080808;
-        PC_LOG_DEBUG("[RELAY] DNS redirect port={} {}:53 -> 8.8.8.8:53",
-                      src_port, ip_host_to_string(orig));
+        dest_addr = up.ip;
+        dest_port = up.port;
+        PC_LOG_DEBUG("[RELAY] DNS redirect port={} {}:53 -> {}:{}",
+                      src_port, ip_host_to_string(orig), ip_host_to_string(dest_addr), dest_port);
     }
 
     auto dest_ip_str = ip_host_to_string(dest_addr);
@@ -150,7 +154,8 @@ handle_connection(tcp::socket client_sock,
         auto t1 = t0;
         auto setup = [&]() -> asio::awaitable<void> {
             auto eps = co_await resolver.async_resolve(
-                cfg_opt->host, std::to_string(cfg_opt->port), asio::use_awaitable);
+                normalize_proxy_host(cfg_opt->host), std::to_string(cfg_opt->port),
+                asio::use_awaitable);
             co_await asio::async_connect(proxy_sock, eps, asio::use_awaitable);
             enable_tcp_keepalive(proxy_sock);
             t1 = std::chrono::steady_clock::now();

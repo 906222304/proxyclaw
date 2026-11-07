@@ -296,8 +296,8 @@ proportional fix.
 
 ### WinDivert dual-layer
 
-- **SOCKET SNIFF layer** (`windivert_socket.hpp`): observes `connect()` and `close()` events (filter `outbound and !loopback and tcp and (event == CONNECT or event == CLOSE)`). For every CONNECT it publishes exactly one decision into `PortTracker[local_port]`: `proxied(group)` or `direct`. Unknown PIDs (younger than the ~1–2 s ETW delivery) are resolved on the spot by `process_tree_manager::resolve_pid_now` (ancestor walk + insert with the real PSN, so the late ETW START is an idempotent no-op). Handler runs on the strand.
-- **NETWORK redirect layer** (`windivert_network.hpp`, `tcp_redirect.hpp`): filter `outbound and tcp and (!loopback or tcp.SrcPort == redirect_port)`, opened in divert mode (`flags = 0`). A proxied packet is handed to the local acceptor as `AppIP:AppPort -> AppIP:redirect_port`, injected outbound. Only acceptor replies enter the loopback branch; they are restored to `OriginalRemoteIP:OriginalRemotePort -> AppIP:AppPort` and injected inbound on the saved original interface. This avoids fabricating an inbound public-peer stream at the acceptor, which can be aborted by Windows stream filters on physical adapters. Initial undecided SYNs remain **parked**, and both the injector and live workers use the same transformation. Two dedicated blocking worker threads.
+- **SOCKET SNIFF layer** (`windivert_socket.hpp`): observes `connect()` and `close()` events (filter `outbound and !loopback and tcp and (event == CONNECT or event == CLOSE)`). For every CONNECT it publishes exactly one decision into `PortTracker[local_port]`: `proxied(group)` or `direct`. Unknown PIDs (younger than the ~1–2 s ETW delivery) are resolved on the spot by `process_tree_manager::resolve_pid_now` (ancestor walk + insert with the real PSN, so the late ETW START is an idempotent no-op). Handler runs on the strand. IPv6 is out of the decision path (v0.13.1): an event on the IPv6 layer whose remote is not IPv4-mapped is counted (`ipv6_unmanaged`) and ignored — no decision is published and its CLOSE does not touch the IPv4 slot of the same port number. Previously its low 32 bits were evaluated as an IPv4 destination.
+- **NETWORK redirect layer** (`windivert_network.hpp`, `tcp_redirect.hpp`): filter `ip and outbound and tcp and (!loopback or tcp.SrcPort == redirect_port)` (IPv4 only since v0.13.1; IPv6 stays on the kernel path and goes direct), opened in divert mode (`flags = 0`). A proxied packet is handed to the local acceptor as `AppIP:AppPort -> AppIP:redirect_port`, injected outbound. Only acceptor replies enter the loopback branch; they are restored to `OriginalRemoteIP:OriginalRemotePort -> AppIP:AppPort` and injected inbound on the saved original interface. This avoids fabricating an inbound public-peer stream at the acceptor, which can be aborted by Windows stream filters on physical adapters. Initial undecided SYNs remain **parked**, and both the injector and live workers use the same transformation. Two dedicated blocking worker threads.
 - WinDivert's layer split is the reason for both layers: NETWORK can block/inject but has no PID; SOCKET has the PID but cannot touch packets. The local port is the only key they share.
 
 ### TCP SYN parking (v0.10)
@@ -385,7 +385,7 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 
 - Windows recycles PIDs, and ETW delivers `ProcessStop` 1–2 s late (same as `ProcessStart`). Inside that window a new process can carry a PID whose dead owner is still in the tree. A tight spawn loop hits this routinely (measured: 1 in 30 fresh curls, 14 in 200 under a 1000-process storm).
 - The tree's identity is `(pid, psn)` (`ProcessSequenceNumber`, boot-unique): `find_by_pid_psn` for ETW STOP and idempotent START; `add_entry` with a known PID and a different PSN tombstones the old entry first. The hot-path `find_by_pid` (SOCKET handlers) returns the latest owner, so `resolve_pid_now` verifies a known PID against the live PSN before trusting it.
-- **Rule for any state keyed by a bare PID** (added after the second recycled-PID bug, 2026-09-07): it must say how it survives a recycled PID — either key it by `(pid, psn)` / PSN, or reset it on both owner-change hooks: `process_tree_manager::handle_stop` (ETW STOP) *and* the overwrite path in `handle_start_or_rundown` (a different-PSN insert over an existing PID; reached from ETW START and from the synchronous resolve). Today's bare-PID state: `AutoRule::matched_pids` / `excluded_pids` — reset via `rule_engine_v3::on_process_exit` on both hooks. Known residual: tree inheritance tests `matched_pids.contains(parent_pid)`, so a parent PID recycled inside the window lets an unrelated new process's children inherit the rule until the STOP lands; the systematic fix is PSN-keyed rule state (see the deferred list in the project notes).
+- **Rule for any state keyed by a bare PID** (added after the second recycled-PID bug, 2026-09-07): it must say how it survives a recycled PID — either key it by `(pid, psn)` / PSN, or reset it on both owner-change hooks: `process_tree_manager::handle_stop` (ETW STOP) *and* the overwrite path in `handle_start_or_rundown` (a different-PSN insert over an existing PID; reached from ETW START and from the synchronous resolve). Today's bare-PID state: `AutoRule::matched_pids` — reset via `rule_engine_v3::on_process_exit` on both hooks. Per-process rule exclusions (v0.13.1) are keyed by `(pid, psn)` and owned by the engine (`rule_engine_v3::exclusions_`): runtime only, never part of `ConfigV2` (so a config reload cannot copy stale PIDs back), kept across `set_auto_rules` for rule ids that still exist, dropped by `on_process_exit` on both hooks, and validated on every lookup — a recycled PID whose PSN differs is not excluded even if the STOP was lost. Orphans (children whose parent is not in the tree yet) are parked by `(pid, psn)` in `domain::orphan_registry`, never by flat-tree index (`compact()` renumbers); they expire after 10 s (sweep every 30 s and after each lost-event rundown) and the registry is capped at 4096. Known residual: tree inheritance tests `matched_pids.contains(parent_pid)`, so a parent PID recycled inside the window lets an unrelated new process's children inherit the rule until the STOP lands; the systematic fix is PSN-keyed rule state (see the deferred list in the project notes).
 - PortTracker slots are not cleaned by ETW at all: `proxied` slots by relay teardown, `direct` / `abandoned` by SOCKET CLOSE, and the kernel-timestamp TTL covers what both miss (see "TCP SYN parking").
 - Flat-tree LC-RS pointers are updated on tombstone; children are reparented to the nearest alive ancestor.
 
@@ -397,7 +397,7 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 
 ### UDP interception (mirrors TCP, per-port sessions)
 
-- Same dual-layer architecture as TCP: `windivert_socket_udp` + `windivert_network_udp`
+- Same dual-layer architecture as TCP: `windivert_socket_udp` + `windivert_network_udp`. The NETWORK filter is `ip and udp and outbound and !loopback` (IPv4 only); a SOCKET CONNECT to a real IPv6 remote is counted (`ipv6_unmanaged`) and ignored, while BIND stays a per-port decision because a dual-stack socket bound on the IPv6 layer can still send IPv4.
 - First-packet parking (v0.11): `UdpPortTracker` slots are empty / direct / proxied. The SOCKET layer writes direct or proxied for every BIND it sees (its own process included) and clears on CLOSE, then calls `windivert_network_udp::release(port)`. A NETWORK worker that meets an empty slot parks the datagram (`udp_first_packet_parker`, 1024 total / 64 per port, decision re-checked under the lock so none is stranded); release sends it per the decision; a watchdog sends anything older than `udp_first_packet.watchdog_ms` (default 20) direct and pins the port direct. Config `udp_first_packet.enabled=false` restores the old behavior.
 - Each app-level UDP port gets its own SOCKS5 UDP ASSOCIATE session (RFC 1928)
 - **Per-packet addressing** (v0.10.3): the NETWORK worker does not reflect a proxied datagram. It hands `UdpOutbound{app_port, group_id, dst, payload}` to the relay (`UdpOutboundSink::submit`, a non-blocking post onto the relay strand) and consumes the original packet. Each datagram therefore keeps its own destination, so one socket that talks to several peers (DNS to two resolvers, STUN/WebRTC, games, QUIC) no longer has its packets sent to whichever destination was seen last. Before v0.10.3 the destination came from a per-port table entry that every packet overwrote.
@@ -418,7 +418,8 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
   - **System DNS auto-config**: on enable, saves original DNS per active IPv4 interface to `dns_state.json`, points interfaces to `127.0.0.2` via `SetInterfaceDnsSettings`
   - **Hot-reload**: Settings UI changes trigger `apply()`, which diffs new vs current config and starts / stops / restarts forwarder + updates system DNS accordingly, no restart required
   - **Crash recovery**: on startup, if `dns_state.json` exists it means the previous session exited abnormally — restore system DNS from file, then delete it
-- Limitation: forwarder is UDP-only. Chromium TCP:53 fallback is not handled (not needed in practice when UDP works).
+- Limitation: forwarder is UDP-only.
+- TCP:53 from a *proxied* process (e.g. Chromium's built-in resolver) is handled by the TCP relay, not the forwarder, whether or not the DNS proxy is enabled: the destination is rewritten to `dns.upstream_host:dns.upstream_port` and sent through the process's proxy group (`proxy/tcp_dns_upstream.hpp`, published by `DnsManager::apply`). The relay speaks SOCKS5 with an IPv4 destination, so when `upstream_host` is not an IPv4 literal (a hostname, IPv6, loopback or `0.0.0.0`) it falls back to `8.8.8.8:53` and logs a warning. Before v0.13.1 this was hardcoded to `8.8.8.8:53`.
 
 ## API Endpoints
 
@@ -467,26 +468,26 @@ GET    /api/session?t=<token>      - Set the session cookie, redirect to /
 GET    /api/processes/:pid         - Single process info
 GET    /api/processes/:pid/detail  - Process detail (cmdline, path)
 GET    /api/hijack                 - List all hijacked PIDs
-POST   /api/hijack/:pid            - Hijack a PID (manual rule)
+POST   /api/hijack/:pid            - Hijack a PID (manual rule); 400 if group_id does not exist
 DELETE /api/hijack/:pid            - Unhijack a PID
-POST   /api/hijack/batch           - Batch hijack / unhijack
+POST   /api/hijack/batch           - Batch hijack / unhijack; 400 if group_id does not exist (hijack)
 GET    /api/tcp                    - TCP connections (optionally ?pid=X)
 GET    /api/udp                    - UDP connections
 GET    /api/auto-rules             - List auto rules
 POST   /api/auto-rules             - Create auto rule
 PUT    /api/auto-rules/:id         - Update auto rule
 DELETE /api/auto-rules/:id         - Delete auto rule
-POST   /api/auto-rules/:id/exclude/:pid - Exclude PID from auto rule
+POST   /api/auto-rules/:id/exclude/:pid - Exclude a running process from an auto rule (runtime only, keyed by pid+psn; 404 if rule or process missing)
 DELETE /api/auto-rules/:id/exclude/:pid - Remove PID exclusion
 GET    /api/proxy-groups           - List proxy groups
-POST   /api/proxy-groups           - Create proxy group
-PUT    /api/proxy-groups/:id       - Update proxy group
+POST   /api/proxy-groups           - Create proxy group (400: port not 1-65535, empty host or host:port, type != socks5, non-empty user/password)
+PUT    /api/proxy-groups/:id       - Update proxy group (same validation)
 DELETE /api/proxy-groups/:id       - Delete proxy group
 POST   /api/proxy-groups/:id/migrate - Migrate rules from one group to another before delete
 POST   /api/proxy-groups/:id/test  - Measure latency to test_url
 GET    /api/config                 - Get full config JSON
-PUT    /api/config                 - Save full config JSON
-GET    /api/stats                  - Counts (hijacked_pids, auto_rules_count)
+PUT    /api/config                 - Save full config JSON (proxy_groups validated as above)
+GET    /api/stats                  - Counts (hijacked_pids, auto_rules_count, tree_ready, process_count, ipv6_unmanaged {tcp, udp}, tcp_syn_parking)
 GET    /api/env                    - Environment info
 POST   /api/shell/browse-exe       - Open file dialog for .exe
 POST   /api/shell/reveal           - Reveal file in Explorer
@@ -590,7 +591,7 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
 - **Configure**: `python scripts/prepare_release_deps.py`, then `cmake --preset windows` (VS 2022) or `cmake --preset windows-vs2026` (uses `CMakePresets.json`)
 - **Build Release**: `cmake --build build --config Release`
 - **Build Debug**: `cmake --build build --config Debug`
-- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (api_auth, dns_wire, dns_manager, ui_config, config_migration, log_tail, projection, concurrency, path_trust, tcp_redirect)
+- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (api_auth, dns_wire, dns_manager, ui_config, config_migration, log_tail, projection, concurrency, path_trust, tcp_redirect, runtime_state)
 - **Run** (admin required): `.\build\Release\proxyclaw.exe`
 - **Frontend dev**: `cd frontend && npm run dev`, then start proxyclaw.exe with `PROXYCLAW_DEV_URL=http://localhost:5173` and `--dev-hooks` (release builds ignore the variable otherwise; the window enters through `/api/session`, proxied by Vite)
 - **Frontend unit tests**: `cd frontend && npm test` (Vitest)

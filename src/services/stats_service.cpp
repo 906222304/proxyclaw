@@ -1,5 +1,6 @@
 #include "services/stats_service.hpp"
 
+#include <cstdint>
 #include <string>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -25,7 +26,17 @@ nlohmann::json stats_service::get_stats() const {
         out["process_count"]    = m.tree().alive_count();
         return out;
     });
-    if (traffic_) j["tcp_syn_parking"] = traffic_();
+    if (traffic_) {
+        auto t = traffic_();
+        // IPv6 is not proxied yet: CONNECTs to IPv6 remotes are ignored by
+        // the SOCKET layers and go direct. Surfaced top-level for the UI.
+        const auto count = [&t](const char* layer) -> std::uint64_t {
+            if (!t.contains(layer)) return 0;
+            return t[layer].value("ipv6_unmanaged", std::uint64_t{0});
+        };
+        j["ipv6_unmanaged"] = {{"tcp", count("socket")}, {"udp", count("udp_socket")}};
+        j["tcp_syn_parking"] = std::move(t);
+    }
     return j;
 }
 

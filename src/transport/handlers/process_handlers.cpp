@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "common/api_context.hpp"
+#include "services/group_service.hpp"
 #include "services/process_tree_service.hpp"
 #include "transport/response_utils.hpp"
 #include "transport/route_def.hpp"
@@ -49,6 +50,9 @@ void handle_hijack(const httplib::Request& req, httplib::Response& res, const ap
             gid = body.value("group_id", 0u);
         }
     }
+    // A missing group would make the relay drop every connection of the
+    // process (fail-closed); refuse up front instead (400).
+    ctx.groups.require_group(gid);
     ctx.processes.hijack(pid, /*tree_mode=*/true, gid);
     write_json(res, nlohmann::json{{"success", true}});
 }
@@ -64,6 +68,7 @@ void handle_batch_hijack(const httplib::Request& req, httplib::Response& res, co
     auto pids = body["pids"].get<std::vector<std::uint32_t>>();
     std::string action = body.value("action", std::string{"hijack"});
     std::uint32_t gid  = body.value("group_id", 0u);
+    if (action != "unhijack") ctx.groups.require_group(gid);
     write_json(res, ctx.processes.batch_hijack(pids, action, gid));
 }
 

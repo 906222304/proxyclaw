@@ -26,6 +26,11 @@
 //   - CLOSE fires at closesocket(), before the wire is done. It clears
 //     `direct` / `abandoned` / `pending` slots; `proxied` slots belong to the
 //     relay and are cleared at relay teardown.
+//   - IPv6 (a non-IPv4-mapped remote on the IPv6 layer) is not managed:
+//     the event is counted (ipv6_unmanaged) and ignored, nothing is
+//     published. The NETWORK filter only diverts IPv4, so such a flow goes
+//     direct. Evaluating it would read the low 32 bits of the v6 address as
+//     an IPv4 destination and publish a bogus decision for its port.
 //   - With SYN parking switched off (no syn_parker), only `proxied`
 //     decisions are published, unknown PIDs are not resolved, and the
 //     tracker stays effectively two-state — exactly the pre-parking behavior.
@@ -54,6 +59,7 @@
 #include "core/log.hpp"
 
 #include "process/flat_tree.hpp"
+#include "core/ip_family.hpp"
 #include "core/port_tracker.hpp"
 #include "core/syn_parker.hpp"
 #include "rules/rule_engine_v3.hpp"
@@ -166,12 +172,13 @@ public:
         uint64_t late_rejected;        // item 7: decision arrived after the watchdog released
         uint64_t late_rejected_proxied;// ...of which would have been proxied (= proxy missed)
         uint64_t close_while_pending;  // CLOSE emptied a pending slot (parked SYN dropped)
+        uint64_t ipv6_unmanaged;       // IPv6 CONNECTs ignored (not proxied, go direct)
     };
     counters snapshot() const {
         return {connect_count_.load(), close_count_.load(), match_count_.load(),
                 direct_count_.load(), self_direct_count_.load(), echo_count_.load(),
                 late_rejected_count_.load(), late_rejected_proxied_count_.load(),
-                close_while_pending_count_.load()};
+                close_while_pending_count_.load(), ipv6_unmanaged_count_.load()};
     }
 
 private:
@@ -202,6 +209,7 @@ private:
     std::atomic<uint64_t> late_rejected_count_{0};
     std::atomic<uint64_t> late_rejected_proxied_count_{0};
     std::atomic<uint64_t> close_while_pending_count_{0};
+    std::atomic<uint64_t> ipv6_unmanaged_count_{0};
 
     static void bump(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
@@ -257,6 +265,12 @@ private:
 
     void on_socket_event(const WINDIVERT_ADDRESS& addr) {
         // SNIFF mode: no WinDivertSend needed, event auto-passes
+        // IPv6 is out of the decision path (header comment). Its CLOSE must
+        // not touch the IPv4 slot that shares the port number either.
+        if (is_unmanaged_ipv6(addr.IPv6 != 0, addr.Socket.RemoteAddr)) {
+            if (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT) bump(ipv6_unmanaged_count_);
+            return;
+        }
         if (addr.Event == WINDIVERT_EVENT_SOCKET_CLOSE) { on_close(addr); return; }
         if (addr.Event != WINDIVERT_EVENT_SOCKET_CONNECT) return;
         on_connect(addr);

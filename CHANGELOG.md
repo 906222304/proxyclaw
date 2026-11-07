@@ -72,6 +72,13 @@
   concurrent config writes) and `path_trust_tests` (install-location DACL
   check against real ACLs, dev-hook gating); Vitest covers the autostart
   warning states.
+- WebView2 screenshot harness: `wait_for_function` polls on a 200 ms timer
+  instead of requestAnimationFrame (run 42372296123 timed out on `#root`
+  after the reload while the reloaded app was alive and polling the API: no
+  frame was produced, so the rAF predicate never re-ran), the CI WebView2
+  is started with occlusion / background throttling disabled, and the page
+  state after the reload (visibility, focus, rAF, `#root` children) is
+  written to console.log.
 
 ## v0.13.0 (2026-11-07)
 

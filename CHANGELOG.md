@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.13.1 — 2026-11-07
+
+Patch release: concurrency and privilege-boundary fixes, plus cheap
+correctness fixes from the v0.13.0 review. Several fixes change behaviour;
+see **Changed**.
 
 ### Security
 
@@ -13,63 +17,19 @@
   letting any unelevated process of the user swap the exe, plant a DLL or
   edit the UI and get admin rights at the next logon. An existing task that
   launches an exe from an unsafe folder is reported in Settings and the log
-  (`task_trusted=false`); it is not deleted automatically.
+  (`task_trusted=false`); it is not deleted automatically. In Settings the
+  switch is disabled with an explanation when the folder is not admin-only
+  (turning an existing task off still works).
 - `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` at startup: DLLs
   loaded by name at runtime no longer come from the exe folder.
 - Release builds ignore `PROXYCLAW_DEV_URL`, `PROXYCLAW_API_TOKEN` and the
   `WEBVIEW2_*` overrides (remote debugging port, browser executable folder,
   ...) and remove them from the process environment; user environment
-  variables are writable without elevation. Pass `--dev-hooks` on the elevated
-  command line (or use a debug build) to honour them.
+  variables are writable without elevation. Pass `--dev-hooks` on the
+  elevated command line (or use a debug build) to honour them.
 
-### Backend
+### Fixed
 
-- IPv6 is kept out of the decision path. The TCP SOCKET layer read an IPv6
-  remote's low 32 bits as an IPv4 address, evaluated rules against it and
-  could publish a bogus "proxied" decision for the port (the flow itself
-  went direct). Both SOCKET layers now ignore CONNECTs to real IPv6 remotes
-  and count them; `GET /api/stats` gains `ipv6_unmanaged: {tcp, udp}`. The
-  TCP and UDP NETWORK filters gain `ip and`, so IPv6 packets are no longer
-  diverted to user mode just to be re-injected. IPv6 traffic still goes
-  direct (not proxied).
-- Per-process rule exclusions (此进程不走代理) are runtime state owned by the
-  rule engine, keyed by (pid, process sequence number). They were written
-  into the config copy, only the engine copy was cleaned on process exit,
-  and every later config change copied dead PIDs back, where a recycled PID
-  inherited the exclusion. Now: never persisted or read from the config,
-  kept across rule reloads, dropped on process exit, ignored for a recycled
-  PID. `POST /api/auto-rules/{id}/exclude/{pid}` answers 404 for a process
-  that is not running. The API/UI contract (`excluded: true` in rule JSON)
-  is unchanged.
-- Process tree: children waiting for a not-yet-seen parent (orphans) are
-  tracked by (pid, psn) instead of a tree index that compaction renumbers,
-  which could re-parent an unrelated process (wrong tree-rule inheritance).
-  Orphans now expire after 10 s (also swept after each lost-event rundown)
-  and are capped at 4096; before, they were only flushed once at startup.
-  The tree manager's timers now run on its strand.
-- Proxied TCP :53 (e.g. Chrome's built-in resolver over TCP) is sent to
-  `dns.upstream_host:dns.upstream_port` instead of a hardcoded 8.8.8.8:53,
-  whether or not the DNS proxy is enabled. Falls back to 8.8.8.8:53 (with a
-  log warning) when the upstream is not a usable IPv4 address.
-- Proxy group validation (`POST/PUT /api/proxy-groups`, and `proxy_groups`
-  in `PUT /api/config`): 400 with `details.field` for a port outside
-  1-65535 (70000 used to be stored as 4464), an empty host or `host:port`,
-  a type other than `socks5`, or a non-empty user/password (only SOCKS5
-  without authentication is implemented). `[v6]` hosts are stored without
-  brackets, and the relay, UDP session and speed test resolve the same
-  normalised host.
-- `POST /api/hijack/{pid}` and `/api/hijack/batch` answer 400 for a
-  `group_id` that does not exist, instead of hijacking the process into a
-  group whose connections the relay then drops.
-- Process tree: the initial ETW rundown is now verified against the OS
-  process list. A CAPTURE_STATE issued before the real-time consumer had
-  attached could be dropped by the kernel, leaving the tree at ~20 of ~150
-  processes for the whole session; the grace timer now re-issues
-  capture_state (up to 5 attempts) until coverage is reached.
-  `GET /api/stats` gains `tree_ready` and `process_count`.
-- `POST /api/hijack/{pid}` and batch hijack resolve a live PID the tree has
-  not seen yet (younger than the ETW ProcessStart latency) from the OS
-  instead of answering 404.
 - Proxy groups: editing groups/rules while proxied connections arrive no
   longer races the relay (the TCP group map was cleared and refilled on the
   API thread while relays read it). Relays now read an immutable snapshot
@@ -78,56 +38,100 @@
   edits), debounced to 500 ms after the last move/resize and off the UI
   thread; every config save uses its own temp file. Previously the UI thread
   wrote the config unlocked and could tear it.
+- IPv6 is no longer misjudged as IPv4: the TCP SOCKET layer read an IPv6
+  remote's low 32 bits as an IPv4 address, evaluated rules against it and
+  could publish a bogus "proxied" decision for the port (the flow itself
+  went direct). Both SOCKET layers now ignore CONNECTs to real IPv6 remotes
+  and count them (`ipv6_unmanaged`, see Changed); the TCP and UDP NETWORK
+  filters gain `ip and`, so IPv6 packets are no longer diverted to user mode
+  just to be re-injected. IPv6 traffic still goes direct (not proxied).
+- Per-process exclusions (此进程不走代理) no longer come back for dead or
+  recycled PIDs: they were written into the config copy, only the engine
+  copy was cleaned on process exit, and every later config change copied
+  dead PIDs back.
+- Process tree: children waiting for a not-yet-seen parent (orphans) are
+  tracked by (pid, psn) instead of a tree index that compaction renumbers,
+  which could re-parent an unrelated process (wrong tree-rule inheritance).
+  Orphans now expire after 10 s (also swept after each lost-event rundown)
+  and are capped at 4096; before, they were only flushed once at startup.
+  The tree manager's timers now run on its strand.
+- Process tree: the initial ETW rundown is verified against the OS process
+  list. A CAPTURE_STATE issued before the real-time consumer had attached
+  could be dropped by the kernel, leaving the tree at ~20 of ~150 processes
+  for the whole session; the grace timer now re-issues capture_state (up to
+  5 attempts) until coverage is reached.
+- `POST /api/hijack/{pid}` and batch hijack resolve a live PID the tree has
+  not seen yet (younger than the ETW ProcessStart latency) from the OS
+  instead of answering 404.
 - WinDivert shutdown follows WinDivertShutdown → join → WinDivertClose
-  (handles were closed while worker threads were blocked on them); the NETWORK
-  queues drain instead of being dropped; unexpected receive errors back off.
+  (handles were closed while worker threads were blocked on them); the
+  NETWORK queues drain instead of being dropped; unexpected receive errors
+  back off.
+- HTTP API start-up binds synchronously and reports a bind failure instead
+  of assuming success after 100 ms.
+- Process tree: the PID column has a fixed 5-digit width (row gap 6px ->
+  4px), so whether a deep name such as proxyclaw.exe fits no longer depends
+  on how many digits its PID has.
+
+### Changed
+
+- Autostart only from an admin-only install folder; otherwise 409
+  `unsafe_install_location` (see Security).
+- Dev/test environment hooks need `--dev-hooks` in release builds (see
+  Security).
+- Proxy group validation (`POST/PUT /api/proxy-groups`, and `proxy_groups`
+  in `PUT /api/config`): 400 with `details.field` for a port outside
+  1-65535 (70000 used to be stored as 4464), an empty host or `host:port`,
+  a type other than `socks5`, or a non-empty user/password (only SOCKS5
+  without authentication is implemented). `[v6]` hosts are stored without
+  brackets, and the relay, UDP session and speed test resolve the same
+  normalised host. The proxy group dialog validates the same way (port must
+  be an integer 1-65535, no silent fallback to 7890; host must not be empty
+  or include a port; errors under the field) and notes that only SOCKS5
+  without authentication is supported.
+- `POST /api/hijack/{pid}` and `/api/hijack/batch` answer 400 for a
+  `group_id` that does not exist, instead of hijacking the process into a
+  group whose connections the relay then drops.
+- Per-process exclusions are runtime state owned by the rule engine, keyed
+  by (pid, process sequence number): never persisted or read from the
+  config, kept across rule reloads, dropped on process exit, ignored for a
+  recycled PID. `POST /api/auto-rules/{id}/exclude/{pid}` answers 404 for a
+  process that is not running. The API/UI contract (`excluded: true` in rule
+  JSON) is unchanged.
+- `GET /api/stats` gains `ipv6_unmanaged: {tcp, udp}` (CONNECTs to IPv6
+  remotes that ProxyClaw does not take over), `tree_ready` and
+  `process_count`.
+- Proxied TCP :53 (e.g. Chrome's built-in resolver over TCP) is sent to
+  `dns.upstream_host:dns.upstream_port` instead of a hardcoded 8.8.8.8:53,
+  whether or not the DNS proxy is enabled. Falls back to 8.8.8.8:53 (with a
+  log warning) when the upstream is not a usable IPv4 address.
 - Console mode (no window) runs until Ctrl+C / console close instead of
   exiting after one hour; without WebView2 the GUI build shows a dialog with
   the browser URL and runs until it is closed.
-- HTTP API start-up binds synchronously and reports a bind failure instead of
-  assuming success after 100 ms.
-
-### Frontend
-
-- Proxy group dialog validates the form: port must be an integer 1-65535
-  (no silent fallback to 7890), the host must not be empty or include a
-  port; errors show under the field. The dialog notes that only SOCKS5
-  without authentication is supported.
-- Settings: the autostart switch is disabled with an explanation when the
-  install folder is not admin-only, and an existing task that points at an
-  unsafe folder shows a warning (turning it off still works).
-- Process tree: the PID column has a fixed 5-digit width (row gap 6px -> 4px),
-  so whether a deep name such as proxyclaw.exe fits no longer depends on how
-  many digits its PID has.
 
 ### Tests / CI
 
-- New CTest `runtime_state_tests`: exclusion keying and PID reuse, orphan
-  resolution after compaction, orphan expiry/cap, group validation, IPv6
-  event classification, TCP :53 upstream selection. `tcp_redirect` checks
-  that the NETWORK filter no longer matches IPv6. e2e: group validation
-  (POST/PUT/config), hijack into a missing group, exclusion surviving a
-  config reload and ending with the process, `ipv6_unmanaged` in stats.
-  vitest: proxy group form validation.
-
-- e2e/screenshot/stress harnesses wait for `tree_ready` instead of sleeping;
-  the DELETE <60ms check times only the API round-trip; system DNS is read
-  via GetAdaptersAddresses instead of a cold PowerShell
-  `Get-DnsClientServerAddress`; log-scan asserts retry the read until quill
-  has flushed.
-- Harnesses launch proxyclaw.exe with `--dev-hooks` (needed for
-  `PROXYCLAW_API_TOKEN` / `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`).
-- New CTest suites: `concurrency_tests` (group snapshot swap, debouncer,
-  concurrent config writes) and `path_trust_tests` (install-location DACL
-  check against real ACLs, dev-hook gating); Vitest covers the autostart
-  warning states.
+- New CTest suites: `runtime_state_tests` (exclusion keying and PID reuse,
+  orphan resolution after compaction, orphan expiry/cap, group validation,
+  IPv6 event classification, TCP :53 upstream selection),
+  `concurrency_tests` (group snapshot swap, debouncer, concurrent config
+  writes) and `path_trust_tests` (install-location DACL check against real
+  ACLs, dev-hook gating). `tcp_redirect` checks that the NETWORK filter no
+  longer matches IPv6.
+- e2e: group validation (POST/PUT/config), hijack into a missing group,
+  exclusion surviving a config reload and ending with the process,
+  `ipv6_unmanaged` in stats. Vitest: proxy group form validation and the
+  autostart warning states.
+- e2e/screenshot/stress harnesses launch proxyclaw.exe with `--dev-hooks`
+  and wait for `tree_ready` instead of sleeping; the DELETE <60ms check times
+  only the API round-trip; system DNS is read via GetAdaptersAddresses
+  instead of a cold PowerShell `Get-DnsClientServerAddress`; log-scan
+  asserts retry the read until quill has flushed.
 - WebView2 screenshot harness: `wait_for_function` polls on a 200 ms timer
-  instead of requestAnimationFrame (run 42372296123 timed out on `#root`
-  after the reload while the reloaded app was alive and polling the API: no
-  frame was produced, so the rAF predicate never re-ran), the CI WebView2
-  is started with occlusion / background throttling disabled, and the page
-  state after the reload (visibility, focus, rAF, `#root` children) is
-  written to console.log.
+  instead of requestAnimationFrame (a reload could leave the page producing
+  no frames, so the rAF predicate never re-ran), the CI WebView2 runs with
+  occlusion / background throttling disabled, and the page state after the
+  reload is written to console.log.
 
 ## v0.13.0 (2026-11-07)
 

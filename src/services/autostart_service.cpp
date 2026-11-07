@@ -1,6 +1,8 @@
 #include "services/autostart_service.hpp"
 
 #include <array>
+#include <cwchar>
+#include <optional>
 #include <filesystem>
 #include <format>
 #include <initializer_list>
@@ -17,6 +19,7 @@
 
 #include "common/api_exception.hpp"
 #include "core/exe_paths.hpp"
+#include "core/path_trust.hpp"
 #include "core/log.hpp"
 #include "core/scoped_exit.hpp"
 
@@ -353,10 +356,93 @@ std::wstring make_task_action(bool start_minimized) {
     return action;
 }
 
+std::string narrow_utf8(std::wstring_view w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
+                                      nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<std::size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0)
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n,
+                            nullptr, nullptr);
+    return out;
+}
+
+// schtasks /XML output decoded to UTF-16. The XML is UTF-16LE when written
+// to a pipe on current Windows; older builds / code pages may give the ANSI
+// code page instead, so detect by the presence of NUL bytes.
+std::wstring decode_schtasks_xml(std::string_view bytes) {
+    if (bytes.size() >= 2 && bytes.find('\0') != std::string_view::npos) {
+        std::size_t off = 0;
+        if (static_cast<unsigned char>(bytes[0]) == 0xFF &&
+            static_cast<unsigned char>(bytes[1]) == 0xFE) off = 2;
+        std::wstring out((bytes.size() - off) / 2, L'\0');
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            out[i] = static_cast<wchar_t>(static_cast<unsigned char>(bytes[off + 2 * i]) |
+                                          (static_cast<unsigned char>(bytes[off + 2 * i + 1]) << 8));
+        }
+        return out;
+    }
+    const int n = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()),
+                                      nullptr, 0);
+    std::wstring out(static_cast<std::size_t>(n > 0 ? n : 0), L'\0');
+    if (n > 0)
+        MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), out.data(), n);
+    return out;
+}
+
+std::wstring xml_unescape(std::wstring s) {
+    static constexpr std::pair<std::wstring_view, wchar_t> entities[] = {
+        {L"&quot;", L'"'}, {L"&apos;", L'\''}, {L"&lt;", L'<'}, {L"&gt;", L'>'}, {L"&amp;", L'&'},
+    };
+    for (const auto& [from, to] : entities) {
+        for (std::size_t pos = 0; (pos = s.find(from, pos)) != std::wstring::npos; ++pos) {
+            s.replace(pos, from.size(), 1, to);
+        }
+    }
+    return s;
+}
+
+// The executable the registered task launches (<Exec><Command>), unquoted.
+fs::path task_command_from_xml(std::string_view raw) {
+    const std::wstring xml = decode_schtasks_xml(raw);
+    constexpr std::wstring_view open = L"<Command>";
+    constexpr std::wstring_view close = L"</Command>";
+    const auto b = xml.find(open);
+    if (b == std::wstring::npos) return {};
+    const auto e = xml.find(close, b + open.size());
+    if (e == std::wstring::npos) return {};
+    std::wstring cmd = xml_unescape(xml.substr(b + open.size(), e - b - open.size()));
+    while (!cmd.empty() && (cmd.front() == L' ' || cmd.front() == L'"')) cmd.erase(cmd.begin());
+    while (!cmd.empty() && (cmd.back() == L' ' || cmd.back() == L'"')) cmd.pop_back();
+    return fs::path{cmd};
+}
+
+bool same_file_path(const fs::path& a, const fs::path& b) {
+    std::error_code ec;
+    if (fs::equivalent(a, b, ec)) return true;
+    return _wcsicmp(a.lexically_normal().c_str(), b.lexically_normal().c_str()) == 0;
+}
+
 } // namespace
+
+std::optional<std::string> autostart_service::location_issue(const fs::path& exe_dir) {
+    if (auto bad = path_trust::check_install_dir(exe_dir)) {
+        return std::format("{} can be modified by non-administrators: {}",
+                           narrow_utf8(bad->path.native()), bad->reason);
+    }
+    return std::nullopt;
+}
 
 autostart_state autostart_service::query() {
     autostart_state state;
+
+    const fs::path exe = exe_path();
+    if (auto issue = location_issue(exe.empty() ? exe_directory() : exe.parent_path())) {
+        state.location_trusted = false;
+        state.location_issue   = std::move(*issue);
+    } else {
+        state.location_trusted = true;
+    }
 
     const schtasks_result result = run_schtasks({L"/Query", L"/TN", TASK_NAME, L"/XML"});
     if (!result.succeeded()) {
@@ -369,6 +455,25 @@ autostart_state autostart_service::query() {
 
     state.enabled = true;
     state.start_minimized = output_contains_minimized_flag(result);
+
+    // An existing task (e.g. registered by an older version, or before the
+    // folder was moved) may launch an exe from a location that is no longer
+    // safe. Report it; the UI offers to turn autostart off.
+    const fs::path task_exe = task_command_from_xml(result.stdout_text);
+    state.task_command = narrow_utf8(task_exe.native());
+    if (task_exe.empty()) {
+        state.task_trusted = false;
+        state.task_issue   = "the registered task's command could not be read";
+    } else {
+        state.task_matches_exe = !exe.empty() && same_file_path(task_exe, exe);
+        if (state.task_matches_exe) {
+            state.task_trusted = state.location_trusted;
+            state.task_issue   = state.location_issue;
+        } else if (auto issue = location_issue(task_exe.parent_path())) {
+            state.task_trusted = false;
+            state.task_issue   = std::move(*issue);
+        }
+    }
     return state;
 }
 
@@ -383,6 +488,24 @@ void autostart_service::set(bool enabled, bool start_minimized) {
 
         PC_LOG_INFO("autostart: ProxyClawAutoStart task removed");
         return;
+    }
+
+    // Never register an elevated logon task for an exe that an unelevated
+    // process could replace (or whose DLLs / UI files it could replace).
+    if (const fs::path exe = exe_path(); exe.empty()) {
+        throw api_exception{api_error::internal, "GetModuleFileNameW failed"};
+    } else if (auto issue = location_issue(exe.parent_path())) {
+        PC_LOG_WARN("autostart: refusing to enable: {}", *issue);
+        throw api_exception{
+            api_error::conflict,
+            std::format("Autostart runs ProxyClaw elevated without a UAC prompt, so it is only "
+                        "allowed from a folder that only administrators can modify (for example "
+                        "under C:\\Program Files). {}", *issue),
+            nlohmann::json{
+                {"code",   "unsafe_install_location"},
+                {"path",   narrow_utf8(exe.parent_path().native())},
+                {"reason", *issue},
+            }};
     }
 
     const std::wstring task_action = make_task_action(start_minimized);

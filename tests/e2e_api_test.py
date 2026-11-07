@@ -6,7 +6,7 @@ Tests the core flow: rule creation → process hijack → traffic interception �
 Two modes:
 
 * Attach (local dev): proxyclaw.exe already running elevated on :18080 with
-  the same PROXYCLAW_API_TOKEN, plus a real SOCKS5 proxy on 127.0.0.1:7890
+  --dev-hooks and the same PROXYCLAW_API_TOKEN, plus a real SOCKS5 proxy on 127.0.0.1:7890
   whose exit IP differs from the direct one. Routing is judged by exit IP.
 
       python tests/e2e_api_test.py [-k SUBSTR]
@@ -1176,7 +1176,7 @@ def _launch(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]:
     }
     cfg_path = work / "proxyclaw.json"
     cfg_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    proc = subprocess.Popen([str(exe), "--minimized", "--config", str(cfg_path)],
+    proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
                             cwd=exe.parent, env=dict(os.environ))
     deadline = time.time() + 30
     while True:
@@ -1194,6 +1194,47 @@ def _launch(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]:
     _wait_tree_ready(proc)
     time.sleep(2)  # let the WinDivert layers settle
     return proc, work
+
+
+def _graceful_exit(proc: subprocess.Popen, timeout: float = 30.0) -> bool:
+    """Quit through the tray menu's exit command (WM_COMMAND IDM_TRAY_EXIT to
+    the host window, exactly what clicking "退出 ProxyClaw" does) and require
+    a clean shutdown: exit code 0 within `timeout`, and the log shows the
+    WinDivert teardown (WinDivertShutdown -> join -> WinDivertClose, v0.13.1)
+    completed. Catches shutdown hangs/crashes that terminate() would hide."""
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    hwnd = user32.FindWindowW("ClewWebViewClass", None)
+    if not hwnd:
+        print("graceful exit: host window not found")
+        return False
+    owner = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+    if owner.value != proc.pid:
+        print(f"graceful exit: window belongs to pid {owner.value}, not {proc.pid}")
+        return False
+    offset = LOG_PATH.stat().st_size if LOG_PATH.exists() else 0
+    t0 = time.monotonic()
+    user32.PostMessageW(hwnd, 0x0111, 40002, 0)  # WM_COMMAND, IDM_TRAY_EXIT
+    try:
+        code = proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        print(f"graceful exit: still running {timeout:.0f}s after exit was requested (shutdown hang)")
+        return False
+    elapsed = time.monotonic() - t0
+    tail = ""
+    if LOG_PATH.exists():
+        with open(LOG_PATH, "rb") as f:
+            f.seek(offset)
+            tail = f.read().decode("utf-8", errors="replace")
+    markers = ["WinDivert layers stopped", "io_context stopped", "WinDivert layers closed", "Goodbye!"]
+    missing = [m for m in markers if m not in tail]
+    print(f"graceful exit: code={code} in {elapsed:.1f}s, missing log markers={missing}")
+    return code == 0 and not missing
 
 
 def _wait_tree_ready(proc=None, timeout=60.0):
@@ -1237,21 +1278,33 @@ def main() -> int:
         from e2e_rule_policy import Socks5Server
         RECORDER = Socks5Server()
         proc, work = _launch(args.exe.resolve())
+    rc = 1
+    graceful_ok = True
     try:
-        return _run(name_filter)
+        rc = _run(name_filter)
     finally:
         if proc is not None:
-            proc.terminate()
             try:
-                proc.wait(10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            if failed and LOG_PATH.exists():
+                graceful_ok = _graceful_exit(proc)
+            except Exception as e:  # noqa: BLE001 - report, then fall back to terminate
+                print(f"graceful exit: {e!r}")
+                graceful_ok = False
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            if (failed or not graceful_ok) and LOG_PATH.exists():
                 print("---- proxyclaw.log ([E]/[W] lines, last 60) ----")
                 lines = [l for l in LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
                          if " [E] " in l or " [W] " in l]
                 print("\n".join(lines[-60:]))
             shutil.rmtree(work, ignore_errors=True)
+    if not graceful_ok:
+        print("FAIL: graceful shutdown via the tray exit command")
+        return 1
+    return rc
 
 
 def _run(name_filter: str | None) -> int:

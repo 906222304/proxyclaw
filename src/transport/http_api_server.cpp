@@ -14,6 +14,7 @@
 #include <bcrypt.h>
 
 #include "common/api_context.hpp"
+#include "common/dev_hooks.hpp"
 #include "core/log.hpp"
 #include "transport/middleware.hpp"
 #include "transport/route_registry.hpp"
@@ -64,8 +65,11 @@ http_api_server::http_api_server(int port, api_context& ctx, std::string static_
     : port_(port)
     , static_dir_(std::move(static_dir))
     , ctx_(ctx)
-    , auth_(port, token_from_env_or(generate_session_token())) {
-    if (const char* dev = std::getenv("PROXYCLAW_DEV_URL"); dev && *dev) {
+    // Both env hooks are test/developer aids and are honoured only with dev
+    // hooks enabled (debug build or --dev-hooks; see common/dev_hooks.hpp).
+    , auth_(port, dev_hooks_enabled() ? token_from_env_or(generate_session_token())
+                                      : generate_session_token()) {
+    if (const char* dev = dev_env("PROXYCLAW_DEV_URL")) {
         auth_.allow_origin(dev);
     }
     // Thread pool sized for our actual load: 3 polling endpoints
@@ -100,15 +104,36 @@ http_api_server::~http_api_server() {
 bool http_api_server::start() {
     if (running_.exchange(true)) return true;
 
+    // Bind synchronously so a port conflict is reported here, not guessed
+    // from a timer: once bind_to_port() returns true the socket is bound and
+    // listening (connections queue in the backlog until the accept loop runs).
+    if (!server_.bind_to_port("127.0.0.1", port_)) {
+        PC_LOG_ERROR("[api] failed to bind 127.0.0.1:{}", port_);
+        running_ = false;
+        return false;
+    }
+    PC_LOG_INFO("[api] HTTP API server listening on 127.0.0.1:{}", port_);
+
+    accept_loop_done_ = false;
     server_thread_ = std::jthread([this]() {
-        PC_LOG_INFO("[api] HTTP API server listening on 127.0.0.1:{}", port_);
-        if (!server_.listen("127.0.0.1", port_)) {
-            PC_LOG_ERROR("[api] failed to bind port {}", port_);
-            running_ = false;
+        if (!server_.listen_after_bind()) {
+            PC_LOG_ERROR("[api] accept loop on port {} ended with an error", port_);
         }
+        accept_loop_done_ = true;
     });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    return running_;
+    // Wait (bounded) until the accept loop is running, so an early stop()
+    // cannot slip in before httplib marks itself running and then miss it.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!server_.is_running() && !accept_loop_done_ &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!server_.is_running()) {
+        PC_LOG_ERROR("[api] accept loop on port {} did not start", port_);
+        stop();
+        return false;
+    }
+    return true;
 }
 
 void http_api_server::stop() {

@@ -40,7 +40,7 @@
 
 系统要求：Windows 10 2004+ / Windows 11（x64）、管理员权限（WinDivert 驱动与系统 DNS 都需要）、WebView2 Runtime（Windows 11 自带）。
 
-1. 从 [Releases](https://github.com/906222304/proxyclaw/releases/latest) 下载 `proxyclaw-vX.Y.Z-windows-x64.zip`（附 `.sha256`），**完整解压**。
+1. 从 [Releases](https://github.com/906222304/proxyclaw/releases/latest) 下载 `proxyclaw-vX.Y.Z-windows-x64.zip`（附 `.sha256`），**完整解压**。想用开机自启的话，建议解压到 `C:\Program Files\ProxyClaw`（需要管理员权限）。
 2. 双击 `proxyclaw.exe`，同意 UAC 提权。
 3. 在“代理”页把 `default` 组指向你的 SOCKS5（如 Clash 的 `127.0.0.1:7890`），再到“规则”页添加规则并**打开开关**（新规则默认停用）。
 
@@ -52,7 +52,7 @@
 - **临时代理某个进程**：在左侧进程树悬停，点击闪电图标，即代理该 PID 及其之后的子进程（固定 TCP + UDP）。
 - **网络活动**：选中进程查看实时连接与代理状态；悬停“已忽略”可看到原因。顶部信息条可打开 exe 所在目录、复制命令行，或以该进程为蓝本新建规则。
 - **DNS 代理**：“设置 → DNS 代理”，默认关闭。会修改系统 DNS，影响整台电脑的解析。
-- **后台与自启**：关闭窗口后默认留在托盘，右键托盘“退出 ProxyClaw”才结束；“登录 Windows 后自动启动”注册 `ProxyClawAutoStart` 计划任务，移动程序后需重新打开一次该开关。
+- **后台与自启**：关闭窗口后默认留在托盘，右键托盘“退出 ProxyClaw”才结束；“登录 Windows 后自动启动”注册 `ProxyClawAutoStart` 计划任务（以管理员权限、无 UAC 提示启动，因此只允许从只有管理员能修改的文件夹开启，例如 `C:\Program Files\ProxyClaw`，见[排查文档](docs/TROUBLESHOOTING.md)），移动程序后需重新打开一次该开关。
 
 ## 工作原理
 

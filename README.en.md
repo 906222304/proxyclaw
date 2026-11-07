@@ -40,7 +40,7 @@
 
 Requirements: Windows 10 2004+ / Windows 11 (x64), administrator rights (the WinDivert driver and system DNS need them), WebView2 Runtime (bundled with Windows 11).
 
-1. Download `proxyclaw-vX.Y.Z-windows-x64.zip` (with `.sha256`) from [Releases](https://github.com/906222304/proxyclaw/releases/latest) and **extract all files**.
+1. Download `proxyclaw-vX.Y.Z-windows-x64.zip` (with `.sha256`) from [Releases](https://github.com/906222304/proxyclaw/releases/latest) and **extract all files**. If you want autostart, extract to `C:\Program Files\ProxyClaw` (needs administrator rights).
 2. Run `proxyclaw.exe` and accept the UAC prompt.
 3. On **Proxies**, point the `default` group at your SOCKS5 (e.g. Clash at `127.0.0.1:7890`); on **Rules**, add a rule and **switch it on** (new rules start disabled).
 
@@ -52,7 +52,7 @@ Config lives in `proxyclaw.json` next to the exe (an old `clew.json` is imported
 - **Proxy one process now**: hover it in the process tree and click the lightning icon; that PID and its later children are proxied (always TCP + UDP).
 - **Network activity**: select a process to see live connections and their proxy state; hover 已忽略 ("ignored") for the reason. The header can open the exe folder, copy the command line, or start a new rule from that process.
 - **DNS proxy**: Settings → DNS proxy, off by default. It changes system DNS, so it affects name resolution for the whole machine.
-- **Background and autostart**: closing the window keeps ProxyClaw in the tray (quit from the tray menu). "Start after Windows login" registers the `ProxyClawAutoStart` scheduled task; toggle it again after moving the exe.
+- **Background and autostart**: closing the window keeps ProxyClaw in the tray (quit from the tray menu). "Start after Windows login" registers the `ProxyClawAutoStart` scheduled task (it starts ProxyClaw elevated without a UAC prompt, so it can only be enabled from a folder only administrators can modify, e.g. `C:\Program Files\ProxyClaw` — see [Troubleshooting](docs/TROUBLESHOOTING.en.md)); toggle it again after moving the exe.
 
 ## How it works
 

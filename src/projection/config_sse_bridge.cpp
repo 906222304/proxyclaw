@@ -27,6 +27,7 @@ std::string_view tag_to_action(config_change tag) noexcept {
         case group_deleted:      return "group_deleted";
         case group_migrated:     return "migrated";
         case wholesale_replaced: return "config_reload";
+        case ui_geometry:        return "ui_geometry";
     }
     return "unknown";
 }
@@ -35,6 +36,9 @@ std::string_view tag_to_action(config_change tag) noexcept {
 
 config_sse_bridge::config_sse_bridge(config_store& cfg) {
     cfg.subscribe([this](const ConfigV2&, config_change tag) {
+        // Window geometry is saved after every move/resize; the frontend does
+        // not show it, so do not make it refetch rules for that.
+        if (tag == config_change::ui_geometry) return;
         auto* sink = sink_.load();
         if (!sink) return;
         auto body = nlohmann::json{{"action", std::string(tag_to_action(tag))}}.dump();

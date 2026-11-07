@@ -20,7 +20,12 @@ asio::awaitable<void> tcp_test(asio::io_context& ioc, uint16_t proxy_port) {
     // value-initialised array on the 1 MiB thread stack -> 0xC00000FD).
     auto tracker_owner = std::make_unique<clew::PortTracker>();
     auto& tracker = *tracker_owner;
+#ifdef PROXYCLAW_BASELINE
     std::unordered_map<uint32_t, clew::ProxyGroupConfig> groups{{0, {"127.0.0.1", proxy_port}}};
+#else
+    clew::proxy_group_table groups;
+    groups.publish({{0, {"127.0.0.1", proxy_port}}});
+#endif
     tcp::acceptor acceptor(co_await asio::this_coro::executor, {tcp::v4(), 0});
     std::cout << "READY " << acceptor.local_endpoint().port() << std::endl;
     auto socket = co_await acceptor.async_accept(asio::use_awaitable);

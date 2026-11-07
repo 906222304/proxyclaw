@@ -55,6 +55,7 @@ private:
     httplib::Server     server_;
     std::jthread        server_thread_;
     std::atomic<bool>   running_{false};
+    std::atomic<bool>   accept_loop_done_{false};
 };
 
 } // namespace clew::transport

@@ -19,6 +19,7 @@ enum class config_change {
     group_deleted,
     group_migrated,
     wholesale_replaced,   // PUT /api/config full replacement
+    ui_geometry,          // window moved/resized (UI thread, debounced); UI-only state
 };
 
 } // namespace clew

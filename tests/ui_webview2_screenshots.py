@@ -164,7 +164,7 @@ def main() -> int:
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
         print(f"(exclude demo target not started: {e})")
-    proc = subprocess.Popen([str(exe), "--config", str(cfg_path)], cwd=exe.parent, env=env)
+    proc = subprocess.Popen([str(exe), "--dev-hooks", "--config", str(cfg_path)], cwd=exe.parent, env=env)
 
     console: list[str] = []
     problems: list[str] = []

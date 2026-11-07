@@ -4,13 +4,17 @@
 #include <chrono>
 #include <format>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include "common/api_exception.hpp"
+#include "common/dev_hooks.hpp"
 #include "config/config_change_tag.hpp"
 #include "config/types.hpp"
 #include "core/exe_paths.hpp"
 #include "core/log.hpp"
+#include "services/autostart_service.hpp"
 
 namespace clew {
 
@@ -29,6 +33,38 @@ bool pump_pending_messages() {
     return true;
 }
 
+// Console fallback (no WebView2 window): Ctrl+C / console close ends the
+// main loop. The handler runs on a system thread; for close / logoff /
+// shutdown Windows terminates the process as soon as it returns, so it waits
+// (bounded) for shutdown() to restore DNS and close the WinDivert handles.
+HANDLE g_console_stop = nullptr;  // manual-reset: stop requested
+HANDLE g_console_done = nullptr;  // manual-reset: shutdown() finished
+
+BOOL WINAPI console_ctrl_handler(DWORD type) {
+    switch (type) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+            if (g_console_stop) SetEvent(g_console_stop);
+            return TRUE;
+        case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            if (g_console_stop) SetEvent(g_console_stop);
+            if (g_console_done) WaitForSingleObject(g_console_done, 4500);
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+
+std::wstring utf8_to_wide(std::string_view s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring out(static_cast<size_t>(n > 0 ? n : 0), L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+    return out;
+}
+
 } // namespace
 
 app::app(const cli_options& opts, HINSTANCE hinstance)
@@ -43,7 +79,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , exec_(tree_mgr_, strand_)
     , dns_mgr_(ioc_, exe_relative("dns_state.json"))
     , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
-    , socks5_udp_mgr_(ioc_, udp_groups_)
+    , socks5_udp_mgr_(ioc_, {})
     , projection_(tree_mgr_, strand_)
     , cfg_bridge_(cfg_store_)
     , config_svc_(cfg_store_)
@@ -166,20 +202,48 @@ int app::run() {
     wait_for_tree_init();
     start_traffic_layers();
     PC_LOG_INFO("ProxyClaw is ready.");
+    // An elevated logon task that launches an exe from a folder non-admins can
+    // modify is a silent elevation path. Report it (log + the settings page,
+    // which reads the same state from /api/autostart) instead of keeping it
+    // quietly. Off the main thread: schtasks takes a moment.
+    autostart_check_ = std::jthread([]() {
+        try {
+            const auto s = autostart_service::query();
+            if (s.enabled && !s.task_trusted) {
+                PC_LOG_WARN("autostart: the ProxyClawAutoStart task is UNSAFE and should be "
+                            "turned off or re-created from a protected folder: {}", s.task_issue);
+            } else if (s.enabled && !s.task_matches_exe) {
+                PC_LOG_WARN("autostart: the ProxyClawAutoStart task launches a different exe ({})",
+                            s.task_command);
+            }
+        } catch (const std::exception& e) {
+            PC_LOG_WARN("autostart: startup check failed: {}", e.what());
+        }
+    });
     int rc = run_main_loop();
     shutdown();
     return rc;
 }
 
 void app::sync_groups() {
-    tcp_groups_.clear();
-    udp_groups_.clear();
-    for (const auto& g : config_.get_v2().proxy_groups) {
-        tcp_groups_[g.id] = {g.host, g.port};
-        udp_groups_[g.id] = {g.host, g.port};
+    // Called from the config observer on whichever API worker ran the
+    // mutation, possibly two at once. Serialise the rebuilds and always read
+    // the *latest* config (not the observer's snapshot), so the last rebuild
+    // to finish publishes the newest groups even if observers run out of
+    // order. Relays read the TCP table as an immutable snapshot (pointer swap); the
+    // UDP manager copies under its own mutex.
+    std::scoped_lock lk(groups_sync_mu_);
+    const ConfigV2 cfg = cfg_store_.get();
+    ProxyGroupMap                                     tcp;
+    std::unordered_map<uint32_t, UdpProxyGroupConfig> udp;
+    for (const auto& g : cfg.proxy_groups) {
+        tcp[g.id] = {g.host, g.port};
+        udp[g.id] = {g.host, g.port};
     }
-    socks5_udp_mgr_.set_groups(udp_groups_);
-    PC_LOG_INFO("Proxy groups synced: {} groups", tcp_groups_.size());
+    const auto n = tcp.size();
+    tcp_groups_.publish(std::move(tcp));
+    socks5_udp_mgr_.set_groups(udp);
+    PC_LOG_INFO("Proxy groups synced: {} groups", n);
 }
 
 nlohmann::json app::traffic_stats() const {
@@ -232,8 +296,7 @@ nlohmann::json app::traffic_stats() const {
     return j;
 }
 
-std::pair<std::string, uint16_t> app::pick_proxy_endpoint() const {
-    const auto& v2 = config_.get_v2();
+std::pair<std::string, uint16_t> app::pick_proxy_endpoint(const ConfigV2& v2) {
     if (!v2.proxy_groups.empty()) {
         return {v2.proxy_groups[0].host, v2.proxy_groups[0].port};
     }
@@ -242,7 +305,9 @@ std::pair<std::string, uint16_t> app::pick_proxy_endpoint() const {
 
 void app::wire_observers() {
     cfg_store_.subscribe(
-        [this](const ConfigV2& cfg, config_change /*tag*/) {
+        [this](const ConfigV2& cfg, config_change tag) {
+            // Window geometry is UI-only state: nothing below depends on it.
+            if (tag == config_change::ui_geometry) return;
             try {
                 exec_.command([this, rules = cfg.auto_rules,
                                excludes = cfg.default_exclude_cidrs](domain::process_tree_manager& m) {
@@ -259,7 +324,7 @@ void app::wire_observers() {
             sync_groups();
             set_log_level(cfg.log_level);
             if (gui_) gui_->set_close_to_tray(cfg.ui.close_to_tray);
-            auto [ph, pp] = pick_proxy_endpoint();
+            auto [ph, pp] = pick_proxy_endpoint(cfg);
             dns_mgr_.apply(cfg.dns, ph, pp);
         });
 }
@@ -284,7 +349,9 @@ std::unique_ptr<webview_app> app::create_gui() {
     // by the local HTTP API. WebView2 still provides PostWebMessageAsJson
     // regardless of which page is loaded.
     std::wstring url;
-    if (auto* dev = std::getenv("PROXYCLAW_DEV_URL"); dev && *dev) {
+    // Honoured only with dev hooks enabled (debug build or --dev-hooks):
+    // the URL receives the session token. See common/dev_hooks.hpp.
+    if (const char* dev = dev_env("PROXYCLAW_DEV_URL")) {
         const int wlen = MultiByteToWideChar(CP_UTF8, 0, dev, -1, nullptr, 0);
         if (wlen > 0) {
             url.resize(static_cast<size_t>(wlen - 1));
@@ -310,13 +377,11 @@ std::unique_ptr<webview_app> app::create_gui() {
     gui->set_close_to_tray(ui_cfg.close_to_tray);
     gui->set_devtools_enabled(opts_.devtools);
     gui->set_start_minimized(opts_.start_minimized);
+    // Runs on the UI thread. The save goes through config_store (same mutex
+    // as every API mutation) and is debounced onto the saver thread, so a
+    // burst of move/resize ends ~500 ms later as one write.
     gui->set_on_move_resize([this](int x, int y, int w, int h) {
-        auto& ui      = config_.get_v2().ui;
-        ui.window_x   = x;
-        ui.window_y   = y;
-        ui.window_width  = w;
-        ui.window_height = h;
-        config_.save();
+        geometry_saver_.schedule([this, x, y, w, h]() { save_window_geometry(x, y, w, h); });
     });
 
     if (!gui->create(hinstance_)) {
@@ -326,14 +391,37 @@ std::unique_ptr<webview_app> app::create_gui() {
     return gui;
 }
 
+void app::save_window_geometry(int x, int y, int w, int h) noexcept {
+    try {
+        if (const auto ui = cfg_store_.get().ui;
+            ui.window_x == x && ui.window_y == y &&
+            ui.window_width == w && ui.window_height == h) {
+            return;  // nothing moved (e.g. a click on the title bar)
+        }
+        cfg_store_.mutate([&](ConfigV2& c) {
+            c.ui.window_x      = x;
+            c.ui.window_y      = y;
+            c.ui.window_width  = w;
+            c.ui.window_height = h;
+        }, config_change::ui_geometry);
+    } catch (const api_exception& e) {
+        PC_LOG_WARN("[ui] saving window geometry failed: {}", e.message());
+    } catch (const std::exception& e) {
+        PC_LOG_WARN("[ui] saving window geometry failed: {}", e.what());
+    }
+}
+
 void app::start_servers_and_workers() {
     if (!api_server_.start()) {
         throw startup_error{"Failed to start HTTP API server"};
     }
     PC_LOG_INFO("HTTP API: http://127.0.0.1:{}/", API_PORT);
 
-    auto [ph, pp] = pick_proxy_endpoint();
-    dns_mgr_.apply(config_.get_v2().dns, ph, pp);
+    {
+        const ConfigV2 cfg = cfg_store_.get();
+        auto [ph, pp] = pick_proxy_endpoint(cfg);
+        dns_mgr_.apply(cfg.dns, ph, pp);
+    }
 
     tree_mgr_.start();
 
@@ -409,10 +497,41 @@ void app::start_traffic_layers() {
 int app::run_main_loop() {
     if (gui_) {
         gui_->run();
-    } else {
-        PC_LOG_ERROR("GUI creation failed — this build requires WebView2.");
-        std::this_thread::sleep_for(std::chrono::hours(1));
+        return 0;
     }
+
+    if (GetConsoleWindow() != nullptr) {
+        // Console session (console build, or a debug build's console): keep
+        // the proxy running until the user stops it. Previously this slept
+        // one hour and then shut the proxy down.
+        g_console_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_console_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (g_console_stop && SetConsoleCtrlHandler(console_ctrl_handler, TRUE)) {
+            PC_LOG_WARN("Running without a window. Press Ctrl+C or close this console to exit.");
+            WaitForSingleObject(g_console_stop, INFINITE);
+            PC_LOG_INFO("Console stop requested");
+            return 0;
+        }
+        PC_LOG_ERROR("SetConsoleCtrlHandler failed ({}); falling back to a message box",
+                     GetLastError());
+    }
+
+    // GUI-subsystem build without a usable WebView2 window and without a
+    // console: the only visible surface is a message box. The proxy keeps
+    // running until the user dismisses it.
+    PC_LOG_ERROR("No window could be created; showing the browser fallback dialog");
+    const std::string url =
+        std::format("http://127.0.0.1:{}{}", API_PORT, api_server_.bootstrap_path());
+    const std::wstring text =
+        L"ProxyClaw 无法创建窗口（WebView2 运行时不可用或初始化失败）。\n"
+        L"代理仍在运行。可在浏览器中打开以下地址使用界面：\n\n" +
+        utf8_to_wide(url) +
+        L"\n\n关闭此对话框将退出 ProxyClaw。\n\n"
+        L"ProxyClaw could not create its window (WebView2 Runtime missing or failed to start).\n"
+        L"The proxy is still running; open the address above in a browser to use the UI.\n"
+        L"Closing this dialog exits ProxyClaw.";
+    MessageBoxW(nullptr, text.c_str(), L"ProxyClaw",
+                MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
     return 0;
 }
 
@@ -420,22 +539,29 @@ void app::shutdown() noexcept {
     if (shut_down_.exchange(true)) return;
     PC_LOG_INFO("Shutting down...");
 
+    // A window move/resize may still be waiting in the debouncer.
+    geometry_saver_.flush();
+
     // DNS first — touches system-wide state visible to the user.
     dns_mgr_.stop();
 
+    // WinDivert teardown follows the documented order: WinDivertShutdown ->
+    // join every thread that uses the handle -> WinDivertClose. Phase 1 stops
+    // receiving and joins the dedicated threads; the handles are closed only
+    // after the io_context workers (strand handlers, UDP relay injection,
+    // IOCP receive completions) are joined below.
     socks5_udp_mgr_.stop();
     if (wd_network_udp_) wd_network_udp_->set_sink(nullptr);
     if (udp_relay_)      udp_relay_->stop();
-    if (wd_network_udp_) wd_network_udp_->close();
-    if (wd_socket_udp_)  wd_socket_udp_->close();
-    PC_LOG_INFO("UDP layers closed");
+    if (wd_network_udp_) wd_network_udp_->stop_workers();
+    if (wd_socket_udp_)  wd_socket_udp_->stop();
 
-    if (wd_socket_)  wd_socket_->close();
-    // Drain parked SYNs (sent through the NETWORK handle) before that
-    // handle goes away.
+    if (wd_socket_)  wd_socket_->stop();
+    if (wd_network_) wd_network_->stop_workers();
+    // Drain parked SYNs (sent through the still-open NETWORK handle) now that
+    // no worker can park new ones.
     if (parker_)     parker_->stop();
-    if (wd_network_) wd_network_->close();
-    PC_LOG_INFO("WinDivert layers closed");
+    PC_LOG_INFO("WinDivert layers stopped");
 
     acceptor_.stop();
     api_server_.stop();
@@ -444,11 +570,20 @@ void app::shutdown() noexcept {
     for (auto& w : workers_) w.join();
     PC_LOG_INFO("io_context stopped, {} workers joined", num_workers_);
 
+    // Nothing can touch a WinDivert handle any more.
+    if (wd_network_udp_) wd_network_udp_->close();
+    if (wd_socket_udp_)  wd_socket_udp_->close();
+    if (wd_socket_)      wd_socket_->close();
+    if (wd_network_)     wd_network_->close();
+    PC_LOG_INFO("WinDivert layers closed");
+
     tree_mgr_.stop();
 
     icons_.shutdown();
-    quill::Backend::stop();
+    if (autostart_check_.joinable()) autostart_check_.join();
     PC_LOG_INFO("Goodbye!");
+    quill::Backend::stop();
+    if (g_console_done) SetEvent(g_console_done);
 }
 
 } // namespace clew

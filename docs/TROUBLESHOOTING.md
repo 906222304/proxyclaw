@@ -13,7 +13,7 @@
 **可能的原因**：
 
 1. **当前账户不是管理员**：ProxyClaw 不能 RunAs 切换权限，必须当前账户本身有 admin 权限。Win+R 输 `whoami /groups | findstr "S-1-5-32-544"` 确认。
-2. **缺少 WebView2 Runtime**：Win10 / Win11 自带，但精简版系统或离线环境可能缺。装 [Evergreen Standalone Installer](https://developer.microsoft.com/microsoft-edge/webview2/) 即可。
+2. **缺少 WebView2 Runtime**：Win10 / Win11 自带，但精简版系统或离线环境可能缺。装 [Evergreen Standalone Installer](https://developer.microsoft.com/microsoft-edge/webview2/) 即可。v0.13.1 起窗口创建失败时会弹出一个对话框，给出可在浏览器中打开的界面地址；代理一直运行到关闭该对话框为止（之前会在一小时后自动退出）。
 3. **UAC 被组策略禁用**：检查本机安全策略或域策略里的 UAC 配置，尤其是管理员批准模式相关策略。
 
 **排查**：右键 `proxyclaw.exe` → "以管理员身份运行"，看是否还是闪退。如果还闪退，去 `事件查看器` → `Windows 日志 → 应用程序`，看最近的 Application Error 条目，里面有崩溃模块名。
@@ -29,7 +29,7 @@
 3. **进程命中但流量不走代理**：
    - 检查 `Protocol` 字段——如果设了只 TCP，UDP 流量不会走代理；想全代理就选 Both。
    - 是否在访问内网/loopback。按设计 `default_exclude_cidrs` 排除了 127/8 + 10/8 + 172.16/12 + 192.168/16 + 169.254/16，访问这些范围不会走代理（避免本地服务被代理坏掉）。要让某段内网走代理需手动改这个字段。
-4. **短命进程（git / curl / gh）时灵时不灵**：v0.10 之前这类进程的第一条连接基本都漏（进程启动后 150ms 就连出去了，而 ETW 通知晚 1–2 秒）。v0.10 起 SOCKET 层会同步补进程树，NETWORK 层把连接的第一个 SYN 扣住等判定（"SYN 停车"）。看 `GET http://127.0.0.1:18080/api/stats` 里的 `tcp_syn_parking`（v0.10.2 起 API 需要会话凭证：用 `PROXYCLAW_API_TOKEN=<至少 32 位随机串>` 启动 ProxyClaw，再执行 `curl -H "X-ProxyClaw-Token: <同一串>" http://127.0.0.1:18080/api/stats`）：
+4. **短命进程（git / curl / gh）时灵时不灵**：v0.10 之前这类进程的第一条连接基本都漏（进程启动后 150ms 就连出去了，而 ETW 通知晚 1–2 秒）。v0.10 起 SOCKET 层会同步补进程树，NETWORK 层把连接的第一个 SYN 扣住等判定（"SYN 停车"）。看 `GET http://127.0.0.1:18080/api/stats` 里的 `tcp_syn_parking`（v0.10.2 起 API 需要会话凭证：用 `PROXYCLAW_API_TOKEN=<至少 32 位随机串>` 并带上 `--dev-hooks` 参数启动 ProxyClaw（v0.13.1 起正式版只在有 `--dev-hooks` 时读取该变量），再执行 `curl -H "X-ProxyClaw-Token: <同一串>" http://127.0.0.1:18080/api/stats`）：
    - `parking.released_by_watchdog` 和 `socket.late_rejected_proxied` 持续增长 = 判定来不及，代理漏了。把 `log_level` 改成 `debug`，看 `[SYN-PARK] watchdog released` 前后的 `[TreeMgr] Sync-resolved … in Nus` 耗时。
    - `parking.pool_in_use` 在没有新连接时不回到 0 = 池泄漏，请带日志反馈。
    - 怀疑是停车本身把连接搞坏了：在 `proxyclaw.json` 里加 `"tcp_syn_parking": { "enabled": false }` 后重启，回到旧行为（会重新漏短命进程，但排除了新代码）。日志里会有 `[SYN-PARK] disabled by config`。
@@ -105,3 +105,27 @@ sc.exe delete WinDivert
 5. 是否能稳定复现
 
 [在 GitHub 提 Issue](https://github.com/ymonster/clew-proxy/issues/new)。
+
+## 7. 无法开启“登录 Windows 后自动启动”
+
+**症状**：设置页里该开关是灰色的，或点了提示“当前文件夹普通用户可以修改……”；或者已经开着，但出现黄色警告“已有的开机启动任务……存在提权风险”。
+
+**原因**：开机自启通过计划任务以管理员权限、**不弹 UAC** 地启动 ProxyClaw。如果 `proxyclaw.exe` 所在的文件夹（或其中的 DLL、`frontend` 界面文件，或上级目录）普通权限的程序也能修改，任何在你账户下运行的程序都可以替换这些文件，下次登录时就悄悄获得管理员权限。v0.13.1 起，只有当这些位置只能被 Administrators / SYSTEM / TrustedInstaller 修改时才允许开启（`下载`、`桌面`、`D:\工具` 这类文件夹通常不满足）。
+
+**解决**：
+
+1. 用管理员权限把整个 ProxyClaw 文件夹移到 `C:\Program Files\ProxyClaw`（Program Files 默认只有管理员能写）。
+2. 从新位置启动 ProxyClaw，再打开该开关。旧的任务若仍指向原位置，先关闭再打开一次即可重建。
+3. 自己指定的文件夹也可以，但要求文件夹和其中文件的所有者是 Administrators（或 SYSTEM / TrustedInstaller），且普通用户只有读取/执行权限。警告下方会写明具体是哪个文件或目录、哪个账户有写权限。
+
+升级前就注册过、指向不安全位置的任务不会被自动删除，但设置页和 `proxyclaw.log` 会给出警告，建议尽快按上面的方法处理。
+
+## 8. 环境变量 PROXYCLAW_DEV_URL / PROXYCLAW_API_TOKEN / WEBVIEW2_* 不生效
+
+v0.13.1 起正式版（Release 构建）默认**忽略**这些开发/测试用的环境变量，并在启动时把它们从进程环境中移除（日志里会有 `Ignoring environment variable …`）。原因：用户级环境变量不需要管理员权限就能修改，而 ProxyClaw 以管理员权限运行——这些变量能把会话凭证发给任意网页、预先指定 API 凭证，或给内嵌浏览器打开调试端口。
+
+开发或跑测试时，在**以管理员权限启动的命令行**里加上 `--dev-hooks` 参数即可恢复原来的行为，例如：`proxyclaw.exe --dev-hooks`。Debug 构建始终启用。
+
+## 9. 控制台模式
+
+没有窗口时（控制台构建，或 Debug 构建的控制台）ProxyClaw 会一直运行，直到按 Ctrl+C 或关闭控制台窗口；退出时会先恢复 DNS 设置再关闭 WinDivert。之前的版本会在一小时后自动退出。

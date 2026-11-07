@@ -1,7 +1,11 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <format>
+#include <thread>
 #include <vector>
 #include <fstream>
 #include <filesystem>
@@ -81,8 +85,10 @@ public:
             // 2. Write to a temp file then rename atomically. This avoids
             //    leaving a half-written config on disk if the process
             //    crashes mid-write.
+            //    The temp name is unique per save so two writers can never
+            //    interleave into (or rename away) the same temp file.
             auto tmp_path = config_path_;
-            tmp_path += ".tmp";
+            tmp_path += unique_tmp_suffix();
             {
                 std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
                 if (!file) {
@@ -154,6 +160,14 @@ public:
     }
 
 private:
+    // ".<thread>.<seq>.tmp" — unique within the process; the single-instance
+    // guard makes it unique across processes sharing a config file.
+    static std::string unique_tmp_suffix() {
+        static std::atomic<uint64_t> seq{0};
+        const auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
+        return std::format(".{:x}.{}.tmp", tid, seq.fetch_add(1, std::memory_order_relaxed));
+    }
+
     // Ensure proxy_groups is populated (migration from default_proxy / inline proxy)
     void ensure_proxy_groups() {
         if (!v2_config_.proxy_groups.empty()) return;

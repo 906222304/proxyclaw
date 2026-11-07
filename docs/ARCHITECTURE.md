@@ -264,7 +264,9 @@ new piling up). See the v0.8.9 release notes on GitHub.
 Settings → "Start ProxyClaw at logon" registers a Windows Task Scheduler entry that launches proxyclaw.exe at user login with the user's elevated token. The naive registry approach (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) would prompt UAC every login, since proxyclaw.exe needs admin for WinDivert and `SetInterfaceDnsSettings`. Task Scheduler with `/RL HIGHEST` skips the prompt.
 
 - **`src/services/autostart_service.{hpp,cpp}`** — stateless static API (`query()` / `set(enabled, start_minimized)`). Implementation shells out to `schtasks.exe` (system32 absolute path, not PATH-dependent), captures stdout + stderr via anonymous pipes drained by `std::jthread`s in parallel (a single sequential drain deadlocks if schtasks writes more to stderr than the buffer holds). Command-line construction goes through a `quote_win_arg` helper that follows the `CommandLineToArgvW` rules so paths with spaces or quotes survive. State lives in the OS, not in `proxyclaw.json` — `query()` shells out fresh on every call so manual edits via `taskschd.msc` are reflected immediately in the UI.
-- **`src/transport/handlers/autostart_handlers.cpp`** — `GET /api/autostart` returns `{enabled, start_minimized}`; `PUT /api/autostart` writes through to `autostart_service::set` and re-queries. No `api_context` dependency (mirrors `shell_service`).
+- **`src/transport/handlers/autostart_handlers.cpp`** — `GET /api/autostart` returns `{enabled, start_minimized, location_trusted, location_issue, task_command, task_matches_exe, task_trusted, task_issue}`; `PUT /api/autostart` writes through to `autostart_service::set` and re-queries. No `api_context` dependency (mirrors `shell_service`).
+- **Install-location gate (v0.13.1)** — an elevated logon task is a silent elevation path for whoever can modify what it launches. `set(true, …)` therefore refuses (409, `details.code = "unsafe_install_location"`, plus `path` / `reason`) unless `core/path_trust.hpp::check_install_dir(exe_dir)` passes: the exe directory, every regular file directly in it (exe, `WinDivert.dll`, `WinDivert64.sys`, config, ...) and `frontend/` recursively must be owned by and only writable by Administrators / SYSTEM / TrustedInstaller (owner + DACL walk; inherit-only ACEs skipped, deny ACEs ignored, object ACEs with write bits count as untrusted, NULL DACL / unreadable descriptor / UNC path = untrusted), and no ancestor directory may grant anyone else `FILE_DELETE_CHILD`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER` or `GENERIC_ALL` (which would allow swapping the folder; "create subfolder" on `C:\` is fine). `query()` runs the same check for the current exe and for the exe the existing task launches (parsed from `schtasks /Query /XML` `<Command>`), so a task registered by an older version from e.g. `Downloads` is reported (`task_trusted=false`, settings banner, startup log warning) rather than silently kept. It is not deleted automatically.
+- **DLL search order (v0.13.1)** — `main.cpp` calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` before anything else, so a later `LoadLibrary("name.dll")` (shell, COM, WebView2 helpers) can no longer pick up a DLL planted next to the exe. ProxyClaw loads no app-local DLL by name at runtime: `WinDivert.dll` (and `WebView2Loader.dll` when not linked statically) are import-table dependencies resolved before `main()`, which this call cannot affect — the install-location gate covers those.
 - **`webview_app::start_minimized_`** — when set (via `--minimized` CLI arg or `app::create_gui` from `cli_options`), the host window goes through `SW_HIDE` instead of `SW_SHOW` (cleaner than `SW_MINIMIZE` — no taskbar flash). Once the WebView2 controller is created (asynchronously, in a callback), `IsVisible` is set to `FALSE` so `process_projection`'s `frontend_visible` gate (Visibility gate above) matches reality from `t=0` and no work piles up.
 - **Task command line**: `"<exe-abs-path>" --config "<exe-dir>/proxyclaw.json"` plus `--minimized` if the sub-toggle is on. `--config` is pinned even though `exe_directory() / "proxyclaw.json"` is the default — explicit pinning self-documents the autostart contract in the task entry.
 
@@ -431,7 +433,8 @@ pre-routing handler in `middleware.cpp`) applies three checks to every request:
 1. **Host** must be `127.0.0.1:18080` or `localhost:18080` (421 otherwise),
    which defeats DNS rebinding.
 2. **Origin**, when present, must be the UI's own origin, or the origin of
-   `PROXYCLAW_DEV_URL` in frontend dev mode (403 otherwise).
+   `PROXYCLAW_DEV_URL` in frontend dev mode (403 otherwise; honoured only
+   with dev hooks, see below).
 3. **Session token** on every `/api/` path: a per-launch random value from
    `BCryptGenRandom`, sent as the `proxyclaw_session` cookie (`HttpOnly;
    SameSite=Strict`) or the `X-ProxyClaw-Token` header (401 otherwise).
@@ -441,7 +444,20 @@ cookie and redirects to `/`; the token never appears in static assets and is
 redacted from the navigation log line. No CORS headers are sent and `OPTIONS`
 is no longer answered. WebView2 web messages are accepted only from the origin
 the host navigated to. Test harnesses set `PROXYCLAW_API_TOKEN` (32+ chars)
-for the process they launch and send the header.
+for the process they launch (with `--dev-hooks`) and send the header.
+
+**Dev/test environment hooks (v0.13.1)** — HKCU environment variables can be
+set by any unelevated process of the user, so a release build no longer
+trusts them: `PROXYCLAW_DEV_URL`, `PROXYCLAW_API_TOKEN` and the WebView2
+overrides (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`,
+`WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`, `WEBVIEW2_USER_DATA_FOLDER`,
+`WEBVIEW2_RELEASE_CHANNEL*`, `WEBVIEW2_CHANNEL_SEARCH_KIND`,
+`WEBVIEW2_*_SCRIPT_DEBUGGER`) are honoured only in debug builds or when the
+elevated command line carries `--dev-hooks`; otherwise `main()` removes them
+from the process environment (CRT and Win32 block) before the WebView2 loader
+can read them, and logs each one it ignored (`common/dev_hooks.hpp`). The CI
+harnesses (e2e, rule-policy, stress, WebView2 screenshots over CDP) pass
+`--dev-hooks`.
 Isolation from other local processes of the same user is out of scope; that
 would need an ACL'd named pipe.
 
@@ -478,6 +494,41 @@ POST   /api/shell/reveal           - Reveal file in Explorer
 ```
 
 The engine is always-on while `proxyclaw.exe` runs — there is no start/stop control plane. WinDivert layers + acceptor + UDP relay + DNS manager are initialized at startup and torn down on shutdown.
+
+**Shutdown order (v0.13.1).** `app::shutdown()` follows WinDivert's documented
+`WinDivertShutdown` → join → `WinDivertClose` order instead of closing handles
+under blocked workers: (1) flush the debounced window-geometry save, restore
+DNS; (2) phase 1 per layer — NETWORK layers `WinDivertShutdown(RECV)` and join
+their workers (they drain the queue, re-injecting as usual, and exit on
+`ERROR_NO_DATA`; the handle stays open for sends), SOCKET layers
+`WinDivertShutdown(BOTH)` and join the fallback thread (the IOCP receive
+completes with an error and is not re-armed); the SYN parker drains through the
+still-open NETWORK handle after the TCP workers are gone; (3) acceptor + HTTP
+API stop, io_context workers joined; (4) only then `WinDivertClose` on all four
+handles, when no strand handler, UDP relay injection or IOCP completion can
+still use them. Unexpected `WinDivertRecv` errors back off 1 ms instead of
+spinning.
+
+**Runtime state written from more than one thread (v0.13.1).**
+- Proxy groups for the TCP relay live in `proxy/proxy_group_table.hpp`: the
+  config observer (API worker threads) builds a complete new map and publishes
+  it with one pointer swap; relays take a `shared_ptr` snapshot per connection
+  (no strand hop, no in-place `clear()` under readers). `app::sync_groups()`
+  serialises rebuilds and always reads the latest config, so out-of-order
+  observers cannot publish stale groups.
+- Window geometry: the UI thread only schedules a save on `common/debouncer.hpp`
+  (500 ms quiet period); the save runs on the debouncer thread through
+  `config_store::mutate(…, config_change::ui_geometry)` — the same mutex as API
+  mutations. Observers ignore that tag (no rule reload, no frontend push).
+  `config_manager::save()` writes a unique temp file per save
+  (`proxyclaw.json.<thread>.<seq>.tmp`) before the atomic rename.
+- `http_api_server::start()` binds synchronously (`bind_to_port`) and waits
+  until httplib's accept loop runs, instead of reporting success after a fixed
+  100 ms sleep.
+- Without a window, the console fallback waits for Ctrl+C / console close
+  (`SetConsoleCtrlHandler`) instead of exiting after one hour; a GUI-subsystem
+  build without a usable WebView2 shows a dialog with the browser URL and runs
+  until it is dismissed.
 
 Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
 *not* over HTTP — see "Backend → frontend push" above):
@@ -540,9 +591,9 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
 - **Configure**: `python scripts/prepare_release_deps.py`, then `cmake --preset windows` (VS 2022) or `cmake --preset windows-vs2026` (uses `CMakePresets.json`)
 - **Build Release**: `cmake --build build --config Release`
 - **Build Debug**: `cmake --build build --config Debug`
-- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (api_auth, dns_wire, dns_manager, ui_config, config_migration, log_tail, projection, tcp_redirect, runtime_state)
+- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (api_auth, dns_wire, dns_manager, ui_config, config_migration, log_tail, projection, concurrency, path_trust, tcp_redirect, runtime_state)
 - **Run** (admin required): `.\build\Release\proxyclaw.exe`
-- **Frontend dev**: `cd frontend && npm run dev`, then start proxyclaw.exe with `PROXYCLAW_DEV_URL=http://localhost:5173` (the window enters through `/api/session`, proxied by Vite)
+- **Frontend dev**: `cd frontend && npm run dev`, then start proxyclaw.exe with `PROXYCLAW_DEV_URL=http://localhost:5173` and `--dev-hooks` (release builds ignore the variable otherwise; the window enters through `/api/session`, proxied by Vite)
 - **Frontend unit tests**: `cd frontend && npm test` (Vitest)
 - **Frontend build**: `cd frontend && npm run build`
 - **Opt-in: refresh-coalesce window** (perf experimentation only, default OFF):

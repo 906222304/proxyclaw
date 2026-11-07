@@ -315,4 +315,14 @@ if(BUILD_TESTING AND WIN32)
         FAKES ${CMAKE_SOURCE_DIR}/tests/projection_fakes ${CMAKE_SOURCE_DIR}/tests/network_fakes
         LIBS asio::asio nlohmann_json::nlohmann_json ws2_32 mswsock)
     target_compile_definitions(projection_tests PRIVATE ASIO_HAS_THREADS=1 PROXYCLAW_PROJECTION_COALESCE)
+    # v0.13.1: group snapshot swap, debounced geometry save, serialised config
+    # writes with unique temp files.
+    proxyclaw_unit_test(concurrency_tests
+        SOURCES tests/test_concurrency_primitives.cpp src/config/config_store.cpp src/common/api_exception.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes
+        LIBS nlohmann_json::nlohmann_json shell32 ws2_32)
+    # v0.13.1: autostart install-location DACL check and dev-hook gating.
+    proxyclaw_unit_test(path_trust_tests
+        SOURCES tests/test_path_trust.cpp
+        LIBS advapi32)
 endif()

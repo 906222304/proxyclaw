@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
-import { setAutostart, updateConfig, getConfig, type AutostartState } from '@/api/client'
+import { setAutostart, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
 import { autostartQuery, configQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
 import { Button } from '@/components/ui/button'
@@ -82,10 +82,10 @@ export function ConfigEditor() {
   })
 
   const autostartMut = useMutation({
-    mutationFn: (next: AutostartState) => setAutostart(next),
+    mutationFn: (next: Pick<AutostartState, 'enabled' | 'start_minimized'>) => setAutostart(next),
     onMutate: async (next) => {
       const prev = qc.getQueryData<AutostartState>(queryKeys.autostart)
-      qc.setQueryData(queryKeys.autostart, next)
+      qc.setQueryData(queryKeys.autostart, { ...prev, ...next })
       return { prev }
     },
     onSuccess: (result) => qc.setQueryData(queryKeys.autostart, result),
@@ -94,6 +94,11 @@ export function ConfigEditor() {
       pushError(e, '更新开机启动设置失败')
     },
   })
+  // Autostart starts ProxyClaw elevated without a UAC prompt, so the backend
+  // only allows it from a folder non-administrators cannot modify.
+  const locationUnsafe = autostart.location_trusted === false
+  const taskUnsafe = autostart.enabled && autostart.task_trusted === false
+  const canEnableAutostart = autostart.enabled || !locationUnsafe
 
   const saveDns = (enabled = dnsEnabled, mode = dnsMode, upstream = upstreamDraft) =>
     patch.mutate({ fn: dnsPatch(enabled, mode, upstream), ok: 'DNS 设置已保存', fail: '保存 DNS 设置失败' })
@@ -122,14 +127,25 @@ export function ConfigEditor() {
             <Row
               title="登录 Windows 后自动启动"
               description="以管理员权限启动，无需每次确认。"
-              hint="移动 proxyclaw.exe 后，请重新开启此选项。"
+              hint="以管理员权限、无 UAC 提示启动，因此仅允许从只有管理员能修改的文件夹（如 C:\Program Files\ProxyClaw）开启。移动 proxyclaw.exe 后，请重新开启此选项。"
             >
               <Switch
                 checked={autostart.enabled}
+                disabled={!canEnableAutostart}
                 aria-label="登录 Windows 后自动启动"
                 onCheckedChange={v => autostartMut.mutate({ enabled: v, start_minimized: autostart.start_minimized })}
               />
             </Row>
+            {(taskUnsafe || (locationUnsafe && !autostart.enabled)) && (
+              <div role="alert" data-testid="autostart-unsafe" className="space-y-1 bg-warning-soft py-2 pr-4 pl-9 text-2xs text-warning">
+                <p className="font-medium">
+                  {taskUnsafe
+                    ? '已有的开机启动任务从普通用户可修改的文件夹以管理员权限启动 ProxyClaw，存在提权风险。建议关闭此选项，将 ProxyClaw 移到 C:\\Program Files 下后再开启。'
+                    : UNSAFE_LOCATION_MESSAGE}
+                </p>
+                <p className="break-all opacity-80">{taskUnsafe ? autostart.task_issue : autostart.location_issue}</p>
+              </div>
+            )}
             <Row
               className="pl-9"
               title={<span className="text-xs font-normal">启动时隐藏到托盘</span>}
@@ -137,7 +153,7 @@ export function ConfigEditor() {
             >
               <Switch
                 checked={autostart.start_minimized}
-                disabled={!autostart.enabled}
+                disabled={!autostart.enabled || locationUnsafe}
                 aria-label="启动时隐藏到托盘"
                 onCheckedChange={v => autostartMut.mutate({ enabled: true, start_minimized: v })}
               />

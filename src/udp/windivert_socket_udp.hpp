@@ -17,6 +17,7 @@
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -97,15 +98,25 @@ public:
         }
     }
 
+    // Shutdown phase 1: see windivert_socket::stop().
+    void stop() {
+        if (stopped_) return;
+        stopped_ = true;
+        running_ = false;
+        if (handle_ != INVALID_HANDLE_VALUE && !WinDivertShutdown(handle_, WINDIVERT_SHUTDOWN_BOTH))
+            PC_LOG_WARN("[WD-SOCKET-UDP] WinDivertShutdown failed: {}", GetLastError());
+        if (blocking_thread_.joinable()) blocking_thread_.join();
+    }
+
+    // Shutdown phase 2 (after the io_context workers are joined).
     void close() {
         if (closed_) return;
         closed_ = true;
-        running_ = false;
+        stop();
         if (handle_ != INVALID_HANDLE_VALUE) {
             WinDivertClose(handle_);
             handle_ = INVALID_HANDLE_VALUE;
         }
-        if (blocking_thread_.joinable()) blocking_thread_.join();
         PC_LOG_INFO("[WD-SOCKET-UDP] Closed (events={}, matches={})", event_count_, match_count_);
     }
 
@@ -131,6 +142,7 @@ private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
     bool use_iocp_{true};
     bool closed_{false};
+    bool stopped_{false};
     std::atomic<bool> running_{false};
     std::jthread blocking_thread_;
 
@@ -180,6 +192,7 @@ private:
             if (!WinDivertRecv(handle_, nullptr, 0, &recv_len, &addr)) {
                 DWORD err = GetLastError();
                 if (err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));  // no hot spin
                 continue;
             }
             asio::post(strand_, [this, addr]() {

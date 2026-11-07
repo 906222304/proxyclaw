@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -26,6 +27,7 @@
 
 #include "api/icon_cache.hpp"
 #include "common/api_context.hpp"
+#include "common/debouncer.hpp"
 #include "config/config_manager.hpp"
 #include "config/config_store.hpp"
 #include "core/dns_manager.hpp"
@@ -38,6 +40,7 @@
 #include "projection/config_sse_bridge.hpp"
 #include "projection/process_projection.hpp"
 #include "proxy/acceptor.hpp"
+#include "proxy/proxy_group_table.hpp"
 #include "services/config_service.hpp"
 #include "services/connection_service.hpp"
 #include "services/group_service.hpp"
@@ -61,6 +64,7 @@ struct cli_options {
     bool        help            = false;
     bool        devtools        = false;  // --devtools: enable WebView2 DevTools (F12)
     bool        start_minimized = false;  // --minimized: hide main window on launch (used by autostart)
+    bool        dev_hooks       = false;  // --dev-hooks: honour developer/test env hooks in a release build
     std::string static_dir;
     std::string config_path;              // --config: explicit proxyclaw.json path; default = exe_directory()/proxyclaw.json
 };
@@ -94,7 +98,8 @@ private:
     void shutdown() noexcept;
 
     void                                           sync_groups();
-    [[nodiscard]] std::pair<std::string, uint16_t> pick_proxy_endpoint() const;
+    void                                           save_window_geometry(int x, int y, int w, int h) noexcept;
+    [[nodiscard]] static std::pair<std::string, uint16_t> pick_proxy_endpoint(const ConfigV2& cfg);
     [[nodiscard]] std::unique_ptr<webview_app>     create_gui();
     // SOCKET-layer + SYN-parking counters for /api/stats (called off-strand).
     [[nodiscard]] nlohmann::json                   traffic_stats() const;
@@ -116,12 +121,16 @@ private:
     std::atomic<bool> shut_down_        = false;
 
     config_store                 cfg_store_;
+    // Debounced window-geometry save (UI thread -> saver thread -> cfg_store_).
+    // Declared after cfg_store_ so it is destroyed (and flushed) first.
+    debouncer                    geometry_saver_{std::chrono::milliseconds(500)};
     domain::process_tree_manager tree_mgr_;
     strand_bound_manager         exec_;
 
     std::unique_ptr<PortTracker>                      port_tracker_ = std::make_unique<PortTracker>();
-    std::unordered_map<uint32_t, ProxyGroupConfig>    tcp_groups_;
-    std::unordered_map<uint32_t, UdpProxyGroupConfig> udp_groups_;
+    // TCP relays read immutable snapshots; sync_groups() publishes whole maps.
+    proxy_group_table                                 tcp_groups_;
+    std::mutex                                        groups_sync_mu_;
     DnsManager                                        dns_mgr_;
     async_acceptor                                    acceptor_;
     uint16_t                                          redirect_port_ = 0;
@@ -159,6 +168,7 @@ private:
 
     std::unique_ptr<webview_app> gui_;
     std::vector<std::jthread>    workers_;
+    std::jthread                 autostart_check_;  // one-shot startup check of the logon task
 };
 
 } // namespace clew

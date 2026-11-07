@@ -18,6 +18,7 @@
 
 #include "config/proxy_host.hpp"
 #include "core/port_tracker.hpp"
+#include "proxy/proxy_group_table.hpp"
 #include "proxy/tcp_dns_upstream.hpp"
 #include "proxy/socks5_async.hpp"
 #include "proxy/connection_health.hpp"
@@ -33,12 +34,6 @@ namespace clew {
 
 using asio::ip::tcp;
 using asio::experimental::awaitable_operators::operator&&;
-
-// ProxyGroupConfig for relay (matches v3 architecture groups_ map value)
-struct ProxyGroupConfig {
-    std::string host;
-    uint16_t    port{7890};
-};
 
 // Unidirectional pipe: read from `from`, write to `to`.
 // EOF is a half-close: the opposite direction may still have a response.
@@ -87,14 +82,14 @@ pipe(tcp::socket& from, tcp::socket& to, uint16_t port, const char* direction)
 // Parameters:
 //   client_sock:    accepted socket from local listener (redirected app connection)
 //   tracker:        port tracker to lookup original destination
-//   strand:         strand protecting groups_ map
-//   groups:         proxy group config map (read on strand)
+//   strand:         strand that owns tracker slot retirement
+//   groups:         immutable, atomically swapped proxy group snapshot
 //   setup_timeout:  total resolution/connect/handshake deadline
 inline asio::awaitable<void>
 handle_connection(tcp::socket client_sock,
                   PortTracker& tracker,
                   asio::strand<asio::io_context::executor_type>& strand,
-                  const std::unordered_map<uint32_t, ProxyGroupConfig>& groups,
+                  const proxy_group_table& groups,
                   std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10))
 {
     auto ex = co_await asio::this_coro::executor;
@@ -123,18 +118,9 @@ handle_connection(tcp::socket client_sock,
         });
     };
 
-    // Query group config on strand (enter strand, read, exit immediately)
-    struct GroupInfo {
-        std::string host;
-        uint16_t port;
-    };
-
-    auto cfg_opt = co_await asio::co_spawn(strand,
-        [&groups, group_id = entry->group_id]() -> asio::awaitable<std::optional<GroupInfo>> {
-            auto it = groups.find(group_id);
-            if (it == groups.end()) co_return std::nullopt;
-            co_return GroupInfo{it->second.host, it->second.port};
-        }, asio::use_awaitable);
+    // Lock-free read of the current group snapshot (published whole by the
+    // config observer; never mutated in place).
+    const auto cfg_opt = groups.find(entry->group_id);
 
     if (!cfg_opt) {
         PC_LOG_WARN("[RELAY] Group {} not found for port {}", entry->group_id, src_port);

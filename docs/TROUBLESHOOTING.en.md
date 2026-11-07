@@ -13,7 +13,7 @@ Ordered by how often users actually hit the issue, most common first.
 **Causes** (in order of likelihood):
 
 1. **Not logged in as administrator**: ProxyClaw can't elevate via RunAs; the current Windows account itself needs admin privileges. Run `whoami /groups | findstr "S-1-5-32-544"` in a terminal to confirm.
-2. **WebView2 Runtime not installed**: built into Windows 11 and recent Windows 10; download the [Evergreen Standalone Installer from Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/) on stripped-down or offline systems.
+2. **WebView2 Runtime not installed**: built into Windows 11 and recent Windows 10; download the [Evergreen Standalone Installer from Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/) on stripped-down or offline systems. Since v0.13.1, if the window cannot be created a dialog shows the address to open the UI in a browser; the proxy keeps running until you close that dialog (earlier versions quit after one hour).
 3. **UAC disabled by group policy**: check `Control Panel → User Accounts → Change User Account Control settings` — don't set it to "Never notify". Especially relevant on domain-joined machines.
 
 **To diagnose**: right-click `proxyclaw.exe` → "Run as administrator". If it still flashes and dies, open `Event Viewer → Windows Logs → Application` and look at the latest Application Error entry — it'll show the crashing module.
@@ -29,7 +29,7 @@ Ordered by how often users actually hit the issue, most common first.
 3. **Process matched but traffic doesn't go through proxy**:
    - Check the `Protocol` field on the rule. If it's TCP only, UDP traffic won't be proxied; pick `Both` for full coverage.
    - Is the destination on a local / loopback network? By design `default_exclude_cidrs` excludes 127/8 + 10/8 + 172.16/12 + 192.168/16 + 169.254/16, so traffic to those ranges stays direct (avoids breaking local services). To proxy a specific intranet range, edit `default_exclude_cidrs` to remove that CIDR.
-4. **Short-lived processes (git / curl / gh) work only sometimes**: before v0.10 their first connection nearly always escaped (the process connects ~150 ms after birth; ETW announces it 1–2 s later). Since v0.10 the SOCKET layer resolves the process synchronously and the NETWORK layer holds the connection's first SYN until the decision lands ("SYN parking"). Check `tcp_syn_parking` in `GET http://127.0.0.1:18080/api/stats` (since v0.10.2 the API needs a session token: start ProxyClaw with `PROXYCLAW_API_TOKEN=<32+ random chars>`, then run `curl -H "X-ProxyClaw-Token: <same value>" http://127.0.0.1:18080/api/stats`):
+4. **Short-lived processes (git / curl / gh) work only sometimes**: before v0.10 their first connection nearly always escaped (the process connects ~150 ms after birth; ETW announces it 1–2 s later). Since v0.10 the SOCKET layer resolves the process synchronously and the NETWORK layer holds the connection's first SYN until the decision lands ("SYN parking"). Check `tcp_syn_parking` in `GET http://127.0.0.1:18080/api/stats` (since v0.10.2 the API needs a session token: start ProxyClaw with `PROXYCLAW_API_TOKEN=<32+ random chars>` and the `--dev-hooks` argument — since v0.13.1 release builds read that variable only with `--dev-hooks` — then run `curl -H "X-ProxyClaw-Token: <same value>" http://127.0.0.1:18080/api/stats`):
    - `parking.released_by_watchdog` and `socket.late_rejected_proxied` keep growing = decisions arrive too late and the proxy is missing flows. Set `log_level` to `debug` and look at the `[TreeMgr] Sync-resolved … in Nus` timings around `[SYN-PARK] watchdog released`.
    - `parking.pool_in_use` does not return to 0 while nothing is connecting = pool leak; please report it with the log.
    - If you suspect parking itself broke a connection: add `"tcp_syn_parking": { "enabled": false }` to `proxyclaw.json` and restart. That restores the old behavior (short-lived processes escape again, but the new code is out of the picture). The log says `[SYN-PARK] disabled by config`.
@@ -105,3 +105,27 @@ The most useful information to include:
 5. Whether the issue is reliably reproducible
 
 [File an issue on GitHub](https://github.com/ymonster/clew-proxy/issues/new).
+
+## 7. "Start after Windows login" cannot be turned on
+
+**Symptom**: the switch in Settings is greyed out, or turning it on reports that the current folder can be modified by normal users; or it is already on and a yellow warning says the existing autostart task is an elevation risk.
+
+**Why**: autostart uses a scheduled task that starts ProxyClaw elevated **without a UAC prompt**. If the folder containing `proxyclaw.exe` (or a DLL in it, the `frontend` UI files, or a parent folder) can be modified by unelevated programs, any program running under your account could replace those files and silently get administrator rights at your next logon. Since v0.13.1 autostart can only be enabled when those locations are modifiable exclusively by Administrators / SYSTEM / TrustedInstaller (`Downloads`, `Desktop` or a folder such as `D:\Tools` usually are not).
+
+**Fix**:
+
+1. Move the whole ProxyClaw folder (as administrator) to `C:\Program Files\ProxyClaw` — Program Files is admin-only by default.
+2. Start ProxyClaw from the new location and turn the switch on. If an old task still points to the previous location, turn the switch off and on again to re-create it.
+3. A folder of your own also works, provided it and its files are owned by Administrators (or SYSTEM / TrustedInstaller) and normal users only have read/execute rights. The warning names the exact file or folder and the account that has write access.
+
+A task registered before the upgrade that points to an unsafe location is not deleted automatically, but Settings and `proxyclaw.log` warn about it; fix it as above.
+
+## 8. PROXYCLAW_DEV_URL / PROXYCLAW_API_TOKEN / WEBVIEW2_* have no effect
+
+Since v0.13.1 release builds **ignore** these developer/test environment variables and remove them from the process environment at startup (the log says `Ignoring environment variable …`). User environment variables can be changed without administrator rights while ProxyClaw runs elevated; these variables could send the session token to an arbitrary page, pre-select the API token, or open a debugging port into the embedded browser.
+
+For development or test runs, add `--dev-hooks` to the **elevated** command line to restore the old behaviour, e.g. `proxyclaw.exe --dev-hooks`. Debug builds always honour them.
+
+## 9. Console mode
+
+Without a window (console build, or a debug build's console) ProxyClaw now keeps running until you press Ctrl+C or close the console; on exit it restores DNS before closing WinDivert. Earlier versions quit after one hour.

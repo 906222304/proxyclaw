@@ -18,6 +18,7 @@
 #include "common/json_patch.hpp"
 #include "config/config_change_tag.hpp"
 #include "config/config_store.hpp"
+#include "config/proxy_group_validation.hpp"
 #include "config/types.hpp"
 #include "core/log.hpp"
 #include "domain/process_tree_manager.hpp"
@@ -26,6 +27,28 @@
 #include "proxy/proxy_probe.hpp"
 
 namespace clew {
+
+namespace {
+
+// 400 with {"error": message, "details": {"field": ...}} for invalid input.
+proxy_group_input parse_or_throw(const nlohmann::json& body) {
+    proxy_group_input in;
+    if (auto err = parse_proxy_group_input(body, in)) {
+        throw api_exception{api_error::invalid_argument, err->message,
+                            nlohmann::json{{"field", err->field}}};
+    }
+    return in;
+}
+
+void apply_input(ProxyGroup& g, const proxy_group_input& in) {
+    if (in.name)     g.name     = *in.name;
+    if (in.host)     g.host     = *in.host;
+    if (in.port)     g.port     = *in.port;
+    if (in.type)     g.type     = *in.type;
+    if (in.test_url) g.test_url = *in.test_url;
+}
+
+} // namespace
 
 group_service::group_service(strand_bound_manager& exec, config_store& cfg)
     : exec_(exec), cfg_(cfg) {}
@@ -47,15 +70,20 @@ nlohmann::json group_service::list_groups() const {
 }
 
 nlohmann::json group_service::create_group(const nlohmann::json& body) {
+    // Validate before mutating: an invalid body must not consume a group id.
+    // Absent fields keep the documented defaults (127.0.0.1:7890, socks5);
+    // present but invalid ones are rejected, never replaced by a default.
+    const auto in = parse_or_throw(body);
     ProxyGroup group;
     cfg_.mutate(
-        [&group, &body](ConfigV2& c) {
+        [&group, &in](ConfigV2& c) {
             group.id       = c.next_group_id++;
-            group.name     = body.value("name", std::format("group_{}", group.id));
-            group.host     = body.value("host", std::string{"127.0.0.1"});
-            group.port     = body.value("port", 7890);
-            group.type     = body.value("type", std::string{"socks5"});
-            group.test_url = body.value("test_url", std::string{"http://www.gstatic.com/generate_204"});
+            group.name     = std::format("group_{}", group.id);
+            group.host     = "127.0.0.1";
+            group.port     = 7890;
+            group.type     = "socks5";
+            group.test_url = "http://www.gstatic.com/generate_204";
+            apply_input(group, in);
             c.proxy_groups.push_back(group);
         },
         config_change::group_created);
@@ -63,18 +91,14 @@ nlohmann::json group_service::create_group(const nlohmann::json& body) {
 }
 
 void group_service::update_group(std::uint32_t id, const nlohmann::json& patch) {
+    const auto in = parse_or_throw(patch);
     bool found = false;
     cfg_.mutate(
-        [&found, id, &patch](ConfigV2& c) {
+        [&found, id, &in](ConfigV2& c) {
             for (auto& g : c.proxy_groups) {
                 if (g.id == id) {
                     found = true;
-                    apply_patch(g, patch,
-                        field_binding{"name",     &ProxyGroup::name},
-                        field_binding{"host",     &ProxyGroup::host},
-                        field_binding{"port",     &ProxyGroup::port},
-                        field_binding{"type",     &ProxyGroup::type},
-                        field_binding{"test_url", &ProxyGroup::test_url});
+                    apply_input(g, in);
                     break;
                 }
             }
@@ -180,6 +204,16 @@ void group_service::migrate_group(std::uint32_t source_id, std::uint32_t target_
     });
 }
 
+void group_service::require_group(std::uint32_t id) const {
+    const auto cfg = cfg_.get();
+    for (const auto& g : cfg.proxy_groups) {
+        if (g.id == id) return;
+    }
+    throw api_exception{api_error::invalid_argument,
+                        std::format("Proxy group {} does not exist", id),
+                        nlohmann::json{{"field", "group_id"}}};
+}
+
 nlohmann::json group_service::test_group(std::uint32_t id) {
     auto snapshot = cfg_.get();
     const ProxyGroup* group = nullptr;
@@ -205,9 +239,8 @@ nlohmann::json group_service::test_group(std::uint32_t id) {
     }
     struct release_slot { ~release_slot() { slots.release(); } } guard;
 
-    std::string proxy_host = group->host;
-    if (proxy_host.size() > 2 && proxy_host.front() == '[' && proxy_host.back() == ']')
-        proxy_host = proxy_host.substr(1, proxy_host.size() - 2);
+    // Same normalisation as the relay and the UDP session resolve with.
+    const std::string proxy_host = normalize_proxy_host(group->host);
 
     const auto r = probe::run(proxy_host, static_cast<std::uint16_t>(group->port), *target);
 

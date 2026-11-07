@@ -26,6 +26,15 @@ public:
 
     [[nodiscard]] nlohmann::json list_groups() const;
 
+    // Throws invalid_argument (400) unless a group with this id exists. Used
+    // by hijack: a connection routed to a missing group would be dropped.
+    void require_group(std::uint32_t id) const;
+
+    // create/update reject (400, details.field) a port outside 1-65535, an
+    // empty host or host:port, a type other than socks5, and non-empty
+    // user/password (SOCKS5 auth is not implemented). See
+    // config/proxy_group_validation.hpp.
+
     // Auto-assigns id from next_group_id. Returns the created group as json.
     [[nodiscard]] nlohmann::json create_group(const nlohmann::json& body);
 

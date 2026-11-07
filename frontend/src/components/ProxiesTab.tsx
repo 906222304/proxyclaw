@@ -1,7 +1,9 @@
 import { useIsFetching, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Globe, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
+import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
+import * as z from 'zod/mini'
 import { createProxyGroup, deleteProxyGroup, migrateProxyGroup, updateProxyGroup } from '@/api/client'
 import { autoRulesQuery, proxyGroupsQuery, proxyTestQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
@@ -44,8 +46,42 @@ export function testTooltip(r: ProxyTestResult): string {
 
 export const failedLabel = (r: ProxyTestResult) => (r.failed_stage ? `${stageLabel(r.failed_stage)}失败` : '连接失败')
 
-interface GroupForm { name: string; host: string; port: string; test_url: string }
+/** Strip surrounding whitespace and one pair of [] (IPv6 literal), as the backend does. */
+export function normalizeProxyHost(host: string): string {
+  const h = host.trim()
+  return h.length >= 2 && h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h
+}
+
+/**
+ * Same rules as the backend (config/proxy_group_validation.hpp): a usable
+ * host, a port 1-65535 and nothing silently defaulted. Only SOCKS5 without
+ * authentication is supported, so the form has no type or credentials.
+ */
+export const groupFormSchema = z.object({
+  name: z.string(),
+  host: z.string().check(
+    z.refine(v => normalizeProxyHost(v) !== '', '请填写服务器地址'),
+    z.refine(v => !/[\s/[\]]/.test(normalizeProxyHost(v)), '服务器地址无效'),
+    z.refine(v => (normalizeProxyHost(v).match(/:/g) ?? []).length !== 1, '地址中不要带端口，请填在“端口”栏'),
+  ),
+  port: z.string().check(
+    z.refine(v => /^\d+$/.test(v.trim()) && Number(v.trim()) >= 1 && Number(v.trim()) <= 65535, '端口范围 1–65535'),
+  ),
+  test_url: z.string(),
+})
+export type GroupForm = z.infer<typeof groupFormSchema>
 const EMPTY_FORM: GroupForm = { name: '', host: '127.0.0.1', port: '7890', test_url: 'https://www.google.com' }
+
+/** Map a validated form to the API payload. */
+export function groupFormToPayload(f: GroupForm): Omit<ProxyGroup, 'id'> {
+  return {
+    name: f.name,
+    host: normalizeProxyHost(f.host),
+    port: Number(f.port.trim()),
+    type: 'socks5',
+    test_url: f.test_url,
+  }
+}
 
 export function ProxiesTab({ onEditRule }: { onEditRule?: (rule: AutoRule) => void } = {}) {
   const qc = useQueryClient()
@@ -222,7 +258,10 @@ function GroupEditor({ editing, onClose, onSaved }: {
   onSaved: () => Promise<unknown>
 }) {
   const ids = useId()
-  const { register, reset, handleSubmit } = useForm<GroupForm>({ defaultValues: EMPTY_FORM })
+  const { register, reset, handleSubmit, formState: { errors } } = useForm<GroupForm>({
+    defaultValues: EMPTY_FORM,
+    resolver: zodResolver(groupFormSchema),
+  })
   const existing = editing && editing !== 'new' ? editing : null
 
   useEffect(() => {
@@ -234,13 +273,7 @@ function GroupEditor({ editing, onClose, onSaved }: {
 
   const save = useMutation({
     mutationFn: async (f: GroupForm) => {
-      const data = {
-        name: f.name,
-        host: f.host,
-        port: Number.parseInt(f.port, 10) || 7890,
-        type: 'socks5' as const,
-        test_url: f.test_url,
-      }
+      const data = groupFormToPayload(f)
       if (existing) await updateProxyGroup(existing.id, data)
       else await createProxyGroup(data)
     },
@@ -255,7 +288,7 @@ function GroupEditor({ editing, onClose, onSaved }: {
       onOpenChange={o => { if (!o) onClose() }}
       modalLock
       title={existing ? '编辑代理组' : '新建代理组'}
-      description="设置 SOCKS5 代理服务器。"
+      description="设置 SOCKS5 代理服务器。仅支持无认证的 SOCKS5，不支持 HTTP 代理和用户名/密码。"
       footer={<>
         <Button onClick={onClose}>取消</Button>
         <Button variant="primary" disabled={save.isPending} onClick={() => void submit()}>
@@ -273,11 +306,13 @@ function GroupEditor({ editing, onClose, onSaved }: {
         <div className="flex gap-2">
           <div className="flex-1 space-y-1.5">
             <Label htmlFor={`${ids}-h`}>服务器地址</Label>
-            <Input id={`${ids}-h`} placeholder="127.0.0.1" className="tabular" {...register('host')} />
+            <Input id={`${ids}-h`} placeholder="127.0.0.1" className="tabular" aria-invalid={!!errors.host} {...register('host')} />
+            {errors.host && <p className="text-2xs text-destructive" role="alert">{errors.host.message}</p>}
           </div>
           <div className="w-24 space-y-1.5">
             <Label htmlFor={`${ids}-p`}>端口</Label>
-            <Input id={`${ids}-p`} placeholder="7890" inputMode="numeric" className="tabular" {...register('port')} />
+            <Input id={`${ids}-p`} placeholder="7890" inputMode="numeric" className="tabular" aria-invalid={!!errors.port} {...register('port')} />
+            {errors.port && <p className="text-2xs text-destructive" role="alert">{errors.port.message}</p>}
           </div>
         </div>
         <div className="space-y-1.5">

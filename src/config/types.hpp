@@ -200,8 +200,9 @@ struct AutoRule {
     bool matches_tcp() const { return protocol == "tcp" || protocol == "both"; }
     bool matches_udp() const { return protocol == "udp" || protocol == "both"; }
 
-    // Runtime state (not serialized)
-    std::unordered_set<DWORD> excluded_pids;
+    // Runtime state (not serialized). Per-process exclusions are not here:
+    // they are runtime state owned by rule_engine_v3, keyed by (pid, psn),
+    // so a config copy can never carry or resurrect them.
     std::unordered_set<DWORD> matched_pids;
 };
 

@@ -8,9 +8,11 @@
 //     used for real-time Start/Stop. NtQuerySystemInformation is gone — the
 //     30s reconcile timer is gone too.
 //   - Parent linkage uses (parent_pid, parent_psn). When the parent isn't yet
-//     known we park the child in orphans_by_parent_psn_ and resolve on the
-//     parent's first event arrival. Surviving orphans are flushed to root
-//     5s after capture_state via rundown_grace_timer_.
+//     known we park the child, keyed by its own (pid, psn), in orphans_ and
+//     attach it on the parent's first event arrival. Waiting orphans are
+//     forgotten (they stay roots) 5s after the initial capture_state, by a
+//     periodic sweep once they are older than kOrphanMaxAge, and by a sweep
+//     after every lost-event rundown. See domain/orphan_registry.hpp.
 //   - The same grace timer verifies the rundown actually covered the live
 //     process set (EnumProcesses PID count vs tree). A capture_state issued
 //     before the real-time consumer has attached can be dropped by the
@@ -45,6 +47,7 @@
 #include <vector>
 
 #include "config/types.hpp"                // AutoRule
+#include "domain/orphan_registry.hpp"
 #include "domain/tree_change_receiver.hpp" // push_urgency + tree_change_receiver
 #include "process/etw_consumer.hpp"        // etw_consumer + etw_process_event
 #include "process/flat_tree.hpp"
@@ -78,7 +81,9 @@ public:
                       bool tree_mode,
                       uint32_t group_id);
 
-    bool exclude_rule_pid(std::string_view rule_id, DWORD pid);
+    // Per-process exclusion from one auto rule: runtime only, keyed by the
+    // live (pid, psn), re-applies the rules. Not persisted.
+    rule_engine_v3::exclude_result exclude_rule_pid(std::string_view rule_id, DWORD pid);
     bool unexclude_rule_pid(std::string_view rule_id, DWORD pid);
 
     // --- ETW entry point (single dispatch, called on strand after ETW thread posts) ---
@@ -131,16 +136,23 @@ private:
     void count_rundown_coverage(std::size_t& live, std::size_t& missing) const;
 
     // Attach a new entry to its parent given (parent_pid, parent_psn).
-    // Falls back to orphans_by_parent_psn_ when the parent is unknown.
+    // Falls back to orphans_ when the parent is unknown.
     void link_or_orphan(uint32_t new_idx, const etw_process_event& evt);
 
     // Drain orphans waiting for `psn` and attach them to `parent_idx`.
     void drain_orphans_for(uint64_t psn, uint32_t parent_idx);
 
+    // Forget orphans older than kOrphanMaxAge, then re-arm every
+    // kOrphanSweepPeriod. Also armed early after a lost-event rundown.
+    void schedule_orphan_sweep(std::chrono::milliseconds delay);
+    static constexpr std::chrono::seconds kOrphanMaxAge{10};
+    static constexpr std::chrono::seconds kOrphanSweepPeriod{30};
+
     asio::io_context&   ioc_;
     strand_type&        strand_;
     asio::steady_timer  rundown_grace_timer_;
     asio::steady_timer  lost_debounce_timer_;
+    asio::steady_timer  orphan_sweep_timer_;
 
     flat_tree       tree_;
     rule_engine_v3  rules_;
@@ -149,10 +161,9 @@ private:
 
     std::vector<tree_change_receiver*> listeners_;
 
-    // Pending child indices keyed by their parent PSN. Drained when the
-    // parent's event arrives (Start/Rundown). Whatever remains 1s after
-    // initial capture_state is flushed to root by rundown_grace_timer_.
-    std::unordered_map<uint64_t, std::vector<uint32_t>> orphans_by_parent_psn_;
+    // Children waiting for their parent, keyed by (pid, psn), never by tree
+    // index (compact() renumbers). Bounded; see orphan_registry.
+    orphan_registry orphans_;
 
     bool started_{false};
     bool lost_pending_{false};   // simple debounce guard

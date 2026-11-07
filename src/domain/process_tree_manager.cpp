@@ -16,7 +16,8 @@ process_tree_manager::process_tree_manager(asio::io_context& ioc, strand_type& s
     : ioc_(ioc)
     , strand_(strand)
     , rundown_grace_timer_(ioc)
-    , lost_debounce_timer_(ioc) {}
+    , lost_debounce_timer_(ioc)
+    , orphan_sweep_timer_(ioc) {}
 
 process_tree_manager::~process_tree_manager() noexcept {
     try {
@@ -54,6 +55,7 @@ void process_tree_manager::start() {
         etw_->request_rundown();
         rundown_attempts_ = 1;
         schedule_rundown_grace(std::chrono::seconds(5));
+        schedule_orphan_sweep(kOrphanSweepPeriod);
     });
 }
 
@@ -64,6 +66,7 @@ void process_tree_manager::stop() noexcept {
     std::error_code ec;
     rundown_grace_timer_.cancel(ec);
     lost_debounce_timer_.cancel(ec);
+    orphan_sweep_timer_.cancel(ec);
     if (etw_) etw_->stop();
 
     PC_LOG_INFO("[TreeMgr] Stopped");
@@ -132,15 +135,25 @@ bool process_tree_manager::batch_hijack(const std::vector<DWORD>& add,
     return changes > 0;
 }
 
-bool process_tree_manager::exclude_rule_pid(std::string_view rule_id, DWORD pid) {
-    bool ok = rules_.exclude_pid(tree_, rule_id, pid);
-    if (ok) notify_tree_changed("rule_exclude", push_urgency::immediate);
-    return ok;
+rule_engine_v3::exclude_result process_tree_manager::exclude_rule_pid(std::string_view rule_id,
+                                                                      DWORD pid) {
+    // Runtime-only state on the engine: no config mutation, nothing saved.
+    // Re-apply so the entry (and what it would have passed on to its
+    // children) loses the rule, exactly as a full rule reload would.
+    const auto r = rules_.exclude_pid(tree_, rule_id, pid);
+    if (r == rule_engine_v3::exclude_result::ok) {
+        rules_.apply_auto_rules(tree_);
+        notify_tree_changed("rule_exclude", push_urgency::immediate);
+    }
+    return r;
 }
 
 bool process_tree_manager::unexclude_rule_pid(std::string_view rule_id, DWORD pid) {
     bool ok = rules_.unexclude_pid(rule_id, pid);
-    if (ok) notify_tree_changed("rule_unexclude", push_urgency::immediate);
+    if (ok) {
+        rules_.apply_auto_rules(tree_);
+        notify_tree_changed("rule_unexclude", push_urgency::immediate);
+    }
     return ok;
 }
 
@@ -360,13 +373,16 @@ void process_tree_manager::handle_lost(const etw_process_event& evt) {
     lost_pending_ = true;
 
     lost_debounce_timer_.expires_after(std::chrono::seconds(1));
-    lost_debounce_timer_.async_wait([this](std::error_code ec) {
+    lost_debounce_timer_.async_wait(asio::bind_executor(strand_, [this](std::error_code ec) {
         lost_pending_ = false;
         if (ec) return;
         if (!started_) return;
         PC_LOG_INFO("[TreeMgr] Re-requesting capture_state after lost burst");
         if (etw_) etw_->request_rundown();
-    });
+        // The rundown refills missing parents within ~2s; whatever is still
+        // waiting after the max age had its parent's START lost for good.
+        schedule_orphan_sweep(kOrphanMaxAge + std::chrono::seconds(1));
+    }));
 }
 
 void process_tree_manager::link_or_orphan(uint32_t new_idx, const etw_process_event& evt) {
@@ -379,22 +395,37 @@ void process_tree_manager::link_or_orphan(uint32_t new_idx, const etw_process_ev
         tree_.attach_child(parent_idx, new_idx);
         return;
     }
-    // Parent absent: park as orphan keyed by parent_psn.
-    orphans_by_parent_psn_[evt.parent_psn].push_back(new_idx);
+    // Parent absent: the entry stays a root and waits, keyed by its own
+    // (pid, psn) so a later compaction cannot redirect the attach.
+    const auto& e = tree_.at(new_idx);
+    if (!orphans_.park(evt.parent_psn, e.pid, e.psn, std::chrono::steady_clock::now()) &&
+        orphans_.dropped() % 1024 == 1) {
+        PC_LOG_WARN("[TreeMgr] Orphan registry full ({}); PID={} stays a root",
+                    orphans_.cap(), e.pid);
+    }
 }
 
 void process_tree_manager::drain_orphans_for(uint64_t psn, uint32_t parent_idx) {
-    auto it = orphans_by_parent_psn_.find(psn);
-    if (it == orphans_by_parent_psn_.end()) return;
-    for (uint32_t child_idx : it->second) {
-        // Defensive: child may have been tombstoned in the interim
-        // (extremely unlikely but possible if Stop arrives before
-        // Start of the parent in some edge race).
-        if (child_idx >= tree_.entries().size()) continue;
-        if (!tree_.entries()[child_idx].alive) continue;
-        tree_.attach_child(parent_idx, child_idx);
-    }
-    orphans_by_parent_psn_.erase(it);
+    // Children resolve through find_by_pid_psn: one that exited or whose PID
+    // was recycled in the meantime is skipped.
+    orphans_.drain(tree_, psn, parent_idx);
+}
+
+void process_tree_manager::schedule_orphan_sweep(std::chrono::milliseconds delay) {
+    orphan_sweep_timer_.expires_after(delay);
+    orphan_sweep_timer_.async_wait(asio::bind_executor(strand_, [this](std::error_code ec) {
+        if (ec) return;
+        if (!started_) return;
+        if (orphans_.size() > 0) {
+            const auto live = orphans_.expire(
+                tree_, std::chrono::steady_clock::now() - kOrphanMaxAge);
+            if (live > 0) {
+                PC_LOG_INFO("[TreeMgr] Orphan sweep: {} children left as roots "
+                            "(parent never arrived), {} still waiting", live, orphans_.size());
+            }
+        }
+        schedule_orphan_sweep(kOrphanSweepPeriod);
+    }));
 }
 
 void process_tree_manager::count_rundown_coverage(std::size_t& live,
@@ -425,7 +456,7 @@ void process_tree_manager::schedule_rundown_grace(std::chrono::milliseconds dela
     // resolved before we flush surviving orphans to root. 5s is comfortably
     // above the observed 2s envelope on a typical box.
     rundown_grace_timer_.expires_after(delay);
-    rundown_grace_timer_.async_wait([this](std::error_code ec) {
+    rundown_grace_timer_.async_wait(asio::bind_executor(strand_, [this](std::error_code ec) {
         if (ec) return;
         if (!started_) return;
 
@@ -433,16 +464,8 @@ void process_tree_manager::schedule_rundown_grace(std::chrono::milliseconds dela
         // lost (process died between rundown enumeration and our event,
         // or its Start was dropped pre-startup). Flush to root so the
         // tree remains reachable from get_roots().
-        std::size_t flushed = 0;
-        for (auto& [parent_psn, children] : orphans_by_parent_psn_) {
-            for (uint32_t child_idx : children) {
-                if (child_idx >= tree_.entries().size()) continue;
-                if (!tree_.entries()[child_idx].alive) continue;
-                tree_.mark_root(child_idx);
-                ++flushed;
-            }
-        }
-        orphans_by_parent_psn_.clear();
+        // Parked children are already roots; forgetting them is the flush.
+        const std::size_t flushed = orphans_.expire_all(tree_);
         if (flushed > 0) {
             PC_LOG_INFO("[TreeMgr] Rundown grace: {} orphans flushed to root", flushed);
             notify_tree_changed("rundown_grace", push_urgency::batched);
@@ -481,7 +504,7 @@ void process_tree_manager::schedule_rundown_grace(std::chrono::milliseconds dela
                         "(attempts={})", live, missing, tree_.alive_count(), rundown_attempts_);
         }
         tree_ready_ = true;
-    });
+    }));
 }
 
 } // namespace clew::domain

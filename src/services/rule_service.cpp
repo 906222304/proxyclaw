@@ -23,29 +23,34 @@ namespace clew {
 
 namespace {
 
-nlohmann::json rule_entry_to_json(const AutoRule& rule, const flat_tree& tree) {
+nlohmann::json rule_entry_to_json(const AutoRule& rule, const flat_tree& tree,
+                                  const rule_engine_v3& engine) {
     nlohmann::json rj = rule;
+    // Exclusions are engine-owned runtime state keyed by (pid, psn); only
+    // live, PSN-validated ones are listed, so a dead or recycled PID never
+    // shows up as excluded.
+    const auto excluded = engine.excluded_pids(tree, rule.id);
+    const auto is_excluded = [&excluded](DWORD pid) {
+        return std::binary_search(excluded.begin(), excluded.end(), pid);
+    };
     rj["matched_count"]  = rule.matched_pids.size();
-    rj["excluded_count"] = rule.excluded_pids.size();
+    rj["excluded_count"] = excluded.size();
     nlohmann::json pids  = nlohmann::json::array();
     for (DWORD pid : rule.matched_pids) {
         nlohmann::json p;
         p["pid"]      = pid;
         uint32_t idx  = tree.find_by_pid(pid);
         p["name"]     = (idx != INVALID_IDX) ? std::string(tree.at(idx).name_u8) : "unknown";
-        p["excluded"] = rule.excluded_pids.contains(pid);
+        p["excluded"] = is_excluded(pid);
         pids.push_back(std::move(p));
     }
-    // The engine drops an excluded PID from matched_pids, so list live
-    // excluded processes here too (excluded=true) — the UI needs them to
-    // offer 恢复代理. Dead PIDs are skipped: a stale exclusion is invisible.
-    for (DWORD pid : rule.excluded_pids) {
+    // The engine drops an excluded PID from matched_pids, so list excluded
+    // processes here too (excluded=true): the UI needs them to offer 恢复代理.
+    for (DWORD pid : excluded) {
         if (rule.matched_pids.contains(pid)) continue;
-        uint32_t idx = tree.find_by_pid(pid);
-        if (idx == INVALID_IDX || !tree.at(idx).alive) continue;
         nlohmann::json p;
         p["pid"]      = pid;
-        p["name"]     = std::string(tree.at(idx).name_u8);
+        p["name"]     = std::string(tree.at(tree.find_by_pid(pid)).name_u8);
         p["excluded"] = true;
         pids.push_back(std::move(p));
     }
@@ -63,7 +68,7 @@ nlohmann::json rule_service::list_rules() const {
         const auto& tree   = m.tree();
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& rule : m.rules().auto_rules()) {
-            arr.push_back(rule_entry_to_json(rule, tree));
+            arr.push_back(rule_entry_to_json(rule, tree, m.rules()));
         }
         return arr;
     });
@@ -129,37 +134,20 @@ void rule_service::delete_rule(std::string_view id) {
 }
 
 void rule_service::exclude_pid(std::string_view rule_id, std::uint32_t pid) {
-    bool found = false;
-    cfg_.mutate(
-        [&found, rule_id, pid](ConfigV2& c) {
-            for (auto& r : c.auto_rules) {
-                if (r.id == rule_id) {
-                    r.excluded_pids.insert(static_cast<DWORD>(pid));
-                    found = true;
-                    break;
-                }
-            }
-        },
-        config_change::rule_excluded);
-
-    if (!found) {
-        throw api_exception{api_error::not_found, "Rule not found"};
-    }
+    // Runtime-only: the engine owns exclusions keyed by (pid, psn). Nothing
+    // is written to the config, so config reloads never resurrect them.
+    using enum rule_engine_v3::exclude_result;
+    const auto r = exec_.command([rule_id, pid](domain::process_tree_manager& m) {
+        return m.exclude_rule_pid(rule_id, static_cast<DWORD>(pid));
+    });
+    if (r == rule_not_found) throw api_exception{api_error::not_found, "Rule not found"};
+    if (r == process_not_found) throw api_exception{api_error::not_found, "Process not running"};
 }
 
 void rule_service::unexclude_pid(std::string_view rule_id, std::uint32_t pid) {
-    bool found = false;
-    cfg_.mutate(
-        [&found, rule_id, pid](ConfigV2& c) {
-            for (auto& r : c.auto_rules) {
-                if (r.id == rule_id) {
-                    found = r.excluded_pids.erase(static_cast<DWORD>(pid)) > 0 || found;
-                    break;
-                }
-            }
-        },
-        config_change::rule_unexcluded);
-
+    const bool found = exec_.command([rule_id, pid](domain::process_tree_manager& m) {
+        return m.unexclude_rule_pid(rule_id, static_cast<DWORD>(pid));
+    });
     if (!found) {
         throw api_exception{api_error::not_found, "Rule or PID not found"};
     }

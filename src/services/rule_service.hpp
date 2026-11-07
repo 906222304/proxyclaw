@@ -8,7 +8,7 @@
 // tree_change_receiver and thus SSE.
 //
 // list_rules reads via strand_bound_manager to see runtime state fields
-// (matched_pids, excluded_pids) that are maintained in-strand.
+// (matched_pids, per-process exclusions) that are maintained in-strand.
 
 #include <cstdint>
 #include <string_view>
@@ -40,7 +40,8 @@ public:
     // Throws not_found if id is unknown.
     void delete_rule(std::string_view id);
 
-    // Runtime exclusion. Persisted via config_store so it survives reloads.
+    // Runtime exclusion, owned by the rule engine and keyed by the live
+    // (pid, psn). Never persisted; survives rule reloads; dropped on exit.
     void exclude_pid(std::string_view rule_id, std::uint32_t pid);
     void unexclude_pid(std::string_view rule_id, std::uint32_t pid);
 

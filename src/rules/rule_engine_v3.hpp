@@ -19,6 +19,7 @@
 #include <optional>
 #include <algorithm>
 #include "core/log.hpp"
+#include "core/string_hash.hpp"
 
 #include "process/flat_tree.hpp"
 #include "config/types.hpp"
@@ -122,9 +123,16 @@ class rule_engine_v3 {
 public:
     rule_engine_v3() = default;
 
-    // Load auto rules from config (called on strand)
+    // Load auto rules from config (called on strand). Per-process exclusions
+    // are engine-owned runtime state (see exclusions_) and survive a reload
+    // for every rule id that still exists; nothing about them is read from
+    // or written to the config.
     void set_auto_rules(const std::vector<AutoRule>& rules) {
         auto_rules_ = rules;
+        std::erase_if(exclusions_, [this](const auto& kv) {
+            return std::none_of(auto_rules_.begin(), auto_rules_.end(),
+                                [&kv](const AutoRule& r) { return r.id == kv.first; });
+        });
         for (auto& r : auto_rules_) {
             r.matched_pids.clear();
             // v0.9.0: hack_tree pinned true; field retained on disk for future
@@ -267,40 +275,74 @@ public:
         return std::nullopt;
     }
 
-    // Process exit: cleanup from all rule state
+    // Process exit (or its PID was recycled before the STOP arrived): drop
+    // every piece of per-PID rule state of the old owner.
     void on_process_exit(DWORD pid) {
         for (auto& rule : auto_rules_) {
             rule.matched_pids.erase(pid);
-            rule.excluded_pids.erase(pid);
         }
+        for (auto& [rule_id, by_pid] : exclusions_) by_pid.erase(pid);
+        std::erase_if(exclusions_, [](const auto& kv) { return kv.second.empty(); });
     }
 
-    // Exclude/unexclude a PID from a specific rule
-    bool exclude_pid(flat_tree& tree, std::string_view rule_id, DWORD pid) {
-        for (auto& rule : auto_rules_) {
-            if (rule.id != rule_id) continue;
-            rule.excluded_pids.insert(pid);
-            rule.matched_pids.erase(pid);
+    // ---- Per-process exclusion (runtime only, strand-safe) ----
+    //
+    // "This process skips rule X." Keyed by (pid, psn) of the live process
+    // when the user excluded it, never persisted and never copied from the
+    // config. A lookup only honours an exclusion whose PSN is the tree
+    // entry's current PSN, so a recycled PID is not excluded even if the
+    // STOP of its predecessor was lost. Dropped on process exit.
 
-            uint32_t idx = tree.find_by_pid(pid);
-            if (idx != INVALID_IDX) {
-                auto& entry = tree.at(idx);
-                entry.clear_flag(entry_flags::AUTO_MATCHED);
-                if (!entry.has_flag(entry_flags::MANUAL_HIJACK))
-                    entry.group_id = NO_PROXY;
-            }
-            return true;
-        }
-        return false;
+    enum class exclude_result { ok, rule_not_found, process_not_found };
+
+    // Callers re-apply the rules afterwards (apply_auto_rules) so the tree
+    // flags and matched sets reflect the exclusion.
+    exclude_result exclude_pid(const flat_tree& tree, std::string_view rule_id, DWORD pid) {
+        if (!find_rule(rule_id)) return exclude_result::rule_not_found;
+        const uint32_t idx = tree.find_by_pid(pid);
+        if (idx == INVALID_IDX || !tree.at(idx).alive) return exclude_result::process_not_found;
+        exclusions_[std::string(rule_id)][pid] = tree.at(idx).psn;
+        return exclude_result::ok;
     }
 
+    // False when the rule has no exclusion for this PID.
     bool unexclude_pid(std::string_view rule_id, DWORD pid) {
-        for (auto& rule : auto_rules_) {
-            if (rule.id != rule_id) continue;
-            rule.excluded_pids.erase(pid);
-            return true;
+        auto it = exclusions_.find(rule_id);
+        if (it == exclusions_.end()) return false;
+        const bool erased = it->second.erase(pid) > 0;
+        if (it->second.empty()) exclusions_.erase(it);
+        return erased;
+    }
+
+    // Is this live entry excluded from the rule? Validates the PSN.
+    [[nodiscard]] bool is_excluded(std::string_view rule_id, const process_entry& entry) const {
+        if (exclusions_.empty()) return false;
+        auto it = exclusions_.find(rule_id);
+        if (it == exclusions_.end()) return false;
+        auto pit = it->second.find(entry.pid);
+        return pit != it->second.end() && pit->second == entry.psn && entry.alive;
+    }
+
+    // Live, validated excluded PIDs of one rule (API listing).
+    [[nodiscard]] std::vector<DWORD> excluded_pids(const flat_tree& tree,
+                                                   std::string_view rule_id) const {
+        std::vector<DWORD> out;
+        auto it = exclusions_.find(rule_id);
+        if (it == exclusions_.end()) return out;
+        for (const auto& [pid, psn] : it->second) {
+            const uint32_t idx = tree.find_by_pid(pid);
+            if (idx == INVALID_IDX) continue;
+            if (is_excluded(rule_id, tree.at(idx))) out.push_back(pid);
         }
-        return false;
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    // Stored exclusion count across all rules, valid or not (tests/diagnostics).
+    [[nodiscard]] std::size_t exclusion_count() const {
+        std::size_t n = 0;
+        for (const auto& [id, by_pid] : exclusions_) n += by_pid.size();
+        return n;
     }
 
     // Get hijacked PIDs (for API)
@@ -479,6 +521,13 @@ public:
 
 private:
     std::vector<AutoRule> auto_rules_;
+    // rule id -> pid -> psn of the excluded process (see exclude_pid).
+    string_map<std::unordered_map<DWORD, uint64_t>> exclusions_;
+
+    const AutoRule* find_rule(std::string_view rule_id) const {
+        for (const auto& r : auto_rules_) if (r.id == rule_id) return &r;
+        return nullptr;
+    }
     std::vector<CidrRange> default_exclude_cidrs_;
     bool any_rule_uses_cmdline_ = false;
 
@@ -555,7 +604,7 @@ private:
         const auto& entry = tree.at(idx);
         if (!rule.enabled) return {};
         if (!entry.alive) return {};
-        if (rule.excluded_pids.contains(entry.pid)) return {};
+        if (is_excluded(rule.id, entry)) return {};
         if (rule.matched_pids.contains(entry.pid)) return {};
 
         const bool name_match =
@@ -630,7 +679,7 @@ private:
     // Expand all descendants of an entry via LC-RS traversal
     void expand_descendants(flat_tree& tree, uint32_t idx, AutoRule& rule) {
         tree.visit_descendants(idx, [this, &tree, &rule](uint32_t child_idx, const process_entry& child) {
-            if (rule.excluded_pids.contains(child.pid)) return;
+            if (is_excluded(rule.id, child)) return;
             if (rule.matched_pids.contains(child.pid)) return;
             rule.matched_pids.insert(child.pid);
             mark_proxied(tree, child_idx, rule);

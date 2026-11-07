@@ -342,18 +342,21 @@ def main() -> int:
                             cwd=exe.parent, env=env)
     failures: list[str] = []
     try:
-        deadline = time.time() + 30
+        deadline = time.time() + 60
         while True:
             if proc.poll() is not None:
                 raise RuntimeError(f"proxyclaw.exe exited early with {proc.returncode}")
             try:
                 rules = api_get("/auto-rules", token)
-                if len(rules) >= len(CASES) + len(UDP_CASES):
+                # tree_ready: initial process rundown verified (builds
+                # without the flag are not waited on).
+                if (len(rules) >= len(CASES) + len(UDP_CASES)
+                        and api_get("/stats", token).get("tree_ready", True)):
                     break
             except Exception:
                 pass
             if time.time() > deadline:
-                raise RuntimeError("proxyclaw API did not come up in 30s")
+                raise RuntimeError("proxyclaw API / process tree not ready in 60s")
             time.sleep(0.5)
         time.sleep(2)  # let the WinDivert layers settle
 

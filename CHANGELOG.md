@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Backend
+
+- Process tree: the initial ETW rundown is now verified against the OS
+  process list. A CAPTURE_STATE issued before the real-time consumer had
+  attached could be dropped by the kernel, leaving the tree at ~20 of ~150
+  processes for the whole session; the grace timer now re-issues
+  capture_state (up to 5 attempts) until coverage is reached.
+  `GET /api/stats` gains `tree_ready` and `process_count`.
+- `POST /api/hijack/{pid}` and batch hijack resolve a live PID the tree has
+  not seen yet (younger than the ETW ProcessStart latency) from the OS
+  instead of answering 404.
+
+### Frontend
+
+- Process tree: the PID column has a fixed 5-digit width (row gap 6px -> 4px),
+  so whether a deep name such as proxyclaw.exe fits no longer depends on how
+  many digits its PID has.
+
+### Tests / CI
+
+- e2e/screenshot/stress harnesses wait for `tree_ready` instead of sleeping;
+  the DELETE <60ms check times only the API round-trip; system DNS is read
+  via GetAdaptersAddresses instead of a cold PowerShell
+  `Get-DnsClientServerAddress`; log-scan asserts retry the read until quill
+  has flushed.
+
 ## v0.13.0 (2026-11-07)
 
 ### Frontend

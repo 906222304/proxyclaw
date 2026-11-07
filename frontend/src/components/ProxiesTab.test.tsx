@@ -52,6 +52,29 @@ describe('ProxiesTab', () => {
   })
 })
 
+describe('ProxiesTab group editor', () => {
+  it('blocks an out-of-range port with an inline error and sends nothing', async () => {
+    root = createRoot(host)
+    act(() => root.render(<QueryClientProvider client={createQueryClient()}><ProxiesTab /></QueryClientProvider>))
+    await flush()
+    click([...host.querySelectorAll('button')].find(b => b.textContent?.includes('新建代理组'))!)
+    await flush()
+
+    const port = document.querySelector<HTMLInputElement>('input[placeholder="7890"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(port, '70000')
+      port.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const create = [...document.querySelectorAll('button')].find(b => b.textContent === '创建')!
+    click(create)
+    await flush()
+
+    expect(document.body.textContent).toContain('端口范围 1–65535')
+    const posts = vi.mocked(fetch).mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    expect(posts).toHaveLength(0)
+  })
+})
+
 describe('splitDir', () => {
   it('keeps the last folder and separators out of the ellipsized head', () => {
     expect(splitDir('D:\\a\\proxyclaw\\build\\win\\')).toEqual({ head: 'D:\\a\\proxyclaw\\build', tail: '\\win\\' })

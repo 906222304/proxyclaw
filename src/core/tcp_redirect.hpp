@@ -17,8 +17,10 @@ inline uint32_t tcp_handoff_address() { return htonl(INADDR_LOOPBACK); }
 
 inline std::string tcp_redirect_filter(uint16_t listener_port) {
     // Ordinary local traffic stays outside the interceptor. Only the local
-    // acceptor's replies need the loopback branch of this filter.
-    return "outbound and tcp and (!loopback or tcp.SrcPort == " +
+    // acceptor's replies need the loopback branch of this filter. IPv4 only:
+    // IPv6 is not proxied, so diverting it would only cost a user-mode round
+    // trip per packet (the SOCKET layer ignores IPv6 CONNECTs as well).
+    return "ip and outbound and tcp and (!loopback or tcp.SrcPort == " +
            std::to_string(listener_port) + ")";
 }
 

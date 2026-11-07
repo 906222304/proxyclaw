@@ -20,6 +20,7 @@
 #include "core/dns_forwarder.hpp"
 #include "core/system_dns.hpp"
 #include "core/log.hpp"
+#include "proxy/tcp_dns_upstream.hpp"
 
 namespace clew {
 
@@ -59,6 +60,7 @@ public:
     //   both on:   if upstream/listen changed → restore DNS, then restart
     void apply(const DnsConfig& cfg,
                const std::string& proxy_host, uint16_t proxy_port) {
+        publish_tcp_dns_upstream(cfg);
         const bool want_enabled = cfg.enabled && cfg.mode == "forwarder";
 
         if (cfg.enabled && cfg.mode != "forwarder") {
@@ -117,6 +119,22 @@ public:
     }
 
 private:
+    // Proxied TCP :53 goes to the configured upstream (proxy/tcp_dns_upstream.hpp).
+    void publish_tcp_dns_upstream(const DnsConfig& cfg) {
+        const auto ep = tcp_dns::resolve(cfg.upstream_host, cfg.upstream_port);
+        const auto prev = tcp_dns::current();
+        tcp_dns::publish(ep);
+        if (prev.ip == ep.ip && prev.port == ep.port && tcp_dns_logged_) return;
+        tcp_dns_logged_ = true;
+        if (ep.fallback) {
+            PC_LOG_WARN("[DNS-MGR] dns.upstream_host '{}' is not a usable IPv4 address; "
+                        "proxied TCP:53 goes to 8.8.8.8:53", cfg.upstream_host);
+        } else {
+            PC_LOG_INFO("[DNS-MGR] Proxied TCP:53 -> {}:{}", cfg.upstream_host, ep.port);
+        }
+    }
+    bool tcp_dns_logged_ = false;
+
     asio::io_context& ioc_;
     std::filesystem::path state_file_;
     std::unique_ptr<dns_forwarder> forwarder_;

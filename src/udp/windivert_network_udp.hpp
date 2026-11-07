@@ -93,17 +93,40 @@ public:
                     park_deadline_.count() > 0 ? std::to_string(park_deadline_.count()) + " ms" : std::string("off"));
     }
 
+    // Shutdown phase 1: WinDivertShutdown(RECV), join the workers (they drain
+    // the queue and exit on ERROR_NO_DATA), then stop the park watchdog. The
+    // handle stays open for sends (watchdog / strand release() / UdpRelay
+    // reply injection) until close(). Idempotent.
+    void stop_workers() {
+        if (workers_stopped_) return;
+        workers_stopped_ = true;
+        if (handle_ != INVALID_HANDLE_VALUE && !workers_.empty()) {
+            if (!WinDivertShutdown(handle_, WINDIVERT_SHUTDOWN_RECV)) {
+                PC_LOG_ERROR("[WD-NET-UDP] WinDivertShutdown failed: {}", GetLastError());
+                running_ = false;
+                for (auto& w : workers_) w.request_stop();
+                WinDivertClose(handle_);
+                handle_ = INVALID_HANDLE_VALUE;
+            }
+        }
+        for (auto& w : workers_) {
+            if (w.joinable()) w.join();
+        }
+        workers_.clear();
+        running_ = false;
+        if (watchdog_.joinable()) { watchdog_.request_stop(); watchdog_.join(); }
+    }
+
+    // Shutdown phase 2: close the handle, after every sender (relay, strand)
+    // has stopped, i.e. after the io_context workers are joined.
     void close() {
         if (closed_) return;
         closed_ = true;
-        running_ = false;
-        for (auto& w : workers_) w.request_stop();
+        stop_workers();
         if (handle_ != INVALID_HANDLE_VALUE) {
             WinDivertClose(handle_);
             handle_ = INVALID_HANDLE_VALUE;
         }
-        workers_.clear();
-        if (watchdog_.joinable()) { watchdog_.request_stop(); watchdog_.join(); }
         PC_LOG_INFO("[WD-NET-UDP] Closed (handed off={}, dropped={}, passed={}, parked={}, "
                     "released by decision={}, by watchdog={}, park full={})",
                      handoff_count_.load(), drop_count_.load(), pass_count_.load(),
@@ -140,6 +163,7 @@ private:
 
     HANDLE handle_{INVALID_HANDLE_VALUE};
     bool closed_{false};
+    bool workers_stopped_{false};
     std::atomic<bool> running_{false};
     std::vector<std::jthread> workers_;
 
@@ -198,11 +222,16 @@ private:
         // config actually changed.
         PolicyReader policies(policies_);
 
-        while (!st.stop_requested() && running_) {
+        uint32_t recv_errors = 0;
+        // Exits on ERROR_NO_DATA: RECV shut down and queue drained.
+        while (!st.stop_requested()) {
             UINT pkt_len = sizeof(pkt_buf);
             if (!WinDivertRecv(handle_, pkt_buf, pkt_len, &pkt_len, &addr)) {
                 DWORD err = GetLastError();
                 if (err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE) break;
+                if ((recv_errors++ & 1023) == 0)
+                    PC_LOG_WARN("[WD-NET-UDP] Recv error {} (x{})", err, recv_errors);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
 

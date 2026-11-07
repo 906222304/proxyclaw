@@ -381,7 +381,7 @@ def launch_proxyclaw(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]
            "dns": {"enabled": False}}
     cfg_path = work / "proxyclaw.json"
     cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    proc = subprocess.Popen([str(exe), "--minimized", "--config", str(cfg_path)],
+    proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
                             cwd=exe.parent, env=dict(os.environ))
     deadline = time.time() + 30
     while True:

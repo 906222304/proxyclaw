@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Security
+
+- Autostart: enabling "登录 Windows 后自动启动" is refused (HTTP 409,
+  `details.code = "unsafe_install_location"`) unless proxyclaw.exe's folder,
+  the files in it (DLLs, driver, config), `frontend/` and every parent folder
+  can be modified only by Administrators / SYSTEM / TrustedInstaller — e.g.
+  `C:\Program Files\ProxyClaw`. The elevated, prompt-less logon task
+  previously pointed at wherever the zip was extracted (often Downloads),
+  letting any unelevated process of the user swap the exe, plant a DLL or
+  edit the UI and get admin rights at the next logon. An existing task that
+  launches an exe from an unsafe folder is reported in Settings and the log
+  (`task_trusted=false`); it is not deleted automatically.
+- `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` at startup: DLLs
+  loaded by name at runtime no longer come from the exe folder.
+- Release builds ignore `PROXYCLAW_DEV_URL`, `PROXYCLAW_API_TOKEN` and the
+  `WEBVIEW2_*` overrides (remote debugging port, browser executable folder,
+  ...) and remove them from the process environment; user environment
+  variables are writable without elevation. Pass `--dev-hooks` on the elevated
+  command line (or use a debug build) to honour them.
+
 ### Backend
 
 - Process tree: the initial ETW rundown is now verified against the OS
@@ -13,9 +33,28 @@
 - `POST /api/hijack/{pid}` and batch hijack resolve a live PID the tree has
   not seen yet (younger than the ETW ProcessStart latency) from the OS
   instead of answering 404.
+- Proxy groups: editing groups/rules while proxied connections arrive no
+  longer races the relay (the TCP group map was cleared and refilled on the
+  API thread while relays read it). Relays now read an immutable snapshot
+  that is swapped whole.
+- Window geometry is saved through the config store (same lock as API
+  edits), debounced to 500 ms after the last move/resize and off the UI
+  thread; every config save uses its own temp file. Previously the UI thread
+  wrote the config unlocked and could tear it.
+- WinDivert shutdown follows WinDivertShutdown → join → WinDivertClose
+  (handles were closed while worker threads were blocked on them); the NETWORK
+  queues drain instead of being dropped; unexpected receive errors back off.
+- Console mode (no window) runs until Ctrl+C / console close instead of
+  exiting after one hour; without WebView2 the GUI build shows a dialog with
+  the browser URL and runs until it is closed.
+- HTTP API start-up binds synchronously and reports a bind failure instead of
+  assuming success after 100 ms.
 
 ### Frontend
 
+- Settings: the autostart switch is disabled with an explanation when the
+  install folder is not admin-only, and an existing task that points at an
+  unsafe folder shows a warning (turning it off still works).
 - Process tree: the PID column has a fixed 5-digit width (row gap 6px -> 4px),
   so whether a deep name such as proxyclaw.exe fits no longer depends on how
   many digits its PID has.
@@ -27,6 +66,12 @@
   via GetAdaptersAddresses instead of a cold PowerShell
   `Get-DnsClientServerAddress`; log-scan asserts retry the read until quill
   has flushed.
+- Harnesses launch proxyclaw.exe with `--dev-hooks` (needed for
+  `PROXYCLAW_API_TOKEN` / `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`).
+- New CTest suites: `concurrency_tests` (group snapshot swap, debouncer,
+  concurrent config writes) and `path_trust_tests` (install-location DACL
+  check against real ACLs, dev-hook gating); Vitest covers the autostart
+  warning states.
 - WebView2 screenshot harness: `wait_for_function` polls on a 200 ms timer
   instead of requestAnimationFrame (run 42372296123 timed out on `#root`
   after the reload while the reloaded app was alive and polling the API: no

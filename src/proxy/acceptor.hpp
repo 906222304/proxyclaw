@@ -27,7 +27,7 @@ public:
     async_acceptor(asio::io_context& ioc,
                    PortTracker& tracker,
                    asio::strand<asio::io_context::executor_type>& strand,
-                   std::unordered_map<uint32_t, ProxyGroupConfig>& groups)
+                   const proxy_group_table& groups)
         : ioc_(ioc)
         , tracker_(tracker)
         , strand_(strand)
@@ -65,7 +65,7 @@ private:
     asio::io_context& ioc_;
     PortTracker& tracker_;
     asio::strand<asio::io_context::executor_type>& strand_;
-    std::unordered_map<uint32_t, ProxyGroupConfig>& groups_;
+    const proxy_group_table& groups_;
 
     std::unique_ptr<tcp::acceptor> acceptor_;
     uint16_t port_{0};

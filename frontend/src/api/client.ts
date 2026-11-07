@@ -252,15 +252,40 @@ export function browseExe(): Promise<{ cancelled?: boolean; path?: string; dir?:
 export interface AutostartState {
   enabled: boolean
   start_minimized: boolean
+  /** False when non-administrators can modify the folder proxyclaw.exe runs from. */
+  location_trusted?: boolean
+  location_issue?: string
+  /** The exe the registered task launches. */
+  task_command?: string
+  task_matches_exe?: boolean
+  /** False when the registered task launches an exe from a folder non-administrators can modify. */
+  task_trusted?: boolean
+  task_issue?: string
 }
+
+export const UNSAFE_LOCATION_MESSAGE =
+  '当前文件夹普通用户可以修改，以管理员权限开机自启会带来提权风险，因此无法开启。' +
+  '请把 ProxyClaw 放到只有管理员能修改的文件夹（例如 C:\\Program Files\\ProxyClaw）后重试。'
 
 export function getAutostart(): Promise<AutostartState> {
   return request<AutostartState>('/autostart')
 }
 
-export function setAutostart(state: AutostartState): Promise<AutostartState> {
-  return request<AutostartState>('/autostart', {
+export async function setAutostart(state: Pick<AutostartState, 'enabled' | 'start_minimized'>): Promise<AutostartState> {
+  const res = await fetch(`${BASE}/autostart`, {
     method: 'PUT',
-    body: JSON.stringify(state),
+    headers: mergeHeaders({ body: '' }),
+    body: JSON.stringify({ enabled: state.enabled, start_minimized: state.start_minimized }),
   })
+  const text = await res.text().catch(() => res.statusText)
+  if (!res.ok) {
+    // 409 + details.code === 'unsafe_install_location': the backend refused
+    // an elevated logon task for a user-writable folder.
+    let code: unknown
+    try { code = (JSON.parse(text) as { details?: { code?: unknown } }).details?.code } catch { /* not JSON */ }
+    if (res.status === 409 && code === 'unsafe_install_location') throw new Error(UNSAFE_LOCATION_MESSAGE)
+    throw new Error(failureMessage(res.status, text))
+  }
+  if (!text) throw new Error('请求失败：/autostart 返回了空内容')
+  return JSON.parse(text) as AutostartState
 }

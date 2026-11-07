@@ -21,6 +21,7 @@
 #include <windows.h>
 #include <windivert.h>
 
+#include <chrono>
 #include <vector>
 #include <thread>
 #include <atomic>
@@ -75,15 +76,43 @@ public:
         PC_LOG_INFO("[WD-NETWORK] {} worker threads started", num_workers);
     }
 
-    void close() {
+    // Shutdown phase 1: stop receiving and join the workers. WinDivert's
+    // documented order is WinDivertShutdown -> join -> WinDivertClose; closing
+    // the handle while workers sit in WinDivertRecv/Send on it is a race (the
+    // handle value can be reused). Only RECV is shut down here: the workers
+    // drain what is already queued (re-injected as usual, so nothing queued is
+    // silently dropped) and the handle stays usable for sends, which the SYN
+    // parker's shutdown drain still needs. Idempotent.
+    void stop_workers() {
+        if (workers_stopped_) return;
+        workers_stopped_ = true;
+        if (handle_ != INVALID_HANDLE_VALUE && !workers_.empty()) {
+            if (!WinDivertShutdown(handle_, WINDIVERT_SHUTDOWN_RECV)) {
+                // Should not happen; without it Recv never returns. Fall back
+                // to unblocking the workers by closing the handle.
+                PC_LOG_ERROR("[WD-NETWORK] WinDivertShutdown failed: {}", GetLastError());
+                running_ = false;
+                for (auto& w : workers_) w.request_stop();
+                WinDivertClose(handle_);
+                handle_ = INVALID_HANDLE_VALUE;
+            }
+        }
+        for (auto& w : workers_) {
+            if (w.joinable()) w.join();
+        }
+        workers_.clear();
         running_ = false;
-        for (auto& w : workers_) w.request_stop();
+    }
+
+    // Shutdown phase 2: close the handle. Call only after every thread that
+    // may send through handle() (workers, SYN parker injector) has stopped.
+    void close() {
+        stop_workers();
         if (handle_ != INVALID_HANDLE_VALUE) {
             WinDivertClose(handle_);
             handle_ = INVALID_HANDLE_VALUE;
+            PC_LOG_INFO("[WD-NETWORK] Closed");
         }
-        workers_.clear();
-        PC_LOG_INFO("[WD-NETWORK] Closed");
     }
 
     uint64_t nat_count() const { return nat_count_; }
@@ -96,6 +125,7 @@ private:
     int64_t ttl_ticks_;
     HANDLE handle_{INVALID_HANDLE_VALUE};
     std::atomic<bool> running_{false};
+    bool workers_stopped_{false};
     std::vector<std::jthread> workers_;
 
     std::atomic<uint64_t> nat_count_{0};
@@ -183,11 +213,18 @@ private:
         uint8_t pkt_buf[65535];
         WINDIVERT_ADDRESS addr;
 
-        while (!st.stop_requested() && running_) {
+        uint32_t recv_errors = 0;
+        // Exits when WinDivertRecv reports ERROR_NO_DATA: RECV was shut down
+        // and the queue is drained (see stop_workers()).
+        while (!st.stop_requested()) {
             UINT pkt_len = sizeof(pkt_buf);
             if (!WinDivertRecv(handle_, pkt_buf, pkt_len, &pkt_len, &addr)) {
                 DWORD err = GetLastError();
                 if (err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE) break;
+                // Unexpected error: back off instead of spinning a core.
+                if ((recv_errors++ & 1023) == 0)
+                    PC_LOG_WARN("[WD-NETWORK] Recv error {} (x{})", err, recv_errors);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
 

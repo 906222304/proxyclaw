@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include "common/dev_hooks.hpp"
 #include "core/exe_paths.hpp"
 #include "core/log.hpp"
 #include "transport/frontend_push_sink.hpp"
@@ -119,8 +120,12 @@ private:
         // we'd otherwise mask the env var. Merge it explicitly so testers can
         // do e.g. WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222
         // to attach Playwright over CDP.
+        // Only with dev hooks (debug build or --dev-hooks). Otherwise main()
+        // has already removed WEBVIEW2_* overrides from the environment: they
+        // could open a CDP port into this elevated WebView or swap the browser
+        // executable folder (see common/dev_hooks.hpp).
         std::wstring browser_args = L"--no-proxy-server";
-        if (auto* env = std::getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"); env && *env) {
+        if (const char* env = dev_env("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")) {
             const int wlen = MultiByteToWideChar(CP_UTF8, 0, env, -1, nullptr, 0);
             if (wlen > 1) {
                 std::wstring extra(static_cast<size_t>(wlen - 1), L'\0');

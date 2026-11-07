@@ -338,7 +338,7 @@ def main() -> int:
         udp_probes[r["id"]] = dst
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
-    proc = subprocess.Popen([str(exe), "--minimized", "--config", str(cfg_path)],
+    proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
                             cwd=exe.parent, env=env)
     failures: list[str] = []
     try:

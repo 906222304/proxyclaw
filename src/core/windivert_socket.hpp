@@ -42,11 +42,13 @@
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <format>
 #include <atomic>
 #include <functional>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include "core/log.hpp"
@@ -127,13 +129,26 @@ public:
         }
     }
 
-    void close() {
+    // Shutdown phase 1: WinDivertShutdown(BOTH) makes the pending/blocked
+    // receive fail (the IOCP completion sees running_=false and does not
+    // re-arm), then the fallback thread is joined. The handle itself is closed
+    // by close() once the io_context workers are joined, so no strand handler
+    // can be inside WinDivertRecvEx on a closed (possibly reused) handle.
+    void stop() {
+        if (stopped_) return;
+        stopped_ = true;
         running_ = false;
-        if (handle_ != INVALID_HANDLE_VALUE) {
-            WinDivertClose(handle_);
-            handle_ = INVALID_HANDLE_VALUE;
-        }
+        if (handle_ != INVALID_HANDLE_VALUE && !WinDivertShutdown(handle_, WINDIVERT_SHUTDOWN_BOTH))
+            PC_LOG_WARN("[WD-SOCKET] WinDivertShutdown failed: {}", GetLastError());
         if (blocking_thread_.joinable()) blocking_thread_.join();
+    }
+
+    // Shutdown phase 2 (after the io_context workers are joined).
+    void close() {
+        stop();
+        if (handle_ == INVALID_HANDLE_VALUE) return;
+        WinDivertClose(handle_);
+        handle_ = INVALID_HANDLE_VALUE;
         PC_LOG_INFO("[WD-SOCKET] Closed (connect={} close={} proxied={} self={} echo={} late={})",
                     connect_count_.load(), close_count_.load(), match_count_.load(),
                     self_direct_count_.load(), echo_count_.load(),
@@ -171,6 +186,7 @@ private:
 
     HANDLE handle_{INVALID_HANDLE_VALUE};
     bool use_iocp_{true};
+    bool stopped_{false};
     std::atomic<bool> running_{false};
     std::jthread blocking_thread_;
 
@@ -228,6 +244,7 @@ private:
             if (!WinDivertRecv(handle_, nullptr, 0, &recv_len, &addr)) {
                 DWORD err = GetLastError();
                 if (err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));  // no hot spin
                 continue;
             }
             asio::post(strand_, [this, addr]() {

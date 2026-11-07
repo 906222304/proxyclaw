@@ -8,8 +8,10 @@ token (see src/transport/api_auth.hpp). Importing this module:
 * makes every ``requests`` call to the local API send the X-ProxyClaw-Token
   header, so existing ``requests.get(...)`` call sites keep working.
 
-When attaching to an already-running proxyclaw.exe (``--no-launch``), start it
-with the same PROXYCLAW_API_TOKEN (at least 32 characters).
+Release builds honour PROXYCLAW_API_TOKEN only when started with
+``--dev-hooks`` (see src/common/dev_hooks.hpp); the harnesses pass it. When
+attaching to an already-running proxyclaw.exe (``--no-launch``), start it with
+``--dev-hooks`` and the same PROXYCLAW_API_TOKEN (at least 32 characters).
 """
 from __future__ import annotations
 

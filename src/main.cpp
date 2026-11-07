@@ -21,6 +21,7 @@
 
 #include "app.hpp"
 #include "common/debug_console_session.hpp"
+#include "common/dev_hooks.hpp"
 #include "common/single_instance_guard.hpp"
 #include "common/winsock_session.hpp"
 #include "core/exe_paths.hpp"
@@ -50,6 +51,8 @@ static void print_usage() {
     std::cout << "  --static-dir DIR   Path to static files directory\n";
     std::cout << "  --config PATH      Path to proxyclaw.json (default: <exe-dir>/proxyclaw.json)\n";
     std::cout << "  --minimized        Start hidden in system tray (used by autostart)\n";
+    std::cout << "  --dev-hooks        Honour developer/test environment hooks (PROXYCLAW_DEV_URL,\n"
+                 "                     PROXYCLAW_API_TOKEN, WEBVIEW2_*). Ignored otherwise in release builds.\n";
     std::cout << "  --help, -h         Show this help message\n\n";
 }
 
@@ -64,6 +67,7 @@ static clew::cli_options parse_args(int argc, char* argv[]) {
         else if (arg == "--static-dir" && it != args.end()) opts.static_dir = *it++;
         else if (arg == "--config" && it != args.end()) opts.config_path = *it++;
         else if (arg == "--minimized") opts.start_minimized = true;
+        else if (arg == "--dev-hooks") opts.dev_hooks = true;
         else if (arg == "--help" || arg == "-h") opts.help = true;
     }
     return opts;
@@ -107,9 +111,32 @@ static void setup_logger() {
 static constexpr const wchar_t* PROXYCLAW_MUTEX_NAME   = L"Global\\Clew_SingleInstance";
 static constexpr const wchar_t* PROXYCLAW_WINDOW_CLASS = L"ClewWebViewClass";
 
+// DLL search hardening. The default search order looks in the exe directory
+// first, so a DLL planted next to proxyclaw.exe under the name of a system DLL
+// that is loaded later by name (shell, COM, WebView2 helpers) would run
+// elevated. Restrict LoadLibrary-by-name to System32. Nothing in ProxyClaw
+// loads an app-local DLL by name at runtime: WinDivert.dll (and the
+// WebView2Loader.dll variant, when not linked statically) are import-table
+// dependencies, resolved by the loader before main() runs, and WinDivert
+// installs its driver by full path. Static imports cannot be protected from
+// here — that is what the autostart directory check is for.
+static void harden_dll_search() {
+    if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+        // Logged after the logger starts; keep going with the default order.
+        return;
+    }
+    // Drop the current directory from the legacy search path as well.
+    SetDllDirectoryW(L"");
+}
+
 static int run_app(int argc, char** argv, HINSTANCE hinstance, bool default_gui_mode) {
+    harden_dll_search();
+
     clew::cli_options opts = parse_args(argc, argv);
     if (opts.help) { print_usage(); return 0; }
+    if (opts.dev_hooks) clew::enable_dev_hooks();
+    // Before anything (WebView2 loader included) can read them.
+    const auto stripped_env = clew::strip_untrusted_environment();
 
     clew::single_instance_guard instance{PROXYCLAW_MUTEX_NAME};
     if (instance.already_running()) {
@@ -124,6 +151,13 @@ static int run_app(int argc, char** argv, HINSTANCE hinstance, bool default_gui_
 
     setup_logger();
     PC_LOG_INFO("=== ProxyClaw {} (three-layer refactor) ===", PROXYCLAW_VERSION);
+    if (clew::dev_hooks_enabled()) {
+        PC_LOG_WARN("Developer/test hooks enabled (--dev-hooks or debug build): "
+                    "environment overrides are honoured");
+    }
+    for (const auto& name : stripped_env) {
+        PC_LOG_WARN("Ignoring environment variable {} (honoured only with --dev-hooks)", name);
+    }
 
     if (!is_elevated()) {
         PC_LOG_ERROR("ProxyClaw requires administrator privileges");

@@ -2,7 +2,7 @@
 
 > **English summary.** v0.14 makes every decision explainable from one source of truth: all C++ unit tests in CTest first, then a per-connection decision record captured at CONNECT time, connection JSON built off the strand (activity poll merged in), a hit-rule column with the reason and conflict hints, an "IPv6 未接管" label, DNS TCP-only startup and asynchronous enable, an icon cache keyed by full path with backoff and a cap, `psn` in the pushed process tree, keyboard / ARIA for the process tree, a split CI with /W4 and ESLint, and a docs sweep. v0.15: child-process-tree exceptions, an engine state view with config import / export, editable presets, rule match state keyed by (pid, psn), and end-to-end IPv6 last (may slip). Later: a performance baseline first (decision latency, missed proxies, RSS vs process count), then resource caps, RecvEx/SendEx batching only if the baseline shows a need, a process info cache, nightly soak tests, service mode (with a Program Files installer and WebView2 profile protection as an interim step) and build tidy-up. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols; the `http` upstream type is dropped and SOCKS5 username / password stays unsupported (rejected with 400) until implemented.
 
-当前版本 v0.13.1（2026-11-07）。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。v0.13.1 已完成：代理组快照替换、窗口位置经配置存储保存、自启动仅限管理员专属目录、开发钩子需 `--dev-hooks`、IPv6 移出判定路径（`ipv6_unmanaged` 计数）、进程排除改为运行时 (pid, psn) 状态、孤儿进程按 (pid, psn) 跟踪并限时限量、TCP :53 使用配置的 DNS 上游、代理组输入校验、WinDivert 关闭顺序、控制台模式不再一小时后退出。
+当前版本 v0.14.0（2026-11-09），已完成 v0.14 第 1–4 项（测试归位、每连接决定记录、连接 JSON 移出 strand、命中规则列），其余各项在后续 v0.14.x 发布。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。v0.13.1 已完成：代理组快照替换、窗口位置经配置存储保存、自启动仅限管理员专属目录、开发钩子需 `--dev-hooks`、IPv6 移出判定路径（`ipv6_unmanaged` 计数）、进程排除改为运行时 (pid, psn) 状态、孤儿进程按 (pid, psn) 跟踪并限时限量、TCP :53 使用配置的 DNS 上游、代理组输入校验、WinDivert 关闭顺序、控制台模式不再一小时后退出。
 
 **原则**：先有唯一的事实来源（CONNECT 时记录的决定），界面、统计和 IPv6 标注都从它读取；性能改动必须先有能测出策略延迟与漏代理的基准。
 
@@ -12,10 +12,6 @@
 
 | # | 项目 | 内容 |
 | --- | --- | --- |
-| 1 | 测试归位 | `test_components.cpp`、`test_window_dpi.cpp`、`test_icon_resolution.cpp` 注册进 CTest，删除 Zig 专用的 `run_window_dpi_tests.py`。最先做，后续各项的单元测试依赖它。 |
-| 2 | 每连接决定记录 | 有界环形缓冲 + 按端口索引：pid + psn、规则 id / 手动 / 进程树来源、代理组、结论、原因（`self`、`unknown-pid`、`not-proxied`、排除网段 / 端口、`late`、`watchdog`、`pool_exhausted`、`ipv6`）、配置版本、时间戳。连接列表不再按当前规则每次轮询重新计算“已代理”。 |
-| 3 | 连接 JSON 移出 strand，合并轮询 | strand 上只复制少量事实，JSON 在 strand 外生成；10 秒的活动轮询并入连接轮询。必须先于第 4 项，否则新列会加重 strand 占用、推迟 CONNECT 判定。 |
-| 4 | 命中规则列 + 原因 + 冲突提示 | 网络活动显示命中的规则（或手动 hack）与原因，多条规则匹配时提示冲突（显示先匹配者）。改规则后旧连接仍显示原决定。 |
 | 5 | IPv6“未接管”标注 | 基于 v0.13.1 的 `ipv6_unmanaged` 计数、`AF_INET6` 连接表与决定记录中的 `ipv6` 原因，在网络活动与规则页标出“IPv6 未接管 / 直连”。 |
 | 6 | DNS 仅 TCP 启动 | 启动不再强制 UDP ASSOCIATE 成功：探测上游 TCP 可用后允许以 TCP-only 方式启用（运行时已有 TCP 回退）；保留系统 DNS 备份与恢复。 |
 | 7 | DNS 异步启用 | 启用 DNS 的接口立即返回“启动中”，界面显示进度与失败原因，不再同步等待最长 10 秒，也不再在配置观察者中阻塞 API 线程。 |

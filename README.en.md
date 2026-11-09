@@ -53,4 +53,4 @@ Based on [Clew v0.10.0](https://github.com/ymonster/clew-proxy/tree/v0.10.0) by 
 
 ## License
 
-[MIT](LICENSE), keeping the original Clew copyright. WinDivert is LGPL v3, see `WinDivert-2.2.2-A/LICENSE`.
+[MIT](LICENSE). WinDivert is LGPL v3, see `WinDivert-2.2.2-A/LICENSE`.

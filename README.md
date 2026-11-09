@@ -53,4 +53,4 @@ ctest --preset windows-vs2026
 
 ## License
 
-[MIT](LICENSE)，保留 Clew 原作者版权。WinDivert 使用 LGPL v3，见 `WinDivert-2.2.2-A/LICENSE`。
+[MIT](LICENSE)。WinDivert 使用 LGPL v3，见 `WinDivert-2.2.2-A/LICENSE`。

@@ -1,0 +1,201 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing vMAJOR.MINOR.PATCH tag; leave empty for a snapshot'
+        type: string
+        default: ''
+      publish_release:
+        description: 'Publish a Release for the existing tag'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      publish: ${{ steps.metadata.outputs.publish }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate release metadata
+        id: metadata
+        shell: pwsh
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          REQUESTED_PUBLISH: ${{ inputs.publish_release }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:REQUESTED_TAG
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $tag = $env:GITHUB_REF_NAME }
+          $publish = ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF_TYPE -eq 'tag') -or $env:REQUESTED_PUBLISH -eq 'true'
+          if ($tag -and $tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw 'Tag must be vMAJOR.MINOR.PATCH with optional prerelease suffix' }
+          if ($publish -and -not $tag) { throw 'Publishing requires an existing version tag' }
+          $sha = git rev-parse HEAD
+          if ($tag) {
+            $tagSha = git rev-parse --verify "refs/tags/$tag^{commit}"
+            if ($LASTEXITCODE -ne 0 -or $tagSha -ne $sha) { throw 'Requested tag does not identify the checked-out commit' }
+          }
+          $version = if ($tag) { $tag } else { "snapshot-$($sha.Substring(0, 8))" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "publish=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "package=proxyclaw-$version-windows-x64" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Check source layering
+        run: python scripts/check_layering.py
+      - name: Restore verified build dependencies
+        run: python scripts/prepare_release_deps.py
+      - name: Configure native build and generate frontend version
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_PREFIX_PATH="$PWD/build/release-deps/prefix" `
+            -DWEBVIEW2_PATH="$PWD/build/release-deps/webview2" `
+            -DPROXYCLAW_WINDIVERT_DIR="$PWD/build/release-deps/WinDivert-2.2.2-A/x64" `
+            -DPROXYCLAW_ENABLE_WEBVIEW2=ON -DBUILD_TESTING=ON `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test and build frontend from lockfile
+        working-directory: frontend
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build native application and run unit tests
+        run: |
+          cmake -S . -B build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Loopback network tests (proxy health, DNS forwarder)
+        run: |
+          python tests/run_proxy_health_tests.py --exe build/Release/proxy_health_harness.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/run_dns_network_tests.py --exe build/Release/dns_forwarder_harness.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Live rule-policy test (WinDivert, elevated runner)
+        run: |
+          python tests/e2e_rule_policy.py --exe build/Release/proxyclaw.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package complete portable application
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          python scripts/package_local.py --build-dir build/Release --frontend-dist frontend/dist --output-dir "dist/$env:PACKAGE_NAME" --version "$env:PACKAGE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $archive = "dist/$env:PACKAGE_NAME.zip"
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:PACKAGE_NAME.zip" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+      - name: Real-window WebView2 screenshot test (packaged app over CDP)
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          python -m pip install --disable-pip-version-check -q playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/ui_webview2_screenshots.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/ui-screenshots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: API e2e test (packaged app)
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          python -m pip install --disable-pip-version-check -q requests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/e2e_api_test.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stress smoke (packaged app, bounded)
+        shell: pwsh
+        timeout-minutes: 4
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          New-Item -ItemType Directory -Force build/stress | Out-Null
+          python -u tests/stress_backend.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --ci --duration 45 --summary-json build/stress/stress-summary.json 2>&1 | Tee-Object -FilePath build/stress/stress-output.txt
+          $code = $LASTEXITCODE
+          if (Test-Path build/stress/stress-summary.json) { Get-Content build/stress/stress-summary.json | Write-Output }
+          exit $code
+      - name: Upload stress summary
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: stress-summary
+          path: build/stress/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ui-screenshots
+          path: build/ui-screenshots/
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: windows-x64
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: windows-x64
+          path: dist
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.zip dist/*.sha256 --clobber
+          else
+            args=(--verify-tag --title "ProxyClaw $RELEASE_TAG" --generate-notes)
+            if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 "${args[@]}"
+          fi

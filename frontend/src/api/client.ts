@@ -1,0 +1,283 @@
+import type { AutoRule, ConnectionsResponse, ProcessInfo, Stats, NetworkConnection, ProxyGroup, TcpConnection, GroupInUseError, ProxyTestResult } from './types'
+
+const BASE = '/api'
+
+const JSON_HEADERS: HeadersInit = { 'Content-Type': 'application/json' }
+
+function mergeHeaders(init?: RequestInit): HeadersInit {
+  // Only attach JSON Content-Type when there is actually a body, since
+  // body-less requests with Content-Type are unusual and have triggered
+  // intermediary issues for us.
+  const hasBody = init?.body != null
+  return {
+    ...(hasBody ? JSON_HEADERS : {}),
+    ...(init?.headers as Record<string, string> | undefined),
+  }
+}
+
+// The backend rejects /api requests without the per-launch session cookie
+// (set by /api/session when the window opens). A 401 therefore means the page
+// outlived its session, e.g. after ProxyClaw restarted.
+function failureMessage(status: number, text: string): string {
+  if (status === 401) return '会话已失效，请从托盘重新打开 ProxyClaw 窗口'
+  return `请求失败（${status}）：${text}`
+}
+
+async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${url}`, {
+    ...options,
+    headers: mergeHeaders(options),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(failureMessage(res.status, text))
+  }
+  const text = await res.text()
+  if (!text) {
+    throw new Error(`请求失败：${url} 返回了空内容`)
+  }
+  return JSON.parse(text) as T
+}
+
+async function requestVoid(url: string, options?: RequestInit): Promise<void> {
+  const res = await fetch(`${BASE}${url}`, {
+    ...options,
+    headers: mergeHeaders(options),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(failureMessage(res.status, text))
+  }
+}
+
+// -- Icons --
+// GET /api/icon answers 200 + image/png, or 204 No Content when the exe has no
+// extractable icon. Fetching (instead of a bare <img src>) lets "no icon" stay
+// a normal answer: no failed image load, no console error.
+
+/** Object URL of the exe's 16x16 PNG icon, or null when it has none. */
+export async function fetchProcessIcon(name: string, signal?: AbortSignal): Promise<string | null> {
+  const res = await fetch(`${BASE}/icon?name=${encodeURIComponent(name)}`, { signal })
+  if (res.status === 204 || !res.ok) return null
+  if (!(res.headers.get('Content-Type') ?? '').startsWith('image/')) return null
+  const blob = await res.blob()
+  return blob.size > 0 ? URL.createObjectURL(blob) : null
+}
+
+// -- Processes --
+// Note: bulk tree retrieval (formerly GET /api/processes) is delivered via
+// WebView2 PostMessage into the query cache (api/notify.ts, useProcessTree). /detail endpoints remain for cmdline + image_path fetches.
+
+export function getProcessDetail(pid: number): Promise<ProcessInfo> {
+  return request<ProcessInfo>(`/processes/${pid}/detail`)
+}
+
+// -- Hijack --
+// v0.9.0: backend ignores `tree` parameter (always tree-mode). The arg is kept
+// for signature stability and to keep the call sites self-documenting.
+
+export function hijackProcess(pid: number, tree = true, groupId = 0): Promise<void> {
+  return requestVoid(`/hijack/${pid}`, {
+    method: 'POST',
+    body: JSON.stringify({ tree, group_id: groupId }),
+  })
+}
+
+export function unhijackProcess(pid: number, tree = true): Promise<void> {
+  const query = tree ? '?tree=true' : ''
+  // body: '' makes the browser emit Content-Length: 0; cpp-httplib's
+  // DELETE handling otherwise blocks for the full read_timeout (5 s).
+  return requestVoid(`/hijack/${pid}${query}`, { method: 'DELETE', body: '' })
+}
+
+// -- Connections --
+// One request serves the network-activity table and the process tree's
+// activity dimming (GET /api/connections, ROADMAP v0.14 #3). The rows are
+// the same as /api/tcp and /api/udp for this filter; active_pids comes from
+// the unfiltered listing. /api/tcp and /api/udp stay for tools and tests.
+
+export function getConnections(pid?: number, signal?: AbortSignal): Promise<ConnectionsResponse> {
+  const query = pid == null ? '' : `?pid=${pid}`
+  return request<ConnectionsResponse>(`/connections${query}`, { signal })
+}
+
+/**
+ * TCP + UDP rows of one /api/connections response, tagged with their
+ * protocol and with `config_stale` (the recorded decision was taken under
+ * an older routing configuration than the one the response was built under).
+ */
+export function toNetworkConnections(res: ConnectionsResponse): NetworkConnection[] {
+  const current = res.config_version
+  const tag = (c: TcpConnection, protocol: 'TCP' | 'UDP'): NetworkConnection => ({
+    ...c,
+    protocol,
+    config_stale: current != null && c.decision != null && c.decision.config_version < current,
+  })
+  return [...res.tcp.map(c => tag(c, 'TCP')), ...res.udp.map(c => tag(c, 'UDP'))]
+}
+
+// -- Auto Rules --
+
+export function getAutoRules(): Promise<AutoRule[]> {
+  return request<AutoRule[]>('/auto-rules')
+}
+
+export function createAutoRule(rule: Omit<AutoRule, 'id'>): Promise<AutoRule> {
+  return request<AutoRule>('/auto-rules', {
+    method: 'POST',
+    body: JSON.stringify(rule),
+  })
+}
+
+export function updateAutoRule(id: string, rule: Partial<AutoRule>): Promise<AutoRule> {
+  return request<AutoRule>(`/auto-rules/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(rule),
+  })
+}
+
+export function deleteAutoRule(id: string): Promise<void> {
+  return requestVoid(`/auto-rules/${id}`, { method: 'DELETE', body: '' })
+}
+
+export function excludePid(ruleId: string, pid: number): Promise<void> {
+  return requestVoid(`/auto-rules/${ruleId}/exclude/${pid}`, { method: 'POST' })
+}
+
+export function unexcludePid(ruleId: string, pid: number): Promise<void> {
+  return requestVoid(`/auto-rules/${ruleId}/exclude/${pid}`, { method: 'DELETE', body: '' })
+}
+
+// -- Config --
+
+export function getConfig(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>('/config')
+}
+
+export function updateConfig(config: Record<string, unknown>): Promise<void> {
+  return requestVoid('/config', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  })
+}
+
+// -- Proxy Groups --
+
+export function getProxyGroups(): Promise<ProxyGroup[]> {
+  return request<ProxyGroup[]>('/proxy-groups')
+}
+
+export function createProxyGroup(group: Omit<ProxyGroup, 'id'>): Promise<ProxyGroup> {
+  return request<ProxyGroup>('/proxy-groups', {
+    method: 'POST',
+    body: JSON.stringify(group),
+  })
+}
+
+export function updateProxyGroup(id: number, group: Partial<ProxyGroup>): Promise<void> {
+  return requestVoid(`/proxy-groups/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(group),
+  })
+}
+
+export async function deleteProxyGroup(id: number): Promise<{ success: boolean } | GroupInUseError> {
+  const res = await fetch(`${BASE}/proxy-groups/${id}`, {
+    method: 'DELETE',
+    headers: mergeHeaders(),
+    body: '',
+  })
+  const text = await res.text()
+  const data = text ? JSON.parse(text) : { success: true }
+  if (res.status === 409) return data as GroupInUseError
+  if (!res.ok) throw new Error(`请求失败（${res.status}）：${JSON.stringify(data)}`)
+  return data
+}
+
+export function migrateProxyGroup(id: number, targetGroupId: number): Promise<void> {
+  return requestVoid(`/proxy-groups/${id}/migrate`, {
+    method: 'POST',
+    body: JSON.stringify({ target_group_id: targetGroupId }),
+  })
+}
+
+export function testProxyGroup(id: number): Promise<ProxyTestResult> {
+  return request<ProxyTestResult>(`/proxy-groups/${id}/test`, {
+    method: 'POST',
+  })
+}
+
+// -- Stats --
+
+export function getStats(signal?: AbortSignal): Promise<Stats> {
+  return request<Stats>('/stats', { signal })
+}
+
+// -- Shell --
+
+export interface LogSnapshot {
+  path: string
+  text: string
+  exists: boolean
+  truncated: boolean
+}
+
+export function getLog(signal?: AbortSignal): Promise<LogSnapshot> {
+  return request<LogSnapshot>('/logs', { signal, cache: 'no-store' })
+}
+
+export function revealFile(path: string): Promise<void> {
+  return requestVoid('/shell/reveal', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+}
+
+export function browseExe(): Promise<{ cancelled?: boolean; path?: string; dir?: string; name?: string }> {
+  return request<{ cancelled?: boolean; path?: string; dir?: string; name?: string }>('/shell/browse-exe', {
+    method: 'POST',
+  })
+}
+
+// -- Autostart (Windows Task Scheduler ProxyClawAutoStart) --
+
+export interface AutostartState {
+  enabled: boolean
+  start_minimized: boolean
+  /** False when non-administrators can modify the folder proxyclaw.exe runs from. */
+  location_trusted?: boolean
+  location_issue?: string
+  /** The exe the registered task launches. */
+  task_command?: string
+  task_matches_exe?: boolean
+  /** False when the registered task launches an exe from a folder non-administrators can modify. */
+  task_trusted?: boolean
+  task_issue?: string
+}
+
+export const UNSAFE_LOCATION_MESSAGE =
+  '当前文件夹普通用户可以修改，以管理员权限开机自启会带来提权风险，因此无法开启。' +
+  '请把 ProxyClaw 放到只有管理员能修改的文件夹（例如 C:\\Program Files\\ProxyClaw）后重试。'
+
+export function getAutostart(): Promise<AutostartState> {
+  return request<AutostartState>('/autostart')
+}
+
+export async function setAutostart(state: Pick<AutostartState, 'enabled' | 'start_minimized'>): Promise<AutostartState> {
+  const res = await fetch(`${BASE}/autostart`, {
+    method: 'PUT',
+    headers: mergeHeaders({ body: '' }),
+    body: JSON.stringify({ enabled: state.enabled, start_minimized: state.start_minimized }),
+  })
+  const text = await res.text().catch(() => res.statusText)
+  if (!res.ok) {
+    // 409 + details.code === 'unsafe_install_location': the backend refused
+    // an elevated logon task for a user-writable folder.
+    let code: unknown
+    try { code = (JSON.parse(text) as { details?: { code?: unknown } }).details?.code } catch { /* not JSON */ }
+    if (res.status === 409 && code === 'unsafe_install_location') throw new Error(UNSAFE_LOCATION_MESSAGE)
+    throw new Error(failureMessage(res.status, text))
+  }
+  if (!text) throw new Error('请求失败：/autostart 返回了空内容')
+  return JSON.parse(text) as AutostartState
+}

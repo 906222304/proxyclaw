@@ -54,7 +54,8 @@ export function ConfigEditor() {
   const dnsEnabled = !!dns.enabled
   const dnsMode = (dns.mode as string) || 'forwarder'
   const logLevel = (config?.log_level as string | undefined) ?? 'info'
-  const ipv6Mode = ((config?.ipv6 as Obj | undefined)?.mode as string | undefined) === 'direct' ? 'direct' : 'block'
+  const ipv6Raw = (config?.ipv6 as Obj | undefined)?.mode as string | undefined
+  const ipv6Mode = ipv6Raw === 'direct' || ipv6Raw === 'proxy' ? ipv6Raw : 'block'
 
   // Draft for the upstream text box; committed on change (blur / Enter).
   const [upstreamDraft, setUpstreamDraft] = useState('')
@@ -201,8 +202,8 @@ export function ConfigEditor() {
             )}
             <Row
               title="IPv6"
-              description="ProxyClaw 暂不代理 IPv6。"
-              hint="阻断：被代理进程的 IPv6 连接会被拒绝，应用自动改走 IPv4 并经过代理；局域网 IPv6 不受影响。直连：IPv6 绕过代理直接连接。"
+              description="被代理进程的 IPv6 连接如何处理。"
+              hint="阻断：IPv6 连接被拒绝，应用自动改走 IPv4 并经过代理。代理：IPv6 TCP 经 SOCKS5 出口，需代理服务器能访问 IPv6；IPv6 UDP 仍阻断。直连：IPv6 绕过代理。局域网 IPv6 始终不受影响。"
             >
               <Select
                 value={ipv6Mode}
@@ -211,6 +212,7 @@ export function ConfigEditor() {
                 className="w-auto"
                 options={[
                   { value: 'block', label: '阻断，回落 IPv4' },
+                  { value: 'proxy', label: '代理（TCP）' },
                   { value: 'direct', label: '直连' },
                 ]}
               />

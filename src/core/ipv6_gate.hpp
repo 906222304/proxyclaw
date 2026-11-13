@@ -44,7 +44,11 @@ public:
 
     // ttl: how long a CONNECT's verdict covers SYNs from its port. A SYN
     // later than that (a retransmit of an allowed flow, or a new flow whose
-    // CLOSE we missed) waits for a fresh verdict like an unknown port.
+    // CLOSE we missed) waits for a fresh verdict like an unknown port. A
+    // `block` verdict slides with each SYN it refuses: Windows answers an RST
+    // to its SYN by retrying every 0.5 s for about 2 s before connect() fails,
+    // and a retry that outlived a fixed TTL would be parked, released by the
+    // watchdog and leak direct.
     explicit ipv6_tcp_gate(duration ttl = std::chrono::seconds{2},
                            UdpParkingLimits limits = {256, 8})
         : ttl_(ttl), parker_(limits) {}
@@ -70,7 +74,7 @@ public:
     }
 
     // NETWORK worker: the verdict for a SYN from `port`, or none.
-    v6_verdict lookup(uint16_t port, time_point now) const {
+    v6_verdict lookup(uint16_t port, time_point now) {
         std::lock_guard lock(mu_);
         return lookup_locked(port, now);
     }
@@ -98,15 +102,16 @@ private:
         time_point at{};
     };
 
-    v6_verdict lookup_locked(uint16_t port, time_point now) const {
+    v6_verdict lookup_locked(uint16_t port, time_point now) {
         const auto it = slots_.find(port);
         if (it == slots_.end()) return v6_verdict::none;
         if (now - it->second.at > ttl_) return v6_verdict::none;
+        if (it->second.v == v6_verdict::block) it->second.at = now;
         return it->second.v;
     }
 
     duration ttl_;
-    mutable std::mutex mu_;
+    std::mutex mu_;
     std::unordered_map<uint16_t, slot> slots_;
     udp_first_packet_parker<Packet, Clock> parker_;
 };

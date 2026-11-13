@@ -42,7 +42,16 @@ void verdicts_cover_syns_until_ttl_or_close() {
     check(g.lookup(5000, t0) == v6_verdict::none, "unknown port has no verdict");
     check(g.decide(5000, v6_verdict::block, t0).empty(), "nothing parked");
     check(g.lookup(5000, t0 + 1s) == v6_verdict::block, "verdict within ttl");
-    check(g.lookup(5000, t0 + 3s) == v6_verdict::none, "verdict expires after ttl");
+    check(g.lookup(5000, t0 + 3s) == v6_verdict::block, "a refused retry slides the block verdict");
+    check(g.lookup(5000, t0 + 5500ms) == v6_verdict::none, "block verdict expires ttl after the last retry");
+    // Windows retries a refused SYN every 0.5 s for ~2 s: all stay refused.
+    g.decide(5001, v6_verdict::block, t0);
+    for (int i = 1; i <= 8; ++i)
+        check(g.lookup(5001, t0 + std::chrono::milliseconds(500 * i)) == v6_verdict::block, "retry refused");
+    // An allow verdict does not slide.
+    g.decide(5002, v6_verdict::allow, t0);
+    check(g.lookup(5002, t0 + 1500ms) == v6_verdict::allow, "allow within ttl");
+    check(g.lookup(5002, t0 + 2500ms) == v6_verdict::none, "allow expires at a fixed ttl");
     g.decide(5000, v6_verdict::allow, t0);
     check(g.lookup(5000, t0) == v6_verdict::allow, "verdict replaced");
     check(g.clear(5000).empty(), "clear returns nothing parked");

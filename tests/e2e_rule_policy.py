@@ -376,7 +376,9 @@ def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[
             ok = (got_tcp == want_tcp
                   and (secs < 4.0 if want_tcp == "refused" else True)
                   and (udp_dropped >= 3) == want_udp_drop
-                  and (tcp_blocked >= 1) == (want_tcp == "refused"))
+                  and (tcp_blocked >= 1) == (want_tcp == "refused")
+                  # a blocked flow must not leak a single SYN (retry after a TTL)
+                  and (gate.get("syn_allowed", 0) == 0 if want_tcp == "refused" else True))
             _check(failures, f"{r['id']} ipv6", ok,
                    {"tcp": got_tcp, "secs": secs, "tcp_blocked": tcp_blocked,
                     "udp_dropped": udp_dropped, "gate": gate, "want": [want_tcp, want_udp_drop],

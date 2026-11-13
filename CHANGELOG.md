@@ -4,6 +4,18 @@
 
 ### Added
 
+- IPv6 TCP proxying (`ipv6.mode = proxy`, Settings → Network → IPv6 → 代理).
+  A proxied process's IPv6 TCP connection is handed to a second local
+  acceptor on `[::1]` (the IPv6 NETWORK handle now diverts all outbound IPv6
+  TCP plus that acceptor's replies, Src = Dst = `::1` like the IPv4
+  127.0.0.1 handoff) and leaves through the process's SOCKS5 group with an
+  IPv6 CONNECT (ATYP 4). Flows live in `core/ipv6_flow_table.hpp` (per-port
+  lock-free pre-check, locked map for proxied ports, drained 10 s after the
+  relay ends). Opt-in: the proxy server must reach IPv6, otherwise
+  connections fail instead of falling back to IPv4. IPv6 UDP is still
+  dropped in this mode. If `[::1]` cannot be bound, `proxy` acts as `block`.
+  `/api/stats` `ipv6` adds `proxy_available`, `flows`, `syn_proxied`, `nat`.
+
 - IPv6 block for proxied processes (`ipv6.mode`, default `block`; Settings →
   Network → IPv6). ProxyClaw does not proxy IPv6, so a proxied process that
   reached a dual-stack host over IPv6 used to leave direct, past the proxy.

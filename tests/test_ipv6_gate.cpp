@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/ip_family.hpp"
+#include "core/ipv6_flow_table.hpp"
 #include "core/ipv6_gate.hpp"
 
 using namespace clew;
@@ -170,9 +171,59 @@ void rst_answers_the_syn() {
     check(build_ipv6_tcp_rst(syn, 50, rst) == 0, "short packet refused");
 }
 
+void flow_table_lifecycle() {
+    ipv6_flow_table<fake_clock> t(10s);
+    const tp t0{};
+    check(!t.maybe_ours(7000) && !t.find(7000, t0) && !t.take(7000), "empty port");
+
+    v6_flow f;
+    f.remote[0] = 0x20; f.remote[15] = 1;
+    f.remote_port = 443;
+    f.group_id = 3;
+    const auto id1 = t.publish(7000, f);
+    check(t.maybe_ours(7000), "published port is ours");
+    auto got = t.take(7000);
+    check(got && got->id == id1 && got->group_id == 3 && got->remote_port == 443 && !got->has_route,
+          "relay takes the published flow");
+
+    uint8_t local[16]{};
+    local[0] = 0x20; local[15] = 0x10;
+    t.remember_route(7000, local, 14, 2);
+    got = t.find(7000, t0);
+    check(got && got->has_route && got->if_idx == 14 && got->sub_if_idx == 2 && got->local[15] == 0x10,
+          "route remembered");
+
+    // A newer CONNECT on the port replaces the flow; the old relay's retire
+    // must not touch it.
+    const auto id2 = t.publish(7000, f);
+    check(id2 != id1, "new flow id");
+    t.retire(7000, id1, t0);
+    check(t.take(7000).has_value(), "stale retire ignored");
+
+    t.retire(7000, id2, t0);
+    check(!t.take(7000), "draining flow is not taken by a relay");
+    check(t.find(7000, t0 + 9s).has_value(), "draining flow still translates");
+    check(!t.find(7000, t0 + 10s) && !t.maybe_ours(7000), "drained flow removed");
+
+    t.publish(7001, f);
+    t.erase(7001);
+    check(!t.maybe_ours(7001) && !t.find(7001, t0), "erase forgets the port");
+    check(t.size() == 0, "table empty");
+}
+
+void proxy_verdict_slides() {
+    ipv6_tcp_gate<int, fake_clock> g(2s);
+    const tp t0{};
+    g.decide(8000, v6_verdict::proxy, t0);
+    check(g.lookup(8000, t0 + 1500ms) == v6_verdict::proxy, "proxy within ttl");
+    check(g.lookup(8000, t0 + 3s) == v6_verdict::proxy, "SYN retransmit slides the proxy verdict");
+}
+
 }  // namespace
 
 int main() {
+    flow_table_lifecycle();
+    proxy_verdict_slides();
     verdicts_cover_syns_until_ttl_or_close();
     parked_syns_follow_the_verdict();
     watchdog_releases_undecided();

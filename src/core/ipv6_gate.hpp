@@ -34,6 +34,7 @@ enum class v6_verdict : uint8_t {
     none,    // no decision for this port (yet)
     allow,   // send it (not proxied, excluded, mode = direct)
     block,   // proxied process: refuse so it falls back to IPv4
+    proxy,   // proxied process, ipv6.mode = proxy: hand to the IPv6 acceptor
 };
 
 template <typename Packet, typename Clock = std::chrono::steady_clock>
@@ -106,7 +107,8 @@ private:
         const auto it = slots_.find(port);
         if (it == slots_.end()) return v6_verdict::none;
         if (now - it->second.at > ttl_) return v6_verdict::none;
-        if (it->second.v == v6_verdict::block) it->second.at = now;
+        if (it->second.v == v6_verdict::block || it->second.v == v6_verdict::proxy)
+            it->second.at = now;   // refused retries and SYN retransmits of a proxied flow
         return it->second.v;
     }
 

@@ -106,7 +106,7 @@ describe('hit info (v0.14 #4)', () => {
   })
 
   it('shows late / watchdog / pool / IPv6 reasons in Chinese instead of a rule', () => {
-    for (const [reason, label] of [['late', '决定过晚'], ['watchdog', '看门狗放行'], ['pool_exhausted', '暂存池已满'], ['ipv6', 'IPv6 未接管']]) {
+    for (const [reason, label] of [['late', '决定过晚'], ['watchdog', '看门狗放行'], ['pool_exhausted', '暂存池已满'], ['ipv6', 'IPv6 未接管'], ['ipv6_blocked', 'IPv6 已阻断']]) {
       const info = hitInfo(conn({ proxy_status: 'IGNORED', decision: d({ verdict: 'direct', reason: reason!, source: null, rule_id: null }) }), names)
       expect(info).toMatchObject({ label, kind: 'reason' })
       expect(info.reason).not.toBe('')

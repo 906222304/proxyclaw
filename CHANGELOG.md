@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- IPv6 block for proxied processes (`ipv6.mode`, default `block`; Settings →
+  Network → IPv6). ProxyClaw does not proxy IPv6, so a proxied process that
+  reached a dual-stack host over IPv6 used to leave direct, past the proxy.
+  Now its IPv6 TCP connect is refused at once (a new WinDivert handle diverts
+  only outbound IPv6 SYNs; the SOCKET layer's verdict is applied per port,
+  undecided SYNs wait up to 20 ms, a blocked SYN is answered with an inbound
+  RST) and its IPv6 UDP datagrams are dropped, so applications fall back to
+  IPv4 and go through the proxy. Local-scope IPv6 (link-local, unique local,
+  multicast), destination ports the rule excludes, and rules whose include
+  CIDRs (IPv4 only) cannot cover IPv6 are not blocked. `direct` keeps the old
+  behaviour. Changes apply at runtime.
+- Decision reason `ipv6_blocked`; `/api/stats` adds `ipv6_blocked {tcp, udp}`
+  (TCP connects refused, UDP datagrams dropped) and `ipv6 {mode, syn_*}`.
+
+### Changed
+
+- The UDP NETWORK handle now diverts IPv6 UDP as well (passed through
+  unchanged unless blocked).
+- IPv6 decision records name why a connection was not blocked
+  (`not-proxied`, `self`, a route reason, or `ipv6` in direct mode).
+
 ## v0.14.0 (2026-11-09)
 
 ### Changed

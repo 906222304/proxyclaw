@@ -573,6 +573,31 @@ public:
         return evaluate_destination(default_exclude_cidrs_, nullptr, dest_ip, dest_port);
     }
 
+    // route_reason() for an IPv6 destination (evaluate_destination_v6):
+    // decides whether a proxied process's IPv6 flow is blocked.
+    [[nodiscard]] IpExcludeReason route_reason_v6(const flat_tree& tree,
+                                                  DWORD pid,
+                                                  bool is_udp,
+                                                  bool local_scope,
+                                                  uint16_t dest_port) const {
+        uint32_t idx = tree.find_by_pid(pid);
+        if (idx != INVALID_IDX) {
+            const auto& entry = tree.at(idx);
+            if (entry.alive && entry.is_proxied() &&
+                !entry.has_flag(entry_flags::MANUAL_HIJACK)) {
+                for (const auto& rule : auto_rules_) {
+                    if (!rule.matched_pids.contains(pid)) continue;
+                    if (!(is_udp ? rule.matches_udp() : rule.matches_tcp())) {
+                        return IpExcludeReason::protocol;
+                    }
+                    return evaluate_destination_v6(local_scope, &rule.dst_filter, dest_port);
+                }
+                if (is_udp) return IpExcludeReason::protocol;
+            }
+        }
+        return evaluate_destination_v6(local_scope, nullptr, dest_port);
+    }
+
     std::optional<RuleMatchResult> get_match_info(const flat_tree& tree, DWORD pid) const {
         uint32_t idx = tree.find_by_pid(pid);
         if (idx == INVALID_IDX) return std::nullopt;

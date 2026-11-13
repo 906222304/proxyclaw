@@ -150,10 +150,17 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
                                                          decision_log_.get());
     wd_network_     = std::make_unique<windivert_network>(*port_tracker_, redirect_port_,
                                                           parker_.get());
+    ipv6_block_.store(ipv6_blocks(config_.get_v2().ipv6));
+    wd_network_v6_  = std::make_unique<windivert_network_v6>();
+    wd_socket_->set_ipv6(&ipv6_block_, [this](uint16_t port, v6_verdict v) {
+        if (wd_network_v6_) wd_network_v6_->on_decided(port, v);
+    });
+    PC_LOG_INFO("IPv6 mode: {}", ipv6_block_.load() ? "block (fall back to IPv4)" : "direct");
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_,
                                                               resolve_unknown_pid);
     wd_socket_udp_->set_decision_log(decision_log_.get());
+    wd_socket_udp_->set_ipv6_block(&ipv6_block_);
     {
         const auto& up = config_.get_v2().udp_first_packet;
         const auto park_ms = up.enabled ? std::clamp(up.watchdog_ms, 5, 50) : 0;
@@ -163,6 +170,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         wd_network_udp_ = std::make_unique<windivert_network_udp>(
             *udp_port_tracker_, udp_session_table_, policy_pub_, std::chrono::milliseconds{park_ms});
         wd_network_udp_->set_decision_log(decision_log_.get());
+        wd_network_udp_->set_ipv6_block(&ipv6_block_);
     }
     wd_socket_udp_->set_decision_listener([this](uint16_t port) {
         if (wd_network_udp_) wd_network_udp_->release(port);
@@ -265,10 +273,20 @@ nlohmann::json app::traffic_stats() const {
             {"late_rejected_proxied", s.late_rejected_proxied},
             {"close_while_pending",   s.close_while_pending},
             {"ipv6_unmanaged",        s.ipv6_unmanaged},
+            {"ipv6_blocked",          s.ipv6_blocked},
         };
     }
     if (wd_socket_udp_) {
-        j["udp_socket"] = {{"ipv6_unmanaged", wd_socket_udp_->ipv6_unmanaged_count()}};
+        j["udp_socket"] = {{"ipv6_unmanaged", wd_socket_udp_->ipv6_unmanaged_count()},
+                           {"ipv6_blocked",
+                            wd_network_udp_ ? wd_network_udp_->ipv6_blocked_count() : 0}};
+    }
+    j["ipv6"] = {{"mode", ipv6_block_.load() ? "block" : "direct"}};
+    if (wd_network_v6_) {
+        j["ipv6"]["syn_blocked"]   = wd_network_v6_->blocked();
+        j["ipv6"]["syn_allowed"]   = wd_network_v6_->allowed();
+        j["ipv6"]["syn_parked"]    = wd_network_v6_->parked();
+        j["ipv6"]["syn_watchdog"]  = wd_network_v6_->released_by_watchdog();
     }
     if (decision_log_) {
         const auto d = decision_log_->snapshot();
@@ -331,6 +349,8 @@ void app::wire_observers() {
             }
             sync_groups();
             set_log_level(cfg.log_level);
+            if (ipv6_block_.exchange(ipv6_blocks(cfg.ipv6)) != ipv6_blocks(cfg.ipv6))
+                PC_LOG_INFO("IPv6 mode: {}", ipv6_blocks(cfg.ipv6) ? "block" : "direct");
             if (gui_) gui_->set_close_to_tray(cfg.ui.close_to_tray);
             auto [ph, pp] = pick_proxy_endpoint(cfg);
             dns_mgr_.apply(cfg.dns, ph, pp);
@@ -483,6 +503,13 @@ void app::start_traffic_layers() {
         PC_LOG_ERROR("WinDivert NETWORK layer failed — traffic interception disabled");
     }
 
+    if (wd_network_v6_->open()) {
+        wd_network_v6_->start();
+        PC_LOG_INFO("WinDivert IPv6 SYN gate started");
+    } else {
+        PC_LOG_ERROR("WinDivert IPv6 SYN gate failed — IPv6 of proxied processes is not blocked");
+    }
+
     if (wd_socket_udp_->open()) {
         wd_socket_udp_->start();
         PC_LOG_INFO("WinDivert UDP SOCKET layer started");
@@ -566,6 +593,7 @@ void app::shutdown() noexcept {
 
     if (wd_socket_)  wd_socket_->stop();
     if (wd_network_) wd_network_->stop_workers();
+    if (wd_network_v6_) wd_network_v6_->stop_workers();
     // Drain parked SYNs (sent through the still-open NETWORK handle) now that
     // no worker can park new ones.
     if (parker_)     parker_->stop();
@@ -583,6 +611,7 @@ void app::shutdown() noexcept {
     if (wd_socket_udp_)  wd_socket_udp_->close();
     if (wd_socket_)      wd_socket_->close();
     if (wd_network_)     wd_network_->close();
+    if (wd_network_v6_)  wd_network_v6_->close();
     PC_LOG_INFO("WinDivert layers closed");
 
     tree_mgr_.stop();

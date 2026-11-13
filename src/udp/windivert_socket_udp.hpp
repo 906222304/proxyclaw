@@ -134,6 +134,9 @@ public:
     // IPv6 CONNECTs ignored (not proxied). Written on the strand, read by /api/stats.
     uint64_t ipv6_unmanaged_count() const { return ipv6_unmanaged_count_.load(std::memory_order_relaxed); }
 
+    // ipv6.mode = block flag (shared with the NETWORK workers). Set before start().
+    void set_ipv6_block(const std::atomic<bool>* block) { ipv6_block_ = block; }
+
 private:
     asio::io_context& ioc_;
     asio::strand<asio::io_context::executor_type>& strand_;
@@ -158,6 +161,7 @@ private:
     uint64_t event_count_{0};
     uint64_t match_count_{0};
     std::atomic<uint64_t> ipv6_unmanaged_count_{0};
+    const std::atomic<bool>* ipv6_block_{nullptr};
 
     // ---- Asio IOCP async path ----
 
@@ -275,12 +279,22 @@ private:
         // only diverts IPv4, and the per-destination checks read the remote
         // as IPv4. BIND carries no remote and stays a per-port decision, since
         // a dual-stack socket bound on the IPv6 layer may still send IPv4.
+        // With ipv6.mode = block the NETWORK workers drop a proxied port's
+        // IPv6 datagrams (per packet, like the IPv4 excludes); the record
+        // says so when the port is proxied.
         if (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT &&
             is_unmanaged_ipv6(addr.IPv6 != 0, addr.Socket.RemoteAddr)) {
             ipv6_unmanaged_count_.fetch_add(1, std::memory_order_relaxed);
             DecisionRecord rec;
-            rec.reason = decision_reason::ipv6;
             rec.flags  = decision_flags::IPV6;
+            const auto port = static_cast<uint16_t>(addr.Socket.LocalPort);
+            if (!tracker_.is_active(port)) {
+                rec.reason = decision_reason::not_proxied;
+            } else if (ipv6_block_ && ipv6_block_->load(std::memory_order_relaxed)) {
+                rec.reason = decision_reason::ipv6_blocked;
+            } else {
+                rec.reason = decision_reason::ipv6;
+            }
             record_decision(rec, addr);
             return;
         }

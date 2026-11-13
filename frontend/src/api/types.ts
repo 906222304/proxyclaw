@@ -87,7 +87,7 @@ export interface ProxyTestResult {
  */
 export interface ConnectionDecision {
   verdict: 'proxied' | 'direct'
-  /** "none" when proxied; otherwise self, unknown-pid, not-proxied, a route reason, late, watchdog, pool_exhausted, ipv6. */
+  /** "none" when proxied; otherwise self, unknown-pid, not-proxied, a route reason, late, watchdog, pool_exhausted, ipv6, ipv6_blocked. */
   reason: string
   /** Auto rule id that classified the process (kept after the rule is deleted); null for manual / none. */
   rule_id: string | null

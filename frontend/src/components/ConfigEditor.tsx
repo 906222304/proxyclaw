@@ -54,6 +54,7 @@ export function ConfigEditor() {
   const dnsEnabled = !!dns.enabled
   const dnsMode = (dns.mode as string) || 'forwarder'
   const logLevel = (config?.log_level as string | undefined) ?? 'info'
+  const ipv6Mode = ((config?.ipv6 as Obj | undefined)?.mode as string | undefined) === 'direct' ? 'direct' : 'block'
 
   // Draft for the upstream text box; committed on change (blur / Enter).
   const [upstreamDraft, setUpstreamDraft] = useState('')
@@ -198,6 +199,22 @@ export function ConfigEditor() {
                 </div>
               </div>
             )}
+            <Row
+              title="IPv6"
+              description="ProxyClaw 暂不代理 IPv6。"
+              hint="阻断：被代理进程的 IPv6 连接会被拒绝，应用自动改走 IPv4 并经过代理；局域网 IPv6 不受影响。直连：IPv6 绕过代理直接连接。"
+            >
+              <Select
+                value={ipv6Mode}
+                ariaLabel="IPv6"
+                onValueChange={m => patch.mutate({ fn: c => { c.ipv6 = { ...((c.ipv6 as Obj | undefined) ?? {}), mode: m } }, ok: 'IPv6 设置已保存', fail: '保存 IPv6 设置失败' })}
+                className="w-auto"
+                options={[
+                  { value: 'block', label: '阻断，回落 IPv4' },
+                  { value: 'direct', label: '直连' },
+                ]}
+              />
+            </Row>
           </Card>
         </section>
 

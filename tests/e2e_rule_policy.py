@@ -290,8 +290,9 @@ sys.exit(4)
 # IPv6 block (v0.14 #5). The runner has no IPv6 route, so a documentation
 # address (2001:db8:5::/64) is added on the default-route adapter with a
 # permanent neighbor for V6_TARGET: a SYN to it really leaves on the wire and
-# is never answered. Blocked -> the SYN gate answers with an RST at once
-# (connect() is refused); not blocked -> the connect times out.
+# is never answered. Blocked -> the SYN gate answers with an RST (Windows
+# retries a refused SYN a couple of times, ~2 s, before connect() fails with
+# "refused"); not blocked -> the connect times out.
 # (rule, expected TCP result, expect UDP datagrams dropped)
 V6_LOCAL = "2001:db8:5::10"
 V6_TARGET = "2001:db8:5::1"
@@ -305,7 +306,7 @@ import socket, sys, time
 target = sys.argv[1]
 t = time.time()
 s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-s.settimeout(4)
+s.settimeout(8)
 try:
     s.connect((target, 80, 0, 0))
     r = "connected"
@@ -358,23 +359,27 @@ def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[
         return
     try:
         for r, want_tcp, want_udp_drop in V6_CASES:
-            before = api_get("/stats", token).get("ipv6_blocked", {})
+            st0 = api_get("/stats", token)
+            before = st0.get("ipv6_blocked", {})
+            gate0 = st0.get("ipv6", {})
             res = subprocess.run([str(probes[r["id"]]), str(script), V6_TARGET],
                                  capture_output=True, text=True, timeout=30)
             time.sleep(0.3)
-            after = api_get("/stats", token).get("ipv6_blocked", {})
+            st1 = api_get("/stats", token)
+            after = st1.get("ipv6_blocked", {})
+            gate = {k: v - gate0.get(k, 0) for k, v in st1.get("ipv6", {}).items() if isinstance(v, int)}
             out = res.stdout.split()
             got_tcp = out[0] if out else "none"
             secs = float(out[1]) if len(out) > 1 else 99.0
             udp_dropped = after.get("udp", 0) - before.get("udp", 0)
             tcp_blocked = after.get("tcp", 0) - before.get("tcp", 0)
             ok = (got_tcp == want_tcp
-                  and (secs < 1.5 if want_tcp == "refused" else True)
+                  and (secs < 4.0 if want_tcp == "refused" else True)
                   and (udp_dropped >= 3) == want_udp_drop
                   and (tcp_blocked >= 1) == (want_tcp == "refused"))
             _check(failures, f"{r['id']} ipv6", ok,
                    {"tcp": got_tcp, "secs": secs, "tcp_blocked": tcp_blocked,
-                    "udp_dropped": udp_dropped, "want": [want_tcp, want_udp_drop],
+                    "udp_dropped": udp_dropped, "gate": gate, "want": [want_tcp, want_udp_drop],
                     "stderr": res.stderr.strip()[-200:]})
     finally:
         v6_teardown()

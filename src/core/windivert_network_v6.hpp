@@ -142,6 +142,10 @@ private:
             WinDivertHelperCalcChecksums(rst, sizeof(rst), &a, 0);
             if (!WinDivertSend(handle_, rst, sizeof(rst), nullptr, &a))
                 PC_LOG_WARN("[WD-NET-V6] RST inject failed: {}", GetLastError());
+            else
+                PC_LOG_DEBUG("[WD-NET-V6] SYN refused (RST) if={}.{}", a.Network.IfIdx, a.Network.SubIfIdx);
+        } else {
+            PC_LOG_DEBUG("[WD-NET-V6] SYN dropped (no RST: extension headers)");
         }
         blocked_.fetch_add(1, std::memory_order_relaxed);
     }

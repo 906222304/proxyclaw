@@ -31,7 +31,7 @@
 2. 运行 `proxyclaw.exe` 并同意 UAC。
 3. 在“代理”页把 `default` 组指向你的 SOCKS5（如 `127.0.0.1:7890`），到“规则”页添加规则并打开开关。
 
-配置在同目录的 `proxyclaw.json`，日志在 `proxyclaw.log`。目前只接管 IPv4，IPv6 直连。问题排查见 [TROUBLESHOOTING](docs/TROUBLESHOOTING.md)。
+配置在同目录的 `proxyclaw.json`，日志在 `proxyclaw.log`。目前只代理 IPv4；被代理进程的 IPv6 默认阻断，应用会回落 IPv4 走代理（设置 → 网络 → IPv6 可改为直连）。问题排查见 [TROUBLESHOOTING](docs/TROUBLESHOOTING.md)。
 
 ## 构建
 

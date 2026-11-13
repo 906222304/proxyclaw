@@ -37,6 +37,14 @@ nlohmann::json stats_service::get_stats() const {
             return t[layer].value("ipv6_unmanaged", std::uint64_t{0});
         };
         j["ipv6_unmanaged"] = {{"tcp", count("socket")}, {"udp", count("udp_socket")}};
+        // ipv6.mode = block: TCP connects refused (SOCKET verdicts) and UDP
+        // datagrams dropped, for proxied processes.
+        const auto blocked = [&t](const char* layer) -> std::uint64_t {
+            if (!t.contains(layer)) return 0;
+            return t[layer].value("ipv6_blocked", std::uint64_t{0});
+        };
+        j["ipv6_blocked"] = {{"tcp", blocked("socket")}, {"udp", blocked("udp_socket")}};
+        if (t.contains("ipv6")) j["ipv6"] = t["ipv6"];
         if (t.contains("decisions")) j["decisions"] = t["decisions"];
         j["tcp_syn_parking"] = std::move(t);
     }

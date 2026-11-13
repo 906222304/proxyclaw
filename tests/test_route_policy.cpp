@@ -207,6 +207,55 @@ TEST(tree_children_inherit_the_rule_filter) {
     CHECK_REASON(engine.route_reason(tree, 101, TCP, ip("198.51.100.9"), 443), IpExcludeReason::none);
 }
 
+// v0.14 #5: the IPv6 block uses the same rule fields. CIDR lists are IPv4,
+// so include CIDRs never cover IPv6 and exclude CIDRs never match it.
+TEST(ipv6_destination_reasons) {
+    TrafficFilter f;
+    f.exclude_ports = {PortRange::parse("22")};
+    CHECK_REASON(evaluate_destination_v6(true, &f, 443), IpExcludeReason::global);
+    CHECK_REASON(evaluate_destination_v6(false, &f, 22), IpExcludeReason::rule_port);
+    CHECK_REASON(evaluate_destination_v6(false, &f, 443), IpExcludeReason::none);
+    f.include_ports = {PortRange::parse("443")};
+    CHECK_REASON(evaluate_destination_v6(false, &f, 80), IpExcludeReason::include_port_miss);
+    f.exclude_cidrs = {CidrRange::parse("198.51.100.0/24")};
+    CHECK_REASON(evaluate_destination_v6(false, &f, 443), IpExcludeReason::none);
+    f.include_cidrs = {CidrRange::parse("198.51.100.0/24")};
+    CHECK_REASON(evaluate_destination_v6(false, &f, 443), IpExcludeReason::include_cidr_miss);
+    CHECK_REASON(evaluate_destination_v6(false, nullptr, 22), IpExcludeReason::none);
+    CHECK_REASON(evaluate_destination_v6(true, nullptr, 22), IpExcludeReason::global);
+}
+
+TEST(ipv6_route_reason_follows_the_rule) {
+    flat_tree tree;
+    add_entry(tree, 4, 0, L"System");
+    add_entry(tree, 100, 4, L"tcp_only.exe");
+    add_entry(tree, 200, 4, L"inc.exe");
+    add_entry(tree, 300, 4, L"manual.exe");
+    add_entry(tree, 400, 4, L"other.exe");
+
+    auto inc = make_rule("inc", "inc.exe", "both");
+    inc.dst_filter.include_cidrs = {CidrRange::parse("198.51.100.0/24")};
+    rule_engine_v3 engine;
+    engine.set_auto_rules({make_rule("t", "tcp_only.exe", "tcp"), inc});
+    engine.apply_auto_rules(tree);
+    engine.manual_hijack(tree, 300, 0);
+
+    CHECK_REASON(engine.route_reason_v6(tree, 100, TCP, false, 443), IpExcludeReason::none);
+    CHECK_REASON(engine.route_reason_v6(tree, 100, UDP, false, 443), IpExcludeReason::protocol);
+    CHECK_REASON(engine.route_reason_v6(tree, 100, TCP, true, 443), IpExcludeReason::global);
+    CHECK_REASON(engine.route_reason_v6(tree, 200, TCP, false, 443), IpExcludeReason::include_cidr_miss);
+    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, false, 22), IpExcludeReason::none);
+    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, true, 22), IpExcludeReason::global);
+
+    // The NETWORK-side table agrees (UDP IPv6 datagrams).
+    engine.set_default_exclude_cidrs({});
+    const auto table = engine.build_policy_table();
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 200), false, 53),
+                 IpExcludeReason::include_cidr_miss);
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 300), false, 53), IpExcludeReason::none);
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 300), true, 53), IpExcludeReason::global);
+}
+
 TEST(network_policy_table_matches_rule_engine) {
     flat_tree tree;
     add_entry(tree, 4, 0, L"System");

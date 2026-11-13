@@ -31,7 +31,7 @@ Requires Windows 10 2004+ / 11 (x64), administrator rights and the WebView2 Runt
 2. Run `proxyclaw.exe` and accept the UAC prompt.
 3. On the Proxies page point the `default` group at your SOCKS5 (e.g. `127.0.0.1:7890`), then add a rule on the Rules page and switch it on.
 
-Config lives in `proxyclaw.json` next to the exe, logs in `proxyclaw.log`. Only IPv4 is handled for now; IPv6 goes direct. See [TROUBLESHOOTING](docs/TROUBLESHOOTING.en.md).
+Config lives in `proxyclaw.json` next to the exe, logs in `proxyclaw.log`. Only IPv4 is proxied; IPv6 from proxied processes is blocked by default so apps fall back to IPv4 through the proxy (Settings → Network → IPv6 can switch it to direct). See [TROUBLESHOOTING](docs/TROUBLESHOOTING.en.md).
 
 ## Build
 

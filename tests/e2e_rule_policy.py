@@ -287,6 +287,106 @@ sys.exit(4)
 """
 
 
+# IPv6 block (v0.14 #5). The runner has no IPv6 route, so a documentation
+# address (2001:db8:5::/64) is added on the default-route adapter with a
+# permanent neighbor for V6_TARGET: a SYN to it really leaves on the wire and
+# is never answered. Blocked -> the SYN gate answers with an RST (Windows
+# retries a refused SYN a couple of times, ~2 s, before connect() fails with
+# "refused"); not blocked -> the connect times out.
+# (rule, expected TCP result, expect UDP datagrams dropped)
+V6_LOCAL = "2001:db8:5::10"
+V6_TARGET = "2001:db8:5::1"
+V6_CASES = [
+    (rule("v6block", "both"), "refused", True),
+    (rule("v6exc", "both", exclude_ports=["80", "5353"]), "timeout", False),
+]
+
+V6_PROBE = r"""
+import socket, sys, time
+target = sys.argv[1]
+t = time.time()
+s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+s.settimeout(8)
+try:
+    s.connect((target, 80, 0, 0))
+    r = "connected"
+except ConnectionRefusedError:
+    r = "refused"
+except (socket.timeout, TimeoutError):
+    r = "timeout"
+except OSError as e:
+    r = f"oserror:{e.errno}"
+dt = time.time() - t
+u = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+for _ in range(3):
+    u.sendto(b"proxyclaw-e2e", (target, 5353, 0, 0))
+    time.sleep(0.05)
+print(r, f"{dt:.2f}")
+"""
+
+
+def _ps(cmd: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                          capture_output=True, text=True, timeout=60)
+
+
+def v6_setup() -> str | None:
+    """Add V6_LOCAL + a permanent neighbor for V6_TARGET. Returns an error or None."""
+    r = _ps(
+        "$ErrorActionPreference='Stop';"
+        "$i=(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex;"
+        f"New-NetIPAddress -InterfaceIndex $i -IPAddress {V6_LOCAL} -PrefixLength 64 -AddressFamily IPv6 | Out-Null;"
+        f"New-NetNeighbor -InterfaceIndex $i -IPAddress {V6_TARGET} -LinkLayerAddress 02-00-5e-00-53-01 -State Permanent | Out-Null;"
+        "for($n=0;$n -lt 40;$n++){"
+        f"$a=Get-NetIPAddress -IPAddress {V6_LOCAL} -ErrorAction SilentlyContinue;"
+        "if($a -and $a.AddressState -eq 'Preferred'){break}; Start-Sleep -Milliseconds 250};"
+        f"(Get-NetIPAddress -IPAddress {V6_LOCAL}).AddressState")
+    if r.returncode != 0 or "Preferred" not in r.stdout:
+        return f"rc={r.returncode} out={r.stdout.strip()} err={r.stderr.strip()[-300:]}"
+    return None
+
+
+def v6_teardown() -> None:
+    _ps(f"Get-NetNeighbor -IPAddress {V6_TARGET} -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false;"
+        f"Get-NetIPAddress -IPAddress {V6_LOCAL} -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false")
+
+
+def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[str]) -> None:
+    err = v6_setup()
+    if err:
+        for r, _, _ in V6_CASES:
+            _check(failures, f"{r['id']} ipv6 setup", False, err)
+        return
+    try:
+        for r, want_tcp, want_udp_drop in V6_CASES:
+            st0 = api_get("/stats", token)
+            before = st0.get("ipv6_blocked", {})
+            gate0 = st0.get("ipv6", {})
+            res = subprocess.run([str(probes[r["id"]]), str(script), V6_TARGET],
+                                 capture_output=True, text=True, timeout=30)
+            time.sleep(0.3)
+            st1 = api_get("/stats", token)
+            after = st1.get("ipv6_blocked", {})
+            gate = {k: v - gate0.get(k, 0) for k, v in st1.get("ipv6", {}).items() if isinstance(v, int)}
+            out = res.stdout.split()
+            got_tcp = out[0] if out else "none"
+            secs = float(out[1]) if len(out) > 1 else 99.0
+            udp_dropped = after.get("udp", 0) - before.get("udp", 0)
+            tcp_blocked = after.get("tcp", 0) - before.get("tcp", 0)
+            ok = (got_tcp == want_tcp
+                  and (secs < 4.0 if want_tcp == "refused" else True)
+                  and (udp_dropped >= 3) == want_udp_drop
+                  and (tcp_blocked >= 1) == (want_tcp == "refused")
+                  # a blocked flow must not leak a single SYN (retry after a TTL)
+                  and (gate.get("syn_allowed", 0) == 0 if want_tcp == "refused" else True))
+            _check(failures, f"{r['id']} ipv6", ok,
+                   {"tcp": got_tcp, "secs": secs, "tcp_blocked": tcp_blocked,
+                    "udp_dropped": udp_dropped, "gate": gate, "want": [want_tcp, want_udp_drop],
+                    "stderr": res.stderr.strip()[-200:]})
+    finally:
+        v6_teardown()
+
+
 def api_get(path: str, token: str) -> object:
     req = urllib.request.Request(API + path, headers={"X-ProxyClaw-Token": token})
     with urllib.request.urlopen(req, timeout=3) as resp:
@@ -457,7 +557,8 @@ def main() -> int:
              "type": "socks5", "test_url": "http://1.1.1.1/"},
         ],
         "next_group_id": 3,
-        "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES] + [DECISION_RULE, DECISION_SHADOW],
+        "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES] + [c[0] for c in V6_CASES]
+                      + [DECISION_RULE, DECISION_SHADOW],
         "log_level": "debug",
         "dns": {"enabled": False},
     }
@@ -480,6 +581,12 @@ def main() -> int:
         dst = py_dir / r["process_name"]
         shutil.copy2(sys.executable, dst)
         udp_probes[r["id"]] = dst
+    v6_script = work / "v6_probe.py"
+    v6_script.write_text(V6_PROBE, encoding="utf-8")
+    for r, _, _ in V6_CASES:
+        dst = py_dir / r["process_name"]
+        shutil.copy2(sys.executable, dst)
+        udp_probes[r["id"]] = dst
     decision_script = work / "decision_probe.py"
     decision_script.write_text(DECISION_PROBE, encoding="utf-8")
     decision_probe = py_dir / DECISION_RULE["process_name"]
@@ -499,7 +606,7 @@ def main() -> int:
                 rules = api_get("/auto-rules", token)
                 # tree_ready: initial process rundown verified (builds
                 # without the flag are not waited on).
-                if (len(rules) >= len(CASES) + len(UDP_CASES) + 2
+                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 2
                         and api_get("/stats", token).get("tree_ready", True)):
                     break
             except Exception:
@@ -555,6 +662,8 @@ def main() -> int:
             if not ok:
                 failures.append(f"{r['id']} udp")
 
+        run_v6_cases(udp_probes, v6_script, token, failures)
+
         # Last: it deletes its rules.
         decision_failures: list[str] = []
         run_decision_case(decision_probe, decision_script, socks, token, decision_failures)
@@ -569,14 +678,16 @@ def main() -> int:
         if failures and log.exists():
             print("---- proxyclaw.log (WD-SOCKET / RULE lines, last 80) ----")
             lines = [l for l in log.read_text(encoding="utf-8", errors="replace").splitlines()
-                     if "WD-SOCKET" in l or "[RULE]" in l or "[E]" in l or "UDP" in l]
+                     if "WD-SOCKET" in l or "[RULE]" in l or "[E]" in l or "UDP" in l
+                     or "V6" in l or "IPv6" in l]
             print("\n".join(lines[-80:]))
         for path in udp_probes.values():
             path.unlink(missing_ok=True)
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
-    total = sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(SPEED_CASES) + DECISION_CHECKS
+    total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + len(SPEED_CASES)
+             + DECISION_CHECKS)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 

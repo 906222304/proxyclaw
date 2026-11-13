@@ -35,6 +35,7 @@
 #include "core/port_tracker.hpp"
 #include "core/syn_parker.hpp"
 #include "core/windivert_network.hpp"
+#include "core/windivert_network_v6.hpp"
 #include "core/windivert_socket.hpp"
 #include "domain/process_tree_manager.hpp"
 #include "domain/strand_bound.hpp"
@@ -141,6 +142,8 @@ private:
     std::unique_ptr<syn_parker>                       parker_;      // null when tcp_syn_parking.enabled=false
     std::unique_ptr<windivert_socket>                 wd_socket_;
     std::unique_ptr<windivert_network>                wd_network_;
+    std::unique_ptr<windivert_network_v6>             wd_network_v6_;   // IPv6 SYN gate (ipv6.mode)
+    std::atomic<bool>                                 ipv6_block_{true};
 
     std::unique_ptr<UdpPortTracker>       udp_port_tracker_ = std::make_unique<UdpPortTracker>();
     UdpSessionTable                       udp_session_table_;

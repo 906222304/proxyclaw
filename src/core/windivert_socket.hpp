@@ -65,6 +65,7 @@
 #include "process/flat_tree.hpp"
 #include "core/decision_log.hpp"
 #include "core/ip_family.hpp"
+#include "core/ipv6_gate.hpp"
 #include "core/port_tracker.hpp"
 #include "core/syn_parker.hpp"
 #include "rules/rule_engine_v3.hpp"
@@ -98,6 +99,15 @@ public:
     {}
 
     ~windivert_socket() { close(); }
+
+    // IPv6 block (ipv6_gate.hpp). `block` is read on every IPv6 CONNECT
+    // (ipv6.mode, changeable at runtime); the listener gets the verdict per
+    // local port, and v6_verdict::none on CLOSE. Set before start().
+    void set_ipv6(const std::atomic<bool>* block,
+                  std::function<void(uint16_t, v6_verdict)> listener) {
+        ipv6_block_    = block;
+        ipv6_listener_ = std::move(listener);
+    }
 
     bool open() {
         // No `processId != self` clause: see the header comment.
@@ -180,13 +190,15 @@ public:
         uint64_t late_rejected;        // item 7: decision arrived after the watchdog released
         uint64_t late_rejected_proxied;// ...of which would have been proxied (= proxy missed)
         uint64_t close_while_pending;  // CLOSE emptied a pending slot (parked SYN dropped)
-        uint64_t ipv6_unmanaged;       // IPv6 CONNECTs ignored (not proxied, go direct)
+        uint64_t ipv6_unmanaged;       // IPv6 CONNECTs not proxied (all of them; ProxyClaw does not proxy IPv6)
+        uint64_t ipv6_blocked;         // ...of which refused so a proxied process falls back to IPv4
     };
     counters snapshot() const {
         return {connect_count_.load(), close_count_.load(), match_count_.load(),
                 direct_count_.load(), self_direct_count_.load(), echo_count_.load(),
                 late_rejected_count_.load(), late_rejected_proxied_count_.load(),
-                close_while_pending_count_.load(), ipv6_unmanaged_count_.load()};
+                close_while_pending_count_.load(), ipv6_unmanaged_count_.load(),
+                ipv6_blocked_count_.load()};
     }
 
 private:
@@ -219,6 +231,9 @@ private:
     std::atomic<uint64_t> late_rejected_proxied_count_{0};
     std::atomic<uint64_t> close_while_pending_count_{0};
     std::atomic<uint64_t> ipv6_unmanaged_count_{0};
+    std::atomic<uint64_t> ipv6_blocked_count_{0};
+    const std::atomic<bool>* ipv6_block_{nullptr};
+    std::function<void(uint16_t, v6_verdict)> ipv6_listener_;
 
     static void bump(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
@@ -277,13 +292,23 @@ private:
         // IPv6 is out of the decision path (header comment). Its CLOSE must
         // not touch the IPv4 slot that shares the port number either.
         if (is_unmanaged_ipv6(addr.IPv6 != 0, addr.Socket.RemoteAddr)) {
+            const auto port = static_cast<uint16_t>(addr.Socket.LocalPort);
             if (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT) {
                 bump(ipv6_unmanaged_count_);
                 DecisionRecord rec;
-                rec.pid    = addr.Socket.ProcessId;
-                rec.reason = decision_reason::ipv6;
-                rec.flags  = decision_flags::IPV6;
+                rec.pid   = addr.Socket.ProcessId;
+                rec.flags = decision_flags::IPV6;
+                const v6_verdict v = decide_v6(rec.pid, addr, rec);
+                if (ipv6_listener_) ipv6_listener_(port, v);
+                if (v == v6_verdict::block) {
+                    bump(ipv6_blocked_count_);
+                    PC_LOG_DEBUG("[WD-SOCKET] IPv6 blocked PID={} port={} remote port={} "
+                                 "(falls back to IPv4)", rec.pid, port,
+                                 static_cast<uint16_t>(addr.Socket.RemotePort));
+                }
                 record_decision(rec, addr);
+            } else if (addr.Event == WINDIVERT_EVENT_SOCKET_CLOSE) {
+                if (ipv6_listener_) ipv6_listener_(port, v6_verdict::none);
             }
             return;
         }
@@ -443,6 +468,42 @@ private:
         rec.reason   = decision_reason::none;
         rec.group_id = entry.group_id;
         return slot_state::proxied;
+    }
+
+    // The verdict for an IPv6 CONNECT. Block only what would have been
+    // proxied had it been IPv4: a proxied process, its rule covering TCP and
+    // this destination port, the remote not local-scope. rec.reason is
+    // ipv6_blocked (block), ipv6 (mode = direct), or why it is not proxied.
+    v6_verdict decide_v6(DWORD pid, const WINDIVERT_ADDRESS& addr, DecisionRecord& rec) {
+        rec.reason = decision_reason::not_proxied;
+        if (pid == self_pid_) { rec.reason = decision_reason::self; return v6_verdict::allow; }
+        if (resolve_unknown_pid_ && !resolve_unknown_pid_(pid)) {
+            rec.reason = decision_reason::unknown_pid;
+            return v6_verdict::allow;
+        }
+        const uint32_t idx = tree_.find_by_pid(pid);
+        if (idx == INVALID_IDX) { rec.reason = decision_reason::unknown_pid; return v6_verdict::allow; }
+        const auto& entry = tree_.at(idx);
+        rec.psn = entry.psn;
+        if (!entry.alive || !entry.is_proxied()) return v6_verdict::allow;
+        const auto origin = rules_.origin_of(entry);
+        rec.source    = origin.source;
+        rec.policy_id = origin.policy_id;
+
+        const auto remote = ipv6_bytes_from_socket(addr.Socket.RemoteAddr);
+        const auto why = rules_.route_reason_v6(tree_, pid, /*is_udp=*/false,
+                                                is_local_scope_ipv6(remote.data()),
+                                                static_cast<uint16_t>(addr.Socket.RemotePort));
+        if (why != IpExcludeReason::none) {
+            rec.reason = to_decision_reason(why);
+            return v6_verdict::allow;
+        }
+        if (!ipv6_block_ || !ipv6_block_->load(std::memory_order_relaxed)) {
+            rec.reason = decision_reason::ipv6;
+            return v6_verdict::allow;
+        }
+        rec.reason = decision_reason::ipv6_blocked;
+        return v6_verdict::block;
     }
 
     void on_close(const WINDIVERT_ADDRESS& addr) {

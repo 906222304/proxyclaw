@@ -71,6 +71,32 @@ inline const char* ip_exclude_reason_name(IpExcludeReason reason) noexcept {
     return IpExcludeReason::none;
 }
 
+// The same check for an IPv6 destination, used only to decide whether a
+// proxied process's IPv6 flow is blocked (ProxyClaw does not proxy IPv6).
+// The CIDR lists hold IPv4 ranges only: an exclude CIDR never matches, and a
+// rule that names include CIDRs never covers an IPv6 destination. Local-scope
+// IPv6 (link-local, unique local, multicast) counts as a global exclude, the
+// counterpart of the default private IPv4 excludes.
+[[nodiscard]] inline IpExcludeReason evaluate_destination_v6(
+        bool local_scope,
+        const TrafficFilter* rule,
+        uint16_t dest_port) noexcept {
+    if (local_scope) return IpExcludeReason::global;
+    if (!rule) return IpExcludeReason::none;
+    for (const auto& pr : rule->exclude_ports) {
+        if (pr.matches(dest_port)) return IpExcludeReason::rule_port;
+    }
+    if (!rule->include_cidrs.empty()) return IpExcludeReason::include_cidr_miss;
+    if (!rule->include_ports.empty()) {
+        bool hit = false;
+        for (const auto& pr : rule->include_ports) {
+            if (pr.matches(dest_port)) { hit = true; break; }
+        }
+        if (!hit) return IpExcludeReason::include_port_miss;
+    }
+    return IpExcludeReason::none;
+}
+
 // Immutable-by-convention snapshot of one rule's destination policy, used by
 // the NETWORK workers through PolicyTable. An empty `rule` filter adds nothing
 // to the global excludes (manual hijacks, unmatched pids, removed rules).
@@ -80,6 +106,10 @@ struct IpExcludePolicy {
 
     [[nodiscard]] IpExcludeReason evaluate(uint32_t dest_ip, uint16_t dest_port) const noexcept {
         return evaluate_destination(global_cidrs, &rule, dest_ip, dest_port);
+    }
+
+    [[nodiscard]] IpExcludeReason evaluate_v6(bool local_scope, uint16_t dest_port) const noexcept {
+        return evaluate_destination_v6(local_scope, &rule, dest_port);
     }
 };
 

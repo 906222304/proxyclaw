@@ -301,6 +301,21 @@ struct UdpFirstPacketConfig {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UdpFirstPacketConfig, enabled, watchdog_ms)
 
+// IPv6 handling for proxied processes. ProxyClaw does not proxy IPv6.
+//   mode  "block" (default): a proxied process's IPv6 TCP connect is refused
+//         (RST) and its IPv6 UDP datagrams are dropped, so it falls back to
+//         IPv4 and goes through the proxy. Local-scope IPv6 and destinations
+//         its rule excludes are not blocked.
+//         "direct": IPv6 leaves direct, past the proxy (pre-v0.14.1).
+//         Read at runtime; any other value means block.
+struct Ipv6Config {
+    std::string mode = "block";
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Ipv6Config, mode)
+
+inline bool ipv6_blocks(const Ipv6Config& c) noexcept { return c.mode != "direct"; }
+
 struct ConfigV2 {
     int version = 2;
     ProxyTarget default_proxy;
@@ -320,8 +335,9 @@ struct ConfigV2 {
     DnsConfig dns;                              // NEW: DNS proxy configuration
     TcpSynParkingConfig tcp_syn_parking;        // SYN parking switch + tuning (startup only)
     UdpFirstPacketConfig udp_first_packet;      // UDP first-packet parking (startup only)
+    Ipv6Config ipv6;                            // IPv6 block / direct (runtime)
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, udp_first_packet)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, udp_first_packet, ipv6)
 
 } // namespace clew

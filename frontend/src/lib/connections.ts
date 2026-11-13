@@ -25,6 +25,7 @@ export const ROUTE_REASONS: Record<string, string> = {
   watchdog: '未及时收到决定，看门狗放行直连',
   pool_exhausted: 'SYN 暂存池已满，直连放行',
   ipv6: 'IPv6 未接管，直连',
+  ipv6_blocked: 'IPv6 已阻断，回落 IPv4 走代理',
 }
 
 /** Decision reasons that are not route reasons (tooltip "原因" line). */
@@ -45,6 +46,7 @@ export const REASON_LABELS: Record<string, string> = {
   watchdog: '看门狗放行',
   pool_exhausted: '暂存池已满',
   ipv6: 'IPv6 未接管',
+  ipv6_blocked: 'IPv6 已阻断',
 }
 
 export const MANUAL_LABEL = '手动'

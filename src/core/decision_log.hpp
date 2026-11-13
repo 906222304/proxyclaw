@@ -67,7 +67,8 @@ enum class decision_reason : uint8_t {
     late,                     // decision arrived after the watchdog released the SYN
     watchdog,                 // no decision in time: released direct by the watchdog
     pool_exhausted,           // SYN parking pool full: passed direct
-    ipv6,                     // IPv6 remote: not managed, goes direct
+    ipv6,                     // IPv6 remote: not managed, goes direct (ipv6.mode = direct)
+    ipv6_blocked,             // IPv6 remote of a proxied process: blocked so it falls back to IPv4
 };
 
 inline const char* decision_reason_name(decision_reason r) noexcept {
@@ -86,6 +87,7 @@ inline const char* decision_reason_name(decision_reason r) noexcept {
     case decision_reason::watchdog:               return "watchdog";
     case decision_reason::pool_exhausted:         return "pool_exhausted";
     case decision_reason::ipv6:                   return "ipv6";
+    case decision_reason::ipv6_blocked:           return "ipv6_blocked";
     }
     return "none";
 }

@@ -36,6 +36,7 @@
 #include <cstring>
 #include "core/decision_log.hpp"
 #include "core/log.hpp"
+#include "core/ip_family.hpp"
 
 #include "rules/policy_table.hpp"
 #include "udp/udp_port_tracker.hpp"
@@ -64,8 +65,10 @@ public:
     ~windivert_network_udp() { close(); }
 
     bool open() {
-        // IPv4 only: IPv6 UDP is not proxied and is left on the kernel path.
-        const char* filter = "ip and udp and outbound and !loopback";
+        // IPv4 and IPv6. IPv6 is not proxied: its datagrams pass unchanged,
+        // except a proxied port's under ipv6.mode = block, which are dropped
+        // so the application falls back to IPv4 (QUIC to TCP).
+        const char* filter = "udp and outbound and !loopback";
 
         handle_ = WinDivertOpen(filter, WINDIVERT_LAYER_NETWORK, 0, 0);
         if (handle_ == INVALID_HANDLE_VALUE) {
@@ -140,6 +143,10 @@ public:
     // is recorded as `watchdog`. Set before start().
     void set_decision_log(DecisionLog* log) { decisions_ = log; }
 
+    // ipv6.mode = block flag (runtime). Unset: IPv6 always passes.
+    void set_ipv6_block(const std::atomic<bool>* block) { ipv6_block_ = block; }
+    uint64_t ipv6_blocked_count() const { return ipv6_blocked_.load(std::memory_order_relaxed); }
+
     // Expose handle for reply injection from relay
     HANDLE handle() const { return handle_; }
 
@@ -175,6 +182,8 @@ private:
 
     std::atomic<UdpOutboundSink*> sink_{nullptr};
     DecisionLog* decisions_{nullptr};
+    const std::atomic<bool>* ipv6_block_{nullptr};
+    std::atomic<uint64_t> ipv6_blocked_{0};
     std::atomic<uint64_t> handoff_count_{0};
     std::atomic<uint64_t> drop_count_{0};
     std::atomic<uint64_t> pass_count_{0};
@@ -254,19 +263,41 @@ private:
         }
     }
 
+    // An IPv6 datagram: never proxied. Dropped when its port is proxied, the
+    // rule covers this destination port and the destination is not
+    // local-scope (ipv6.mode = block); otherwise sent unchanged.
+    void handle_ipv6(PolicyReader& policies, const uint8_t* pkt_buf, UINT pkt_len,
+                     const WINDIVERT_ADDRESS& addr, const WINDIVERT_IPV6HDR& ip6,
+                     uint16_t src_port, uint16_t dest_port) {
+        const auto tracked = tracker_.get(src_port);
+        if (!tracked || !ipv6_block_ || !ipv6_block_->load(std::memory_order_relaxed)) {
+            send_direct(pkt_buf, pkt_len, addr);
+            return;
+        }
+        uint8_t dst[16];
+        std::memcpy(dst, ip6.DstAddr, sizeof(dst));   // network order
+        if (policies.evaluate_v6(tracked->policy_id, is_local_scope_ipv6(dst), dest_port)
+                != IpExcludeReason::none) {
+            send_direct(pkt_buf, pkt_len, addr);
+            return;
+        }
+        ipv6_blocked_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     void handle_packet(PolicyReader& policies, uint8_t* pkt_buf, UINT pkt_len,
                        const WINDIVERT_ADDRESS& addr, bool may_park) {
         PWINDIVERT_IPHDR ip = nullptr;
+        PWINDIVERT_IPV6HDR ip6 = nullptr;
         PWINDIVERT_UDPHDR udp = nullptr;
         PVOID payload = nullptr;
         UINT payload_len = 0;
 
         WinDivertHelperParsePacket(
             pkt_buf, pkt_len,
-            &ip, nullptr, nullptr, nullptr, nullptr,
+            &ip, &ip6, nullptr, nullptr, nullptr,
             nullptr, &udp, &payload, &payload_len, nullptr, nullptr);
 
-        if (!ip || !udp) {
+        if ((!ip && !ip6) || !udp) {
             WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, &addr);
             return;
         }
@@ -289,6 +320,8 @@ private:
             }
             // decided meanwhile: fall through and follow the decision
         }
+
+        if (ip6) { handle_ipv6(policies, pkt_buf, pkt_len, addr, *ip6, src_port, ntohs(udp->DstPort)); return; }
 
         // Check if this port is tracked for UDP proxy
         auto tracked = tracker_.get(src_port);

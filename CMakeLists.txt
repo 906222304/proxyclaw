@@ -153,6 +153,12 @@ endif()
 if(MSVC)
     target_link_options(proxyclaw PRIVATE /MANIFEST:NO)
 
+    # Release keeps a PDB (not packaged) so a crash dump from CI or a user
+    # resolves to source lines. /OPT:REF /OPT:ICF restore the defaults /DEBUG
+    # turns off, so the exe stays the same size.
+    target_compile_options(proxyclaw PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_link_options(proxyclaw PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+
     # Parallel compilation: the Visual Studio generator parallelizes across
     # projects by default but serializes .cpp files inside a single project.
     # /MP tells cl.exe to span all cores for this target's TUs (~30 after

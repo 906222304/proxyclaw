@@ -592,12 +592,20 @@ int app::run_main_loop() {
 void app::shutdown() noexcept {
     if (shut_down_.exchange(true)) return;
     PC_LOG_INFO("Shutting down...");
+    // Each phase is logged and flushed before the next starts: the backend
+    // writes asynchronously, so without this a crash during shutdown loses the
+    // lines that say how far it got.
+    const auto step = [](const char* what) {
+        PC_LOG_INFO("[shutdown] {}", what);
+        clew::log_flush();
+    };
 
     // A window move/resize may still be waiting in the debouncer.
     geometry_saver_.flush();
 
     // DNS first — touches system-wide state visible to the user.
     dns_mgr_.stop();
+    step("dns stopped");
 
     // WinDivert teardown follows the documented order: WinDivertShutdown ->
     // join every thread that uses the handle -> WinDivertClose. Phase 1 stops
@@ -605,14 +613,21 @@ void app::shutdown() noexcept {
     // after the io_context workers (strand handlers, UDP relay injection,
     // IOCP receive completions) are joined below.
     socks5_udp_mgr_.stop();
+    step("socks5 udp sessions stopped");
     if (wd_network_udp_) wd_network_udp_->set_sink(nullptr);
     if (udp_relay_)      udp_relay_->stop();
+    step("udp relay stopped");
     if (wd_network_udp_) wd_network_udp_->stop_workers();
+    step("udp network workers joined");
     if (wd_socket_udp_)  wd_socket_udp_->stop();
+    step("udp socket layer stopped");
 
     if (wd_socket_)  wd_socket_->stop();
+    step("tcp socket layer stopped");
     if (wd_network_) wd_network_->stop_workers();
+    step("tcp network workers joined");
     if (wd_network_v6_) wd_network_v6_->stop_workers();
+    step("ipv6 network workers joined");
     // Drain parked SYNs (sent through the still-open NETWORK handle) now that
     // no worker can park new ones.
     if (parker_)     parker_->stop();
@@ -620,7 +635,9 @@ void app::shutdown() noexcept {
 
     acceptor_.stop();
     acceptor_v6_.stop();
+    step("acceptors stopped");
     api_server_.stop();
+    step("api server stopped");
 
     ioc_.stop();
     for (auto& w : workers_) w.join();
@@ -635,8 +652,10 @@ void app::shutdown() noexcept {
     PC_LOG_INFO("WinDivert layers closed");
 
     tree_mgr_.stop();
+    step("process tree stopped");
 
     icons_.shutdown();
+    step("icons stopped");
     if (autostart_check_.joinable()) autostart_check_.join();
     PC_LOG_INFO("Goodbye!");
     quill::Backend::stop();

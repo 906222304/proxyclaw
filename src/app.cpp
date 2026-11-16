@@ -79,6 +79,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , exec_(tree_mgr_, strand_)
     , dns_mgr_(ioc_, exe_relative("dns_state.json"))
     , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
+    , acceptor_v6_(ioc_, *port_tracker_, strand_, tcp_groups_, &v6_flows_)
     , socks5_udp_mgr_(ioc_, {})
     , projection_(tree_mgr_, strand_)
     , cfg_bridge_(cfg_store_)
@@ -121,6 +122,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
 
     redirect_port_ = acceptor_.start();
     PC_LOG_INFO("Acceptor listening on port {}", redirect_port_);
+    redirect_port_v6_ = acceptor_v6_.start();
 
     // SYN parking (kill switch: tcp_syn_parking.enabled). Off means no pool,
     // no injector thread, and both TCP layers fall back to the pre-parking
@@ -151,11 +153,16 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     wd_network_     = std::make_unique<windivert_network>(*port_tracker_, redirect_port_,
                                                           parker_.get());
     ipv6_block_.store(ipv6_blocks(config_.get_v2().ipv6));
-    wd_network_v6_  = std::make_unique<windivert_network_v6>();
-    wd_socket_->set_ipv6(&ipv6_block_, [this](uint16_t port, v6_verdict v) {
+    ipv6_proxy_.store(ipv6_proxies(config_.get_v2().ipv6) && redirect_port_v6_ != 0);
+    wd_network_v6_  = std::make_unique<windivert_network_v6>(v6_flows_, redirect_port_v6_);
+    wd_socket_->set_ipv6(&ipv6_block_, &ipv6_proxy_,
+                         [this](uint16_t port, v6_verdict v, const v6_flow* flow) {
+        // Publish (or forget) the flow before the verdict releases parked SYNs.
+        if (v == v6_verdict::proxy && flow) v6_flows_.publish(port, *flow);
+        else if (v != v6_verdict::none)     v6_flows_.erase(port);
         if (wd_network_v6_) wd_network_v6_->on_decided(port, v);
     });
-    PC_LOG_INFO("IPv6 mode: {}", ipv6_block_.load() ? "block (fall back to IPv4)" : "direct");
+    PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_,
                                                               resolve_unknown_pid);
@@ -274,6 +281,7 @@ nlohmann::json app::traffic_stats() const {
             {"close_while_pending",   s.close_while_pending},
             {"ipv6_unmanaged",        s.ipv6_unmanaged},
             {"ipv6_blocked",          s.ipv6_blocked},
+            {"ipv6_proxied",          s.ipv6_proxied},
         };
     }
     if (wd_socket_udp_) {
@@ -281,8 +289,11 @@ nlohmann::json app::traffic_stats() const {
                            {"ipv6_blocked",
                             wd_network_udp_ ? wd_network_udp_->ipv6_blocked_count() : 0}};
     }
-    j["ipv6"] = {{"mode", ipv6_block_.load() ? "block" : "direct"}};
+    j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", redirect_port_v6_ != 0},
+                 {"flows", v6_flows_.size()}};
     if (wd_network_v6_) {
+        j["ipv6"]["syn_proxied"]   = wd_network_v6_->proxied();
+        j["ipv6"]["nat"]           = wd_network_v6_->nat_count();
         j["ipv6"]["syn_blocked"]   = wd_network_v6_->blocked();
         j["ipv6"]["syn_allowed"]   = wd_network_v6_->allowed();
         j["ipv6"]["syn_parked"]    = wd_network_v6_->parked();
@@ -349,8 +360,12 @@ void app::wire_observers() {
             }
             sync_groups();
             set_log_level(cfg.log_level);
-            if (ipv6_block_.exchange(ipv6_blocks(cfg.ipv6)) != ipv6_blocks(cfg.ipv6))
-                PC_LOG_INFO("IPv6 mode: {}", ipv6_blocks(cfg.ipv6) ? "block" : "direct");
+            {
+                const bool was_block = ipv6_block_.exchange(ipv6_blocks(cfg.ipv6));
+                const bool was_proxy = ipv6_proxy_.exchange(ipv6_proxies(cfg.ipv6) && redirect_port_v6_ != 0);
+                if (was_block != ipv6_block_.load() || was_proxy != ipv6_proxy_.load())
+                    PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
+            }
             if (gui_) gui_->set_close_to_tray(cfg.ui.close_to_tray);
             auto [ph, pp] = pick_proxy_endpoint(cfg);
             dns_mgr_.apply(cfg.dns, ph, pp);
@@ -505,9 +520,9 @@ void app::start_traffic_layers() {
 
     if (wd_network_v6_->open()) {
         wd_network_v6_->start();
-        PC_LOG_INFO("WinDivert IPv6 SYN gate started");
+        PC_LOG_INFO("WinDivert IPv6 TCP layer started (acceptor port {})", redirect_port_v6_);
     } else {
-        PC_LOG_ERROR("WinDivert IPv6 SYN gate failed — IPv6 of proxied processes is not blocked");
+        PC_LOG_ERROR("WinDivert IPv6 TCP layer failed — IPv6 of proxied processes is not blocked or proxied");
     }
 
     if (wd_socket_udp_->open()) {
@@ -600,6 +615,7 @@ void app::shutdown() noexcept {
     PC_LOG_INFO("WinDivert layers stopped");
 
     acceptor_.stop();
+    acceptor_v6_.stop();
     api_server_.stop();
 
     ioc_.stop();

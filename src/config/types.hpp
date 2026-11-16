@@ -314,7 +314,11 @@ struct Ipv6Config {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Ipv6Config, mode)
 
+// mode: "block" (default) refuse IPv6 of proxied processes so they fall back
+// to IPv4; "proxy" send their IPv6 TCP through SOCKS5 (ATYP 4; IPv6 UDP is
+// still dropped); "direct" leave IPv6 alone.
 inline bool ipv6_blocks(const Ipv6Config& c) noexcept { return c.mode != "direct"; }
+inline bool ipv6_proxies(const Ipv6Config& c) noexcept { return c.mode == "proxy"; }
 
 struct ConfigV2 {
     int version = 2;
@@ -335,7 +339,7 @@ struct ConfigV2 {
     DnsConfig dns;                              // NEW: DNS proxy configuration
     TcpSynParkingConfig tcp_syn_parking;        // SYN parking switch + tuning (startup only)
     UdpFirstPacketConfig udp_first_packet;      // UDP first-packet parking (startup only)
-    Ipv6Config ipv6;                            // IPv6 block / direct (runtime)
+    Ipv6Config ipv6;                            // IPv6 block / proxy / direct (runtime)
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, udp_first_packet, ipv6)

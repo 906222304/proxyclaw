@@ -100,6 +100,10 @@ private:
     void shutdown() noexcept;
 
     void                                           sync_groups();
+    const char*                                    ipv6_mode_name() const noexcept {
+        if (!ipv6_block_.load()) return "direct";
+        return ipv6_proxy_.load() ? "proxy" : "block";
+    }
     void                                           save_window_geometry(int x, int y, int w, int h) noexcept;
     [[nodiscard]] static std::pair<std::string, uint16_t> pick_proxy_endpoint(const ConfigV2& cfg);
     [[nodiscard]] std::unique_ptr<webview_app>     create_gui();
@@ -137,13 +141,17 @@ private:
     proxy_group_table                                 tcp_groups_;
     std::mutex                                        groups_sync_mu_;
     DnsManager                                        dns_mgr_;
+    ipv6_flow_table<>                                 v6_flows_;        // IPv6 TCP flows (ipv6.mode = proxy)
     async_acceptor                                    acceptor_;
+    async_acceptor                                    acceptor_v6_;     // [::1], serves v6_flows_
     uint16_t                                          redirect_port_ = 0;
+    uint16_t                                          redirect_port_v6_ = 0;   // 0 = IPv6 proxying unavailable
     std::unique_ptr<syn_parker>                       parker_;      // null when tcp_syn_parking.enabled=false
     std::unique_ptr<windivert_socket>                 wd_socket_;
     std::unique_ptr<windivert_network>                wd_network_;
-    std::unique_ptr<windivert_network_v6>             wd_network_v6_;   // IPv6 SYN gate (ipv6.mode)
+    std::unique_ptr<windivert_network_v6>             wd_network_v6_;   // IPv6 TCP: gate + redirect (ipv6.mode)
     std::atomic<bool>                                 ipv6_block_{true};
+    std::atomic<bool>                                 ipv6_proxy_{false};
 
     std::unique_ptr<UdpPortTracker>       udp_port_tracker_ = std::make_unique<UdpPortTracker>();
     UdpSessionTable                       udp_session_table_;

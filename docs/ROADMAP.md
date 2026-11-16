@@ -42,7 +42,7 @@
 | 2 | 引擎状态与配置导入 / 导出 | 界面显示引擎运行、WinDivert 驱动加载失败、DNS 恢复等状态及决定记录计数；配置导入经 `config_store`，沿用带版本号的配置迁移。 |
 | 3 | 可编辑应用预设 | 基于现有规则系统的预设（常见 AI 客户端、IDE、浏览器等），支持路径 / Store 包身份匹配；可从网络活动的决定记录一键生成规则。 |
 | 4 | 规则匹配状态按 (pid, psn) | `matched_pids` 改为 (pid, psn)，在进程启动 / 退出时刷新，而不只在规则变更时刷新；修正进程树继承的已知残留问题。 |
-| 5 | IPv6 端到端代理（TCP + UDP） | 放在最后，允许顺延到 v0.16：统一地址类型、tracker / socket 键、规则与 CIDR 匹配、IPv6 报文重写与校验和、SOCKS5 CONNECT / UDP 帧中的 IPv6 地址（ATYP 4）、接口与作用域、活动列表；按地址族用配置开关逐步开启。 |
+| 5 | IPv6 端到端代理（TCP + UDP） | TCP 已在 v0.14.x 以 `ipv6.mode = proxy` 提供（[::1] 接收器 + SOCKS5 ATYP 4）；剩余 UDP。放在最后，允许顺延到 v0.16：统一地址类型、tracker / socket 键、规则与 CIDR 匹配、IPv6 报文重写与校验和、SOCKS5 CONNECT / UDP 帧中的 IPv6 地址（ATYP 4）、接口与作用域、活动列表；按地址族用配置开关逐步开启。 |
 
 **验收**
 

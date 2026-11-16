@@ -99,6 +99,13 @@ class Socks5Server:
             if cmd != 1:
                 conn.sendall(b"\x05\x07\x00\x01" + b"\x00" * 6)
                 return
+            if host == V6_TARGET:
+                # ipv6.mode = proxy case: the runner has no IPv6 route, so
+                # the recorder plays the server (ATYP 4 reached it).
+                conn.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("0.0.0.0") + b"\x00\x00")
+                req = conn.recv(64)
+                conn.sendall(b"pc-v6-ok " + req)
+                return
             upstream = socket.create_connection((host, port), timeout=10)
             conn.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("0.0.0.0") + b"\x00\x00")
             self._pump(conn, upstream)
@@ -325,6 +332,40 @@ print(r, f"{dt:.2f}")
 """
 
 
+V6_PROXY_PROBE = r"""
+import socket, sys
+s = socket.create_connection((sys.argv[1], 80), timeout=8)
+s.sendall(b"hello")
+s.settimeout(8)
+data = b""
+while True:
+    chunk = s.recv(64)
+    if not chunk:
+        break
+    data += chunk
+print(data.decode(errors="replace"))
+"""
+
+
+def api_put(path: str, token: str, body: object) -> None:
+    req = urllib.request.Request(API + path, data=json.dumps(body).encode(), method="PUT",
+                                 headers={"X-ProxyClaw-Token": token,
+                                          "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        resp.read()
+
+
+def set_ipv6_mode(token: str, mode: str) -> None:
+    cfg = api_get("/config", token)
+    cfg["ipv6"] = {"mode": mode}
+    api_put("/config", token, cfg)
+    for _ in range(50):
+        if api_get("/stats", token).get("ipv6", {}).get("mode") == mode:
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"ipv6.mode did not become {mode}")
+
+
 def _ps(cmd: str) -> subprocess.CompletedProcess:
     return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
                           capture_output=True, text=True, timeout=60)
@@ -351,7 +392,38 @@ def v6_teardown() -> None:
         f"Get-NetIPAddress -IPAddress {V6_LOCAL} -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false")
 
 
-def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[str]) -> None:
+def run_v6_proxy_case(probe: pathlib.Path, script: pathlib.Path, socks: "Socks5Server",
+                      token: str, failures: list[str]) -> None:
+    """ipv6.mode = proxy: the IPv6 connect reaches the SOCKS5 server as ATYP 4."""
+    try:
+        set_ipv6_mode(token, "proxy")
+    except Exception as e:
+        _check(failures, "v6proxy mode switch", False, str(e))
+        return
+    try:
+        socks.take()
+        st0 = api_get("/stats", token).get("ipv6", {})
+        res = subprocess.run([str(probe), str(script), V6_TARGET],
+                             capture_output=True, text=True, timeout=30)
+        time.sleep(0.3)
+        st1 = api_get("/stats", token).get("ipv6", {})
+        seen = socks.take()
+        gate = {k: v - st0.get(k, 0) for k, v in st1.items() if isinstance(v, int)}
+        ok = (res.stdout.strip() == "pc-v6-ok hello"
+              and (V6_TARGET, 80) in seen
+              and gate.get("syn_proxied", 0) >= 1 and gate.get("syn_allowed", 0) == 0)
+        _check(failures, "e2e_v6block ipv6 proxy (ATYP 4)", ok,
+               {"stdout": res.stdout.strip()[:80], "stderr": res.stderr.strip()[-300:],
+                "seen": seen, "gate": gate, "available": st1.get("proxy_available")})
+    finally:
+        try:
+            set_ipv6_mode(token, "block")
+        except Exception as e:
+            _check(failures, "v6proxy mode restore", False, str(e))
+
+
+def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[str],
+                 proxy_script: pathlib.Path | None = None, socks: "Socks5Server | None" = None) -> None:
     err = v6_setup()
     if err:
         for r, _, _ in V6_CASES:
@@ -383,6 +455,8 @@ def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[
                    {"tcp": got_tcp, "secs": secs, "tcp_blocked": tcp_blocked,
                     "udp_dropped": udp_dropped, "gate": gate, "want": [want_tcp, want_udp_drop],
                     "stderr": res.stderr.strip()[-200:]})
+        if proxy_script and socks:
+            run_v6_proxy_case(probes["e2e_v6block"], proxy_script, socks, token, failures)
     finally:
         v6_teardown()
 
@@ -583,6 +657,8 @@ def main() -> int:
         udp_probes[r["id"]] = dst
     v6_script = work / "v6_probe.py"
     v6_script.write_text(V6_PROBE, encoding="utf-8")
+    v6_proxy_script = work / "v6_proxy_probe.py"
+    v6_proxy_script.write_text(V6_PROXY_PROBE, encoding="utf-8")
     for r, _, _ in V6_CASES:
         dst = py_dir / r["process_name"]
         shutil.copy2(sys.executable, dst)
@@ -662,7 +738,7 @@ def main() -> int:
             if not ok:
                 failures.append(f"{r['id']} udp")
 
-        run_v6_cases(udp_probes, v6_script, token, failures)
+        run_v6_cases(udp_probes, v6_script, token, failures, v6_proxy_script, socks)
 
         # Last: it deletes its rules.
         decision_failures: list[str] = []
@@ -686,7 +762,7 @@ def main() -> int:
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
-    total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + len(SPEED_CASES)
+    total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + 1 + len(SPEED_CASES)
              + DECISION_CHECKS)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0

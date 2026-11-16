@@ -156,7 +156,7 @@ if(MSVC)
     # Release keeps a PDB (not packaged) so a crash dump from CI or a user
     # resolves to source lines. /OPT:REF /OPT:ICF restore the defaults /DEBUG
     # turns off, so the exe stays the same size.
-    target_compile_options(proxyclaw PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_compile_options(proxyclaw PRIVATE /bigobj $<$<CONFIG:Release>:/Zi>)
     target_link_options(proxyclaw PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
 
     # Parallel compilation: the Visual Studio generator parallelizes across

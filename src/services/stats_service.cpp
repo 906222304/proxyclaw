@@ -30,8 +30,8 @@ nlohmann::json stats_service::get_stats() const {
     });
     if (traffic_) {
         auto t = traffic_();
-        // IPv6 is not proxied yet: CONNECTs to IPv6 remotes are ignored by
-        // the SOCKET layers and go direct. Surfaced top-level for the UI.
+        // CONNECTs to IPv6 remotes make no port decision in the SOCKET
+        // layers (ipv6.mode decides per flow). Surfaced top-level for the UI.
         const auto count = [&t](const char* layer) -> std::uint64_t {
             if (!t.contains(layer)) return 0;
             return t[layer].value("ipv6_unmanaged", std::uint64_t{0});
@@ -44,6 +44,13 @@ nlohmann::json stats_service::get_stats() const {
             return t[layer].value("ipv6_blocked", std::uint64_t{0});
         };
         j["ipv6_blocked"] = {{"tcp", blocked("socket")}, {"udp", blocked("udp_socket")}};
+        // ipv6.mode = proxy: TCP connects handed to the IPv6 acceptor and UDP
+        // datagrams handed to the relay (SOCKS5 ATYP 4).
+        const auto proxied = [&t](const char* layer) -> std::uint64_t {
+            if (!t.contains(layer)) return 0;
+            return t[layer].value("ipv6_proxied", std::uint64_t{0});
+        };
+        j["ipv6_proxied"] = {{"tcp", proxied("socket")}, {"udp", proxied("udp_socket")}};
         if (t.contains("ipv6")) j["ipv6"] = t["ipv6"];
         if (t.contains("decisions")) j["decisions"] = t["decisions"];
         j["tcp_syn_parking"] = std::move(t);

@@ -136,6 +136,7 @@ public:
 
     // ipv6.mode = block flag (shared with the NETWORK workers). Set before start().
     void set_ipv6_block(const std::atomic<bool>* block) { ipv6_block_ = block; }
+    void set_ipv6_proxy(const std::atomic<bool>* proxy) { ipv6_proxy_ = proxy; }
 
 private:
     asio::io_context& ioc_;
@@ -162,6 +163,7 @@ private:
     uint64_t match_count_{0};
     std::atomic<uint64_t> ipv6_unmanaged_count_{0};
     const std::atomic<bool>* ipv6_block_{nullptr};
+    const std::atomic<bool>* ipv6_proxy_{nullptr};
 
     // ---- Asio IOCP async path ----
 
@@ -275,13 +277,12 @@ private:
             return;
         }
 
-        // A CONNECT to a real IPv6 remote is not managed: the NETWORK filter
-        // only diverts IPv4, and the per-destination checks read the remote
-        // as IPv4. BIND carries no remote and stays a per-port decision, since
-        // a dual-stack socket bound on the IPv6 layer may still send IPv4.
-        // With ipv6.mode = block the NETWORK workers drop a proxied port's
-        // IPv6 datagrams (per packet, like the IPv4 excludes); the record
-        // says so when the port is proxied.
+        // A CONNECT to a real IPv6 remote makes no port decision: the
+        // per-destination checks here read the remote as IPv4. BIND carries
+        // no remote and stays the per-port decision, since a dual-stack
+        // socket bound on the IPv6 layer may still send IPv4. A proxied
+        // port's IPv6 datagrams follow ipv6.mode per packet in the NETWORK
+        // workers (proxy: relayed, block: dropped); the record says which.
         if (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT &&
             is_unmanaged_ipv6(addr.IPv6 != 0, addr.Socket.RemoteAddr)) {
             ipv6_unmanaged_count_.fetch_add(1, std::memory_order_relaxed);
@@ -290,6 +291,12 @@ private:
             const auto port = static_cast<uint16_t>(addr.Socket.LocalPort);
             if (!tracker_.is_active(port)) {
                 rec.reason = decision_reason::not_proxied;
+            } else if (ipv6_block_ && ipv6_block_->load(std::memory_order_relaxed) &&
+                       ipv6_proxy_ && ipv6_proxy_->load(std::memory_order_relaxed)) {
+                const auto t = tracker_.get(port);
+                rec.verdict  = decision_verdict::proxied;
+                rec.reason   = decision_reason::none;
+                if (t) rec.group_id = t->group_id;
             } else if (ipv6_block_ && ipv6_block_->load(std::memory_order_relaxed)) {
                 rec.reason = decision_reason::ipv6_blocked;
             } else {

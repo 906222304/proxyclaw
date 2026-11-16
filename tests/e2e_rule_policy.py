@@ -136,9 +136,22 @@ class Socks5Server:
                                 return  # control closed
                         elif sock is relay:
                             data, src = relay.recvfrom(65535)
-                            if len(data) < 10 or data[:3] != b"\x00\x00\x00" or data[3] != 1:
+                            if len(data) < 10 or data[:3] != b"\x00\x00\x00" or data[3] not in (1, 4):
                                 continue
                             client = src
+                            if data[3] == 4:
+                                # ipv6.mode = proxy: no IPv6 route on the
+                                # runner, so the recorder answers for the
+                                # target with an ATYP 4 header.
+                                if len(data) < 22:
+                                    continue
+                                host = socket.inet_ntop(socket.AF_INET6, data[4:20])
+                                port = struct.unpack("!H", data[20:22])[0]
+                                with self.lock:
+                                    self.seen_udp.append((host, port))
+                                if host == V6_TARGET:
+                                    relay.sendto(data[:22] + b"pc-v6u-ok " + data[22:], client)
+                                continue
                             host = socket.inet_ntoa(data[4:8])
                             port = struct.unpack("!H", data[8:10])[0]
                             with self.lock:
@@ -346,6 +359,22 @@ while True:
 print(data.decode(errors="replace"))
 """
 
+V6_UDP_PROXY_PROBE = r"""
+import socket, sys
+target = sys.argv[1]
+u = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+u.settimeout(2)
+for _ in range(3):
+    u.sendto(b"hello6", (target, 5353, 0, 0))
+    try:
+        data, src = u.recvfrom(256)
+    except (socket.timeout, TimeoutError):
+        continue
+    print(data.decode(errors="replace"), src[0], src[1])
+    sys.exit(0)
+print("timeout")
+"""
+
 
 def api_put(path: str, token: str, body: object) -> None:
     req = urllib.request.Request(API + path, data=json.dumps(body).encode(), method="PUT",
@@ -393,7 +422,8 @@ def v6_teardown() -> None:
 
 
 def run_v6_proxy_case(probe: pathlib.Path, script: pathlib.Path, socks: "Socks5Server",
-                      token: str, failures: list[str]) -> None:
+                      token: str, failures: list[str],
+                      udp_script: pathlib.Path | None = None) -> None:
     """ipv6.mode = proxy: the IPv6 connect reaches the SOCKS5 server as ATYP 4."""
     try:
         set_ipv6_mode(token, "proxy")
@@ -415,6 +445,23 @@ def run_v6_proxy_case(probe: pathlib.Path, script: pathlib.Path, socks: "Socks5S
         _check(failures, "e2e_v6block ipv6 proxy (ATYP 4)", ok,
                {"stdout": res.stdout.strip()[:80], "stderr": res.stderr.strip()[-300:],
                 "seen": seen, "gate": gate, "available": st1.get("proxy_available")})
+        if udp_script:
+            socks.take_udp()
+            s0 = api_get("/stats", token)
+            res = subprocess.run([str(probe), str(udp_script), V6_TARGET],
+                                 capture_output=True, text=True, timeout=30)
+            time.sleep(0.3)
+            s1 = api_get("/stats", token)
+            seen_udp = socks.take_udp()
+            delta = lambda k: s1.get(k, {}).get("udp", 0) - s0.get(k, {}).get("udp", 0)
+            # The reply must come back from the real IPv6 source, not ::1.
+            ok = (res.stdout.strip() == f"pc-v6u-ok hello6 {V6_TARGET} 5353"
+                  and (V6_TARGET, 5353) in seen_udp
+                  and delta("ipv6_proxied") >= 1 and delta("ipv6_blocked") == 0)
+            _check(failures, "e2e_v6block ipv6 udp proxy (ATYP 4)", ok,
+                   {"stdout": res.stdout.strip()[:80], "stderr": res.stderr.strip()[-300:],
+                    "seen_udp": seen_udp, "proxied": delta("ipv6_proxied"),
+                    "blocked": delta("ipv6_blocked")})
     finally:
         try:
             set_ipv6_mode(token, "block")
@@ -423,7 +470,8 @@ def run_v6_proxy_case(probe: pathlib.Path, script: pathlib.Path, socks: "Socks5S
 
 
 def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[str],
-                 proxy_script: pathlib.Path | None = None, socks: "Socks5Server | None" = None) -> None:
+                 proxy_script: pathlib.Path | None = None, socks: "Socks5Server | None" = None,
+                 udp_proxy_script: pathlib.Path | None = None) -> None:
     err = v6_setup()
     if err:
         for r, _, _ in V6_CASES:
@@ -456,7 +504,8 @@ def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[
                     "udp_dropped": udp_dropped, "gate": gate, "want": [want_tcp, want_udp_drop],
                     "stderr": res.stderr.strip()[-200:]})
         if proxy_script and socks:
-            run_v6_proxy_case(probes["e2e_v6block"], proxy_script, socks, token, failures)
+            run_v6_proxy_case(probes["e2e_v6block"], proxy_script, socks, token, failures,
+                              udp_proxy_script)
     finally:
         v6_teardown()
 
@@ -659,6 +708,8 @@ def main() -> int:
     v6_script.write_text(V6_PROBE, encoding="utf-8")
     v6_proxy_script = work / "v6_proxy_probe.py"
     v6_proxy_script.write_text(V6_PROXY_PROBE, encoding="utf-8")
+    v6_udp_proxy_script = work / "v6_udp_proxy_probe.py"
+    v6_udp_proxy_script.write_text(V6_UDP_PROXY_PROBE, encoding="utf-8")
     for r, _, _ in V6_CASES:
         dst = py_dir / r["process_name"]
         shutil.copy2(sys.executable, dst)
@@ -738,7 +789,8 @@ def main() -> int:
             if not ok:
                 failures.append(f"{r['id']} udp")
 
-        run_v6_cases(udp_probes, v6_script, token, failures, v6_proxy_script, socks)
+        run_v6_cases(udp_probes, v6_script, token, failures, v6_proxy_script, socks,
+                     v6_udp_proxy_script)
 
         # Last: it deletes its rules.
         decision_failures: list[str] = []
@@ -762,7 +814,7 @@ def main() -> int:
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
-    total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + 1 + len(SPEED_CASES)
+    total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + 2 + len(SPEED_CASES)
              + DECISION_CHECKS)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0

@@ -9,19 +9,25 @@
 // reply is injected with its real source and only from a peer the app
 // contacted (address-and-port restricted, like a typical NAT).
 
+#include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
 
 namespace clew {
 
+// IPv4 (`dst_addr_net`) or IPv6 (`v6` set, `dst_addr6` in network order;
+// ipv6.mode = proxy). One app socket may carry both on a dual-stack port.
 struct UdpOutbound {
     uint16_t app_port{};        // host byte order
     uint32_t group_id{};
-    uint32_t dst_addr_net{};    // network byte order
+    uint32_t dst_addr_net{};    // network byte order (IPv4)
     uint16_t dst_port_host{};   // host byte order
+    bool     v6{false};
+    std::array<uint8_t, 16> dst_addr6{};   // network order (IPv6)
     std::vector<uint8_t> payload;
 };
 
@@ -43,7 +49,56 @@ public:
     // Records (or refreshes) a peer. When full, the least recently used peer
     // is forgotten; returns true when that happened.
     bool add(uint32_t addr_net, uint16_t port_host, clock::time_point now = clock::now()) {
-        const auto k = key(addr_net, port_host);
+        return add_key(key(addr_net, port_host), now);
+    }
+    bool add6(const uint8_t* addr16, uint16_t port_host, clock::time_point now = clock::now()) {
+        return add_key(key6(addr16, port_host), now);
+    }
+
+    bool contains(uint32_t addr_net, uint16_t port_host) const {
+        return peers_.contains(key(addr_net, port_host));
+    }
+    bool contains6(const uint8_t* addr16, uint16_t port_host) const {
+        return peers_.contains(key6(addr16, port_host));
+    }
+
+    size_t size() const { return peers_.size(); }
+
+private:
+    // family (4/6), address (IPv4 in the first 4 bytes), port.
+    struct Key {
+        std::array<uint8_t, 16> addr{};
+        uint16_t port{};
+        uint8_t  family{};
+        bool operator==(const Key&) const = default;
+    };
+    struct KeyHash {
+        size_t operator()(const Key& k) const noexcept {
+            uint64_t a, b;
+            std::memcpy(&a, k.addr.data(), 8);
+            std::memcpy(&b, k.addr.data() + 8, 8);
+            uint64_t h = a * 0x9E3779B97F4A7C15ull ^ (b + 0x632BE59BD9B4E019ull + (a << 6) + (a >> 2));
+            h ^= (static_cast<uint64_t>(k.port) << 8 | k.family) * 0xBF58476D1CE4E5B9ull;
+            return static_cast<size_t>(h ^ (h >> 31));
+        }
+    };
+
+    static Key key(uint32_t addr_net, uint16_t port_host) {
+        Key k;
+        std::memcpy(k.addr.data(), &addr_net, 4);
+        k.port = port_host;
+        k.family = 4;
+        return k;
+    }
+    static Key key6(const uint8_t* addr16, uint16_t port_host) {
+        Key k;
+        std::memcpy(k.addr.data(), addr16, 16);
+        k.port = port_host;
+        k.family = 6;
+        return k;
+    }
+
+    bool add_key(const Key& k, clock::time_point now) {
         if (auto it = peers_.find(k); it != peers_.end()) {
             it->second = now;
             return false;
@@ -60,19 +115,8 @@ public:
         return evicted;
     }
 
-    bool contains(uint32_t addr_net, uint16_t port_host) const {
-        return peers_.contains(key(addr_net, port_host));
-    }
-
-    size_t size() const { return peers_.size(); }
-
-private:
-    static uint64_t key(uint32_t addr_net, uint16_t port_host) {
-        return (static_cast<uint64_t>(addr_net) << 16) | port_host;
-    }
-
     size_t capacity_;
-    std::unordered_map<uint64_t, clock::time_point> peers_;
+    std::unordered_map<Key, clock::time_point, KeyHash> peers_;
 };
 
 // Admission control for datagrams queued between the NETWORK workers and the

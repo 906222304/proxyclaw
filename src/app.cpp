@@ -168,6 +168,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
                                                               resolve_unknown_pid);
     wd_socket_udp_->set_decision_log(decision_log_.get());
     wd_socket_udp_->set_ipv6_block(&ipv6_block_);
+    wd_socket_udp_->set_ipv6_proxy(&ipv6_proxy_);
     {
         const auto& up = config_.get_v2().udp_first_packet;
         const auto park_ms = up.enabled ? std::clamp(up.watchdog_ms, 5, 50) : 0;
@@ -178,6 +179,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
             *udp_port_tracker_, udp_session_table_, policy_pub_, std::chrono::milliseconds{park_ms});
         wd_network_udp_->set_decision_log(decision_log_.get());
         wd_network_udp_->set_ipv6_block(&ipv6_block_);
+        wd_network_udp_->set_ipv6_proxy(&ipv6_proxy_);
     }
     wd_socket_udp_->set_decision_listener([this](uint16_t port) {
         if (wd_network_udp_) wd_network_udp_->release(port);
@@ -287,7 +289,9 @@ nlohmann::json app::traffic_stats() const {
     if (wd_socket_udp_) {
         j["udp_socket"] = {{"ipv6_unmanaged", wd_socket_udp_->ipv6_unmanaged_count()},
                            {"ipv6_blocked",
-                            wd_network_udp_ ? wd_network_udp_->ipv6_blocked_count() : 0}};
+                            wd_network_udp_ ? wd_network_udp_->ipv6_blocked_count() : 0},
+                           {"ipv6_proxied",
+                            wd_network_udp_ ? wd_network_udp_->ipv6_proxied_count() : 0}};
     }
     j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", redirect_port_v6_ != 0},
                  {"flows", v6_flows_.size()}};

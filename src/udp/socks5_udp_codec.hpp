@@ -10,6 +10,7 @@
 //   | 2  |  1   |  1   | Variable |    2     | Variable |
 //   +----+------+------+----------+----------+----------+
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -18,7 +19,9 @@
 namespace clew {
 
 struct Socks5UdpFrame {
-    uint32_t addr_net{};    // network byte order
+    bool v6{false};                    // ATYP 4: address in addr6
+    std::array<uint8_t, 16> addr6{};   // network order (IPv6)
+    uint32_t addr_net{};    // network byte order (IPv4)
     uint16_t port_host{};   // host byte order
     const uint8_t* data{};
     size_t data_len{};
@@ -53,6 +56,21 @@ inline std::vector<uint8_t> encode(
     return frame;
 }
 
+// Encode with an IPv6 destination (ATYP 4). addr16: network order.
+inline std::vector<uint8_t> encode6(
+    const uint8_t* addr16, uint16_t dst_port_host,
+    const uint8_t* payload, size_t payload_len)
+{
+    std::vector<uint8_t> frame;
+    frame.reserve(22 + payload_len);
+    frame.insert(frame.end(), {0x00, 0x00, 0x00, 0x04});   // RSV RSV FRAG ATYP=IPv6
+    frame.insert(frame.end(), addr16, addr16 + 16);
+    frame.push_back(static_cast<uint8_t>(dst_port_host >> 8));
+    frame.push_back(static_cast<uint8_t>(dst_port_host & 0xFF));
+    frame.insert(frame.end(), payload, payload + payload_len);
+    return frame;
+}
+
 // Decode: SOCKS5 UDP frame -> raw payload + addressing info.
 // Returns nullopt on invalid/unsupported frames.
 inline std::optional<Socks5UdpFrame> decode(const uint8_t* buf, size_t len) {
@@ -70,8 +88,13 @@ inline std::optional<Socks5UdpFrame> decode(const uint8_t* buf, size_t len) {
         frame.port_host = (static_cast<uint16_t>(buf[8]) << 8) | buf[9];
         frame.data = buf + 10;
         frame.data_len = len - 10;
-    } else if (atyp == 0x04) { // IPv6 — skip for now, log and return nullopt
-        return std::nullopt;
+    } else if (atyp == 0x04) { // IPv6
+        if (len < 22) return std::nullopt;
+        frame.v6 = true;
+        std::memcpy(frame.addr6.data(), &buf[4], 16);
+        frame.port_host = (static_cast<uint16_t>(buf[20]) << 8) | buf[21];
+        frame.data = buf + 22;
+        frame.data_len = len - 22;
     } else if (atyp == 0x03) { // Domain — skip for now
         return std::nullopt;
     } else {

@@ -12,6 +12,7 @@
 #include <winsock2.h>
 #include <windows.h>
 
+#include <array>
 #include <cstdint>
 #include <shared_mutex>
 #include <unordered_map>
@@ -21,24 +22,53 @@
 
 namespace clew {
 
+// One app port may send both families (a dual-stack socket); each family
+// keeps its own app-side address and interface for reply injection. The
+// orig_dst_* fields are the most recent destination, of either family.
 struct UdpSession {
-    uint32_t orig_dst_addr{};   // network byte order (raw from IP header)
+    uint32_t orig_dst_addr{};   // network byte order (raw from IP header), IPv4
     uint16_t orig_dst_port{};   // network byte order (raw from UDP header)
+    bool     orig_dst_v6{false};
+    std::array<uint8_t, 16> orig_dst_addr6{};
     uint32_t app_src_addr{};    // network byte order
     uint16_t app_src_port{};    // host byte order (key)
     uint32_t pid{};
     uint32_t group_id{};
     UINT32 ifidx{};
     UINT32 subifidx{};
+    bool has_v4{false};
+    // IPv6 side (ipv6.mode = proxy)
+    bool has_v6{false};
+    std::array<uint8_t, 16> app_src_addr6{};
+    UINT32 ifidx6{};
+    UINT32 subifidx6{};
     std::chrono::steady_clock::time_point last_active{std::chrono::steady_clock::now()};
 };
 
 class UdpSessionTable {
 public:
     // Insert or update session (called from NETWORK workers)
+    // The other family's app-side fields of an existing entry are kept, so
+    // a dual-stack socket's IPv4 and IPv6 replies both find their route.
     void upsert(uint16_t app_port, const UdpSession& session) {
         std::unique_lock lk(mu_);
-        sessions_[app_port] = session;
+        auto [it, inserted] = sessions_.try_emplace(app_port, session);
+        if (inserted) return;
+        UdpSession merged = session;
+        const UdpSession& old = it->second;
+        if (!merged.has_v4 && old.has_v4) {
+            merged.has_v4 = true;
+            merged.app_src_addr = old.app_src_addr;
+            merged.ifidx = old.ifidx;
+            merged.subifidx = old.subifidx;
+        }
+        if (!merged.has_v6 && old.has_v6) {
+            merged.has_v6 = true;
+            merged.app_src_addr6 = old.app_src_addr6;
+            merged.ifidx6 = old.ifidx6;
+            merged.subifidx6 = old.subifidx6;
+        }
+        it->second = merged;
     }
 
     // Lookup session (called from relay)

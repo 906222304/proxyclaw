@@ -65,9 +65,9 @@ public:
     ~windivert_network_udp() { close(); }
 
     bool open() {
-        // IPv4 and IPv6. IPv6 is not proxied: its datagrams pass unchanged,
-        // except a proxied port's under ipv6.mode = block, which are dropped
-        // so the application falls back to IPv4 (QUIC to TCP).
+        // IPv4 and IPv6. A proxied port's IPv6 datagrams follow ipv6.mode:
+        // proxy hands them to the relay (SOCKS5 ATYP 4), block drops them so
+        // the application falls back to IPv4 (QUIC to TCP), direct passes.
         const char* filter = "udp and outbound and !loopback";
 
         handle_ = WinDivertOpen(filter, WINDIVERT_LAYER_NETWORK, 0, 0);
@@ -143,9 +143,12 @@ public:
     // is recorded as `watchdog`. Set before start().
     void set_decision_log(DecisionLog* log) { decisions_ = log; }
 
-    // ipv6.mode = block flag (runtime). Unset: IPv6 always passes.
+    // ipv6.mode flags (runtime). Unset: IPv6 always passes. proxy only
+    // counts while block is set too (ipv6_blocks() is true for proxy).
     void set_ipv6_block(const std::atomic<bool>* block) { ipv6_block_ = block; }
+    void set_ipv6_proxy(const std::atomic<bool>* proxy) { ipv6_proxy_ = proxy; }
     uint64_t ipv6_blocked_count() const { return ipv6_blocked_.load(std::memory_order_relaxed); }
+    uint64_t ipv6_proxied_count() const { return ipv6_proxied_.load(std::memory_order_relaxed); }
 
     // Expose handle for reply injection from relay
     HANDLE handle() const { return handle_; }
@@ -183,7 +186,9 @@ private:
     std::atomic<UdpOutboundSink*> sink_{nullptr};
     DecisionLog* decisions_{nullptr};
     const std::atomic<bool>* ipv6_block_{nullptr};
+    const std::atomic<bool>* ipv6_proxy_{nullptr};
     std::atomic<uint64_t> ipv6_blocked_{0};
+    std::atomic<uint64_t> ipv6_proxied_{0};
     std::atomic<uint64_t> handoff_count_{0};
     std::atomic<uint64_t> drop_count_{0};
     std::atomic<uint64_t> pass_count_{0};
@@ -263,12 +268,13 @@ private:
         }
     }
 
-    // An IPv6 datagram: never proxied. Dropped when its port is proxied, the
-    // rule covers this destination port and the destination is not
-    // local-scope (ipv6.mode = block); otherwise sent unchanged.
+    // An IPv6 datagram. Sent unchanged unless its port is proxied, the rule
+    // covers this destination port and the destination is not local-scope;
+    // then ipv6.mode decides: proxy hands it to the relay, block drops it.
     void handle_ipv6(PolicyReader& policies, const uint8_t* pkt_buf, UINT pkt_len,
                      const WINDIVERT_ADDRESS& addr, const WINDIVERT_IPV6HDR& ip6,
-                     uint16_t src_port, uint16_t dest_port) {
+                     uint16_t src_port, uint16_t dest_port,
+                     const void* payload, UINT payload_len) {
         const auto tracked = tracker_.get(src_port);
         if (!tracked || !ipv6_block_ || !ipv6_block_->load(std::memory_order_relaxed)) {
             send_direct(pkt_buf, pkt_len, addr);
@@ -281,7 +287,40 @@ private:
             send_direct(pkt_buf, pkt_len, addr);
             return;
         }
-        ipv6_blocked_.fetch_add(1, std::memory_order_relaxed);
+        if (!ipv6_proxy_ || !ipv6_proxy_->load(std::memory_order_relaxed)) {
+            ipv6_blocked_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        UdpSession session{};
+        session.orig_dst_v6   = true;
+        std::memcpy(session.orig_dst_addr6.data(), dst, 16);
+        session.orig_dst_port = htons(dest_port);
+        session.app_src_port  = src_port;
+        session.pid           = tracked->pid;
+        session.group_id      = tracked->group_id;
+        session.has_v6        = true;
+        std::memcpy(session.app_src_addr6.data(), ip6.SrcAddr, 16);
+        session.ifidx6        = addr.Network.IfIdx;
+        session.subifidx6     = addr.Network.SubIfIdx;
+        session_table_.upsert(src_port, session);
+
+        UdpOutbound out;
+        out.app_port      = src_port;
+        out.group_id      = tracked->group_id;
+        out.v6            = true;
+        std::memcpy(out.dst_addr6.data(), dst, 16);
+        out.dst_port_host = dest_port;
+        if (payload && payload_len)
+            out.payload.assign(static_cast<const uint8_t*>(payload),
+                               static_cast<const uint8_t*>(payload) + payload_len);
+        auto* sink = sink_.load(std::memory_order_acquire);
+        if (sink && sink->submit(std::move(out))) {
+            handoff_count_.fetch_add(1, std::memory_order_relaxed);
+            ipv6_proxied_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            drop_count_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     void handle_packet(PolicyReader& policies, uint8_t* pkt_buf, UINT pkt_len,
@@ -321,7 +360,11 @@ private:
             // decided meanwhile: fall through and follow the decision
         }
 
-        if (ip6) { handle_ipv6(policies, pkt_buf, pkt_len, addr, *ip6, src_port, ntohs(udp->DstPort)); return; }
+        if (ip6) {
+            handle_ipv6(policies, pkt_buf, pkt_len, addr, *ip6, src_port, ntohs(udp->DstPort),
+                        payload, payload_len);
+            return;
+        }
 
         // Check if this port is tracked for UDP proxy
         auto tracked = tracker_.get(src_port);
@@ -350,6 +393,7 @@ private:
         session.orig_dst_addr = ip->DstAddr;
         session.orig_dst_port = udp->DstPort;
         session.app_src_addr  = ip->SrcAddr;
+        session.has_v4        = true;
         session.app_src_port  = src_port;
         session.pid           = te.pid;
         session.group_id      = te.group_id;

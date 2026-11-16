@@ -186,7 +186,9 @@ private:
             note_drop("port queue full");
             return;
         }
-        if (port.peers.add(d.dst_addr_net, d.dst_port_host))
+        const bool evicted = d.v6 ? port.peers.add6(d.dst_addr6.data(), d.dst_port_host)
+                                  : port.peers.add(d.dst_addr_net, d.dst_port_host);
+        if (evicted)
             PC_LOG_DEBUG("[UDP-RELAY] port={} peer set full, forgot the oldest peer", d.app_port);
         const uint16_t app_port = d.app_port;
         port.queue.push_back(std::move(d));
@@ -226,13 +228,16 @@ private:
                 continue;
             }
 
-            auto frame = socks5_udp::encode(d.dst_addr_net, d.dst_port_host,
-                                            d.payload.data(), d.payload.size());
+            auto frame = d.v6 ? socks5_udp::encode6(d.dst_addr6.data(), d.dst_port_host,
+                                                    d.payload.data(), d.payload.size())
+                              : socks5_udp::encode(d.dst_addr_net, d.dst_port_host,
+                                                   d.payload.data(), d.payload.size());
             const auto frame_size = frame.size();
             release(bytes);
             bool sent = co_await socks5->async_send_udp(std::move(frame));
             PC_LOG_DEBUG("[UDP-RELAY] UP app_port={} dst={}:{} {} bytes sent={}",
-                         app_port, ipv4_text(d.dst_addr_net), d.dst_port_host, frame_size, sent);
+                         app_port, d.v6 ? ipv6_text(d.dst_addr6.data()) : ipv4_text(d.dst_addr_net),
+                         d.dst_port_host, frame_size, sent);
             if (sent) {
                 upstream_count_.fetch_add(1, std::memory_order_relaxed);
                 session_table_.touch(app_port);
@@ -269,11 +274,17 @@ private:
                 continue;
             }
 
+            const auto from_text = [&] {
+                return frame->v6 ? ipv6_text(frame->addr6.data()) : ipv4_text(frame->addr_net);
+            };
             auto port = ports_.find(app_port);
-            if (port == ports_.end() || !port->second.peers.contains(frame->addr_net, frame->port_host)) {
+            const bool known = port != ports_.end() &&
+                (frame->v6 ? port->second.peers.contains6(frame->addr6.data(), frame->port_host)
+                           : port->second.peers.contains(frame->addr_net, frame->port_host));
+            if (!known) {
                 filtered_count_.fetch_add(1, std::memory_order_relaxed);
                 PC_LOG_DEBUG("[UDP-RELAY] DOWN port={} from {}:{} dropped: not a peer of this socket",
-                             app_port, ipv4_text(frame->addr_net), frame->port_host);
+                             app_port, from_text(), frame->port_host);
                 continue;
             }
 
@@ -284,9 +295,16 @@ private:
             }
 
             PC_LOG_DEBUG("[UDP-RELAY] DOWN port={} from {}:{} {} bytes", app_port,
-                         ipv4_text(frame->addr_net), frame->port_host, frame->data_len);
+                         from_text(), frame->port_host, frame->data_len);
             session_table_.touch(app_port);
-            inject_reply(*s, frame->addr_net, htons(frame->port_host), frame->data, frame->data_len);
+            if (frame->v6) {
+                if (!s->has_v6) continue;
+                inject_reply6(*s, frame->addr6.data(), htons(frame->port_host),
+                              frame->data, frame->data_len);
+            } else {
+                if (!s->has_v4) continue;
+                inject_reply(*s, frame->addr_net, htons(frame->port_host), frame->data, frame->data_len);
+            }
         }
 
         PC_LOG_INFO("[UDP-RELAY] Downstream ended for port={}", app_port);
@@ -316,6 +334,53 @@ private:
         a.s_addr = addr_net;
         inet_ntop(AF_INET, &a, text, sizeof(text));
         return text;
+    }
+
+    static std::string ipv6_text(const uint8_t* addr16) {
+        char text[INET6_ADDRSTRLEN]{};
+        in6_addr a{};
+        std::memcpy(&a, addr16, 16);
+        inet_ntop(AF_INET6, &a, text, sizeof(text));
+        return text;
+    }
+
+    // Construct and inject a spoofed inbound IPv6 UDP packet.
+    void inject_reply6(const UdpSession& sess, const uint8_t* src_addr16, uint16_t src_port_net,
+                       const uint8_t* payload, size_t payload_len)
+    {
+        if (wd_handle_ == INVALID_HANDLE_VALUE) return;
+        if (payload_len > 0xFFFF - 8) return;
+        const size_t pkt_size = 40 + 8 + payload_len;
+        std::vector<uint8_t> pkt(pkt_size, 0);
+        const uint16_t plen = static_cast<uint16_t>(8 + payload_len);
+        pkt[0] = 0x60;                       // version 6
+        pkt[4] = static_cast<uint8_t>(plen >> 8);
+        pkt[5] = static_cast<uint8_t>(plen & 0xFF);
+        pkt[6] = 17;                         // next header: UDP
+        pkt[7] = 64;                         // hop limit
+        std::memcpy(pkt.data() + 8, src_addr16, 16);
+        std::memcpy(pkt.data() + 24, sess.app_src_addr6.data(), 16);
+
+        auto* uh = reinterpret_cast<WINDIVERT_UDPHDR*>(pkt.data() + 40);
+        uh->SrcPort = src_port_net;
+        uh->DstPort = htons(sess.app_src_port);
+        uh->Length  = htons(plen);
+        std::memcpy(pkt.data() + 48, payload, payload_len);
+
+        WINDIVERT_ADDRESS wd_addr{};
+        wd_addr.Outbound = FALSE;
+        wd_addr.IPv6 = TRUE;
+        wd_addr.Network.IfIdx = sess.ifidx6;
+        wd_addr.Network.SubIfIdx = sess.subifidx6;
+
+        WinDivertHelperCalcChecksums(pkt.data(), static_cast<UINT>(pkt_size), &wd_addr, 0);
+
+        UINT sent = 0;
+        if (WinDivertSend(wd_handle_, pkt.data(), static_cast<UINT>(pkt_size), &sent, &wd_addr)) {
+            injected_count_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            PC_LOG_WARN("[UDP-RELAY] IPv6 inject failed: {}", GetLastError());
+        }
     }
 
     // Construct and inject a spoofed inbound UDP packet

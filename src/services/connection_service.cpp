@@ -1,6 +1,7 @@
 #include "services/connection_service.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -84,13 +85,21 @@ connection_row udp_row(const udp_endpoint& ep, const UdpPortTracker* tracker,
     r.state      = "BOUND";
     if (sessions && tracker && tracker->is_active(ep.local_port)) {
         if (auto session = sessions->lookup(ep.local_port)) {
-            struct in_addr addr;
-            addr.s_addr = session->orig_dst_addr;  // already network byte order
-            char buf[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &addr, buf, sizeof(buf));
-            r.remote_ip   = buf;
+            if (session->orig_dst_v6) {
+                struct in6_addr addr6;
+                std::memcpy(&addr6, session->orig_dst_addr6.data(), 16);
+                char buf[INET6_ADDRSTRLEN];
+                inet_ntop(AF_INET6, &addr6, buf, sizeof(buf));
+                r.remote_ip = buf;
+            } else {
+                struct in_addr addr;
+                addr.s_addr = session->orig_dst_addr;  // already network byte order
+                char buf[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &addr, buf, sizeof(buf));
+                r.remote_ip   = buf;
+                r.remote_addr = CidrRange::ip_to_uint(r.remote_ip);
+            }
             r.remote_port = ntohs(session->orig_dst_port);
-            r.remote_addr = CidrRange::ip_to_uint(r.remote_ip);
         }
     }
     // UDP decisions are per local port (BIND / first CONNECT); per-packet

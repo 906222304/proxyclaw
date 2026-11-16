@@ -4,6 +4,16 @@
 
 ### Added
 
+- IPv6 UDP proxying (`ipv6.mode = proxy`). A proxied port's IPv6 datagrams
+  (same rule and local-scope checks as `block`) go to the UDP relay and leave
+  through the port's SOCKS5 UDP ASSOCIATE session with ATYP 4 frames; replies
+  with an ATYP 4 header are injected as IPv6 from their real source, only
+  from peers the socket sent to. A dual-stack port keeps its IPv4 and IPv6
+  reply routes side by side (`UdpSession` per-family app address and
+  interface). The UDP SOCKET layer records an IPv6 CONNECT on a proxied port
+  as `proxied` in this mode; the connection list shows the IPv6 destination.
+  `/api/stats` adds `ipv6_proxied {tcp, udp}`. The proxy must relay IPv6 UDP.
+
 - IPv6 TCP proxying (`ipv6.mode = proxy`, Settings → Network → IPv6 → 代理).
   A proxied process's IPv6 TCP connection is handed to a second local
   acceptor on `[::1]` (the IPv6 NETWORK handle now diverts all outbound IPv6
@@ -12,8 +22,8 @@
   IPv6 CONNECT (ATYP 4). Flows live in `core/ipv6_flow_table.hpp` (per-port
   lock-free pre-check, locked map for proxied ports, drained 10 s after the
   relay ends). Opt-in: the proxy server must reach IPv6, otherwise
-  connections fail instead of falling back to IPv4. IPv6 UDP is still
-  dropped in this mode. If `[::1]` cannot be bound, `proxy` acts as `block`.
+  connections fail instead of falling back to IPv4. If `[::1]` cannot be
+  bound, `proxy` acts as `block` (for UDP too).
   `/api/stats` `ipv6` adds `proxy_available`, `flows`, `syn_proxied`, `nat`.
 
 - IPv6 block for proxied processes (`ipv6.mode`, default `block`; Settings →

@@ -139,6 +139,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/ui_webview2_screenshots.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/ui-screenshots
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Shutdown stress (close while proxying, packaged app)
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          python tests/shutdown_stress.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/shutdown-stress --rounds 12
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: API e2e test (packaged app)
         shell: pwsh
         env:
@@ -190,6 +197,14 @@ jobs:
             build/crash-dumps/*.dmp
             build/Release/proxyclaw.pdb
             build/Release/proxyclaw.exe
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload shutdown stress logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: shutdown-stress
+          path: build/shutdown-stress/
           if-no-files-found: ignore
           retention-days: 14
       - name: Upload UI screenshots

@@ -114,7 +114,7 @@ def one_round(i: int, exe: pathlib.Path, work: pathlib.Path, churn_exe: pathlib.
     cfg = work / "proxyclaw.json"
     cfg.write_text(json.dumps(config, indent=2), encoding="utf-8")
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
-    proc = subprocess.Popen([str(exe), "--config", str(cfg)], cwd=exe.parent, env=env)
+    proc = subprocess.Popen([str(exe), "--dev-hooks", "--config", str(cfg)], cwd=exe.parent, env=env)
     helpers: list[subprocess.Popen] = []
     problem = None
     try:

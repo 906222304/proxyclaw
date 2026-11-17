@@ -46,6 +46,9 @@ class Socks5Server:
         self.lock = threading.Lock()
         self.seen: list[tuple[str, int]] = []
         self.seen_udp: list[tuple[str, int]] = []
+        # When set, IPv6 (ATYP 4) CONNECTs are refused with this REP: a proxy
+        # without IPv6 egress (ipv6.mode = proxy fallback, ipv6_egress.hpp).
+        self.v6_rep: int | None = None
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(64)
@@ -98,6 +101,15 @@ class Socks5Server:
                 return
             if cmd != 1:
                 conn.sendall(b"\x05\x07\x00\x01" + b"\x00" * 6)
+                return
+            if atyp == 4 and self.v6_rep is not None:
+                conn.sendall(bytes([5, self.v6_rep, 0, 1]) + b"\x00" * 6)
+                return
+            if host == V6_PROBE_TARGET:
+                # /test-ipv6 probe target: answer as an HTTP server would.
+                conn.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("0.0.0.0") + b"\x00\x00")
+                conn.recv(1024)
+                conn.sendall(b"HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\n")
                 return
             if host == V6_TARGET:
                 # ipv6.mode = proxy case: the runner has no IPv6 route, so
@@ -316,6 +328,7 @@ sys.exit(4)
 # (rule, expected TCP result, expect UDP datagrams dropped)
 V6_LOCAL = "2001:db8:5::10"
 V6_TARGET = "2001:db8:5::1"
+V6_PROBE_TARGET = "2606:4700:4700::1111"   # group_service::ipv6_probe_url
 V6_CASES = [
     (rule("v6block", "both"), "refused", True),
     (rule("v6exc", "both", exclude_ports=["80", "5353"]), "timeout", False),
@@ -467,11 +480,70 @@ def run_v6_proxy_case(probe: pathlib.Path, script: pathlib.Path, socks: "Socks5S
                    {"stdout": res.stdout.strip()[:80], "stderr": res.stderr.strip()[-300:],
                     "seen_udp": seen_udp, "proxied": delta("ipv6_proxied"),
                     "blocked": delta("ipv6_blocked")})
+        run_v6_egress_case(probe, script, socks, token, failures)
     finally:
+        socks.v6_rep = None
         try:
             set_ipv6_mode(token, "block")
         except Exception as e:
             _check(failures, "v6proxy mode restore", False, str(e))
+
+
+def _egress(token: str, gid: int = 0) -> dict:
+    for e in api_get("/stats", token).get("ipv6", {}).get("egress", []):
+        if e.get("group_id") == gid:
+            return e
+    return {}
+
+
+def run_v6_egress_case(probe: pathlib.Path, script: pathlib.Path, socks: "Socks5Server",
+                       token: str, failures: list[str]) -> None:
+    """ipv6.mode = proxy with a proxy that cannot reach IPv6: the first
+    ATYP 4 refusal (REP 8) blocks the group's IPv6, so the next connect is
+    refused at the SYN (the application would fall back to IPv4); the
+    /test-ipv6 probe clears it on success and sets it on failure."""
+    socks.v6_rep = 0x08
+    socks.take()
+    res = subprocess.run([str(probe), str(script), V6_TARGET],
+                         capture_output=True, text=True, timeout=30)
+    time.sleep(0.3)
+    e = _egress(token)
+    _check(failures, "e2e_v6egress first refusal marks", bool(e.get("unavailable")),
+           {"egress": e, "stdout": res.stdout.strip()[:60], "seen": socks.take()})
+
+    st0 = api_get("/stats", token).get("ipv6", {})
+    t = time.time()
+    res = subprocess.run([str(probe), str(script), V6_TARGET],
+                         capture_output=True, text=True, timeout=30)
+    secs = time.time() - t
+    time.sleep(0.3)
+    st1 = api_get("/stats", token).get("ipv6", {})
+    seen = socks.take()
+    gate = {k: v - st0.get(k, 0) for k, v in st1.items() if isinstance(v, int)}
+    refused = "ConnectionRefusedError" in res.stderr or "10061" in res.stderr
+    ok = (refused and (V6_TARGET, 80) not in seen and gate.get("syn_blocked", 0) >= 1
+          and gate.get("syn_proxied", 0) == 0 and secs < 8)
+    _check(failures, "e2e_v6egress marked group refused", ok,
+           {"secs": round(secs, 2), "seen": seen, "gate": gate,
+            "stderr": res.stderr.strip()[-160:]})
+
+    socks.v6_rep = None
+    r = api_post("/proxy-groups/0/test-ipv6", token)
+    _check(failures, "e2e_v6egress probe ok clears",
+           r.get("ipv6_available") is True and not _egress(token).get("unavailable"),
+           {"result": r, "egress": _egress(token)})
+
+    socks.v6_rep = 0x03
+    r = api_post("/proxy-groups/0/test-ipv6", token)
+    _check(failures, "e2e_v6egress probe failure marks",
+           r.get("ipv6_available") is False and r.get("failed_stage") == "remote"
+           and bool(_egress(token).get("unavailable")),
+           {"result": r, "egress": _egress(token)})
+
+    socks.v6_rep = None
+    r = api_post("/proxy-groups/0/test-ipv6", token)
+    _check(failures, "e2e_v6egress cleared again", not _egress(token).get("unavailable"),
+           {"result": r, "egress": _egress(token)})
 
 
 def run_v6_cases(probes: dict, script: pathlib.Path, token: str, failures: list[str],

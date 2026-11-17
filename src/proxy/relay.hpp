@@ -21,6 +21,7 @@
 #include "core/port_tracker.hpp"
 #include "proxy/proxy_group_table.hpp"
 #include "proxy/tcp_dns_upstream.hpp"
+#include "proxy/ipv6_egress.hpp"
 #include "proxy/socks5_async.hpp"
 #include "proxy/connection_health.hpp"
 
@@ -91,7 +92,8 @@ template <typename Release>
 asio::awaitable<void>
 relay_through_proxy(tcp::socket& client_sock, const ProxyGroupConfig& cfg, socks5_dest dest,
                     uint16_t src_port, Release release,
-                    std::chrono::steady_clock::duration setup_timeout)
+                    std::chrono::steady_clock::duration setup_timeout,
+                    ipv6_egress* egress = nullptr, uint32_t group_id = 0)
 {
     auto ex = co_await asio::this_coro::executor;
 
@@ -128,7 +130,19 @@ relay_through_proxy(tcp::socket& client_sock, const ProxyGroupConfig& cfg, socks
             t1 = std::chrono::steady_clock::now();
             co_await socks5_handshake(proxy_sock, dest);
         };
-        co_await with_setup_deadline(setup(), setup_timeout);
+        try {
+            co_await with_setup_deadline(setup(), setup_timeout);
+        } catch (const socks5_reply_error& e) {
+            // IPv6 CONNECT refused for an IPv6 reason: learn it, so later
+            // IPv6 flows of this group are blocked and fall back to IPv4.
+            if (egress && dest.ipv6 && egress->report_failure(group_id, e.rep())) {
+                PC_LOG_WARN("[RELAY] Group {} proxy cannot reach IPv6 ({}): blocking its IPv6 for {}s",
+                            group_id, ipv6_egress::reply_name(e.rep()),
+                            ipv6_egress::default_cooldown.count());
+            }
+            throw;
+        }
+        if (egress && dest.ipv6) egress->report_success(group_id);
 
         auto t2 = std::chrono::steady_clock::now();
         auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -215,6 +229,7 @@ inline asio::awaitable<void>
 handle_connection_v6(tcp::socket client_sock,
                      ipv6_flow_table<>& flows,
                      const proxy_group_table& groups,
+                     ipv6_egress* egress = nullptr,
                      std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10))
 {
     std::error_code ep_ec;
@@ -243,7 +258,8 @@ handle_connection_v6(tcp::socket client_sock,
     dest.ipv6 = true;
     dest.v6 = flow->remote;
     dest.port = flow->remote_port;
-    co_await relay_through_proxy(client_sock, *cfg_opt, dest, src_port, release, setup_timeout);
+    co_await relay_through_proxy(client_sock, *cfg_opt, dest, src_port, release, setup_timeout,
+                                 egress, flow->group_id);
 }
 
 } // namespace clew

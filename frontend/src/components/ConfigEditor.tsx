@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
-import { setAutostart, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
+import { setAutostart, testProxyGroupIpv6, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
 import { autostartQuery, configQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
 import { Button } from '@/components/ui/button'
@@ -56,6 +56,14 @@ export function ConfigEditor() {
   const logLevel = (config?.log_level as string | undefined) ?? 'info'
   const ipv6Raw = (config?.ipv6 as Obj | undefined)?.mode as string | undefined
   const ipv6Mode = ipv6Raw === 'direct' || ipv6Raw === 'proxy' ? ipv6Raw : 'block'
+
+  // IPv6 egress check of the default proxy (shown in proxy mode only).
+  const v6Probe = useMutation({ mutationFn: () => testProxyGroupIpv6(0) })
+  const v6ProbeText = v6Probe.isPending ? '检测中…'
+    : v6Probe.isError ? `检测失败：${errorText(v6Probe.error)}`
+    : !v6Probe.data ? ''
+    : v6Probe.data.ipv6_available ? `可用（${v6Probe.data.total_ms ?? 0} ms）`
+    : `不可用：${v6Probe.data.error ?? '未知错误'}${v6Probe.data.failed_stage === 'remote' || v6Probe.data.failed_stage === 'first_byte' ? '。已暂时阻断该代理的 IPv6，应用回落 IPv4' : ''}`
 
   // Draft for the upstream text box; committed on change (blur / Enter).
   const [upstreamDraft, setUpstreamDraft] = useState('')
@@ -203,7 +211,7 @@ export function ConfigEditor() {
             <Row
               title="IPv6"
               description="被代理进程的 IPv6 连接如何处理。"
-              hint="阻断：IPv6 连接被拒绝，应用自动改走 IPv4 并经过代理。代理：IPv6 TCP 与 UDP 经 SOCKS5 出口，需代理服务器能访问 IPv6 并支持 UDP 转发。直连：IPv6 绕过代理。局域网 IPv6 始终不受影响。"
+              hint="阻断：IPv6 连接被拒绝，应用自动改走 IPv4 并经过代理。代理：IPv6 TCP 与 UDP 经 SOCKS5 出口；若代理无法访问 IPv6，会自动暂时阻断该代理的 IPv6（5 分钟后重试），应用回落 IPv4。直连：IPv6 绕过代理。局域网 IPv6 始终不受影响。"
             >
               <Select
                 value={ipv6Mode}
@@ -217,6 +225,14 @@ export function ConfigEditor() {
                 ]}
               />
             </Row>
+            {ipv6Mode === 'proxy' && (
+              <Row title="检测代理 IPv6" description="经默认代理连接一个 IPv6 地址，确认代理能访问 IPv6。">
+                <div className="flex items-center gap-3">
+                  {v6ProbeText && <span data-testid="ipv6-probe-result" className="text-xs text-muted-foreground">{v6ProbeText}</span>}
+                  <Button size="sm" disabled={v6Probe.isPending} onClick={() => v6Probe.mutate()}>检测</Button>
+                </div>
+              </Row>
+            )}
           </Card>
         </section>
 

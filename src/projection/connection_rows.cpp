@@ -87,6 +87,7 @@ const char* recorded_proxy_status(const DecisionRecord& d, bool hijacked_now) no
     case decision_reason::pool_exhausted:
     case decision_reason::ipv6:
     case decision_reason::ipv6_blocked:
+    case decision_reason::ipv6_no_egress:
         return hijacked_now ? "IGNORED" : "-";
     default:
         return "-";

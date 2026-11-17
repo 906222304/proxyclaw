@@ -29,12 +29,14 @@ public:
                    PortTracker& tracker,
                    asio::strand<asio::io_context::executor_type>& strand,
                    const proxy_group_table& groups,
-                   ipv6_flow_table<>* v6_flows = nullptr)
+                   ipv6_flow_table<>* v6_flows = nullptr,
+                   ipv6_egress* egress = nullptr)
         : ioc_(ioc)
         , tracker_(tracker)
         , strand_(strand)
         , groups_(groups)
         , v6_flows_(v6_flows)
+        , egress_(egress)
     {}
 
     // Start listening. Returns the bound port. The IPv6 instance returns 0
@@ -82,6 +84,7 @@ private:
     asio::strand<asio::io_context::executor_type>& strand_;
     const proxy_group_table& groups_;
     ipv6_flow_table<>* v6_flows_;
+    ipv6_egress* egress_;
 
     std::unique_ptr<tcp::acceptor> acceptor_;
     uint16_t port_{0};
@@ -106,7 +109,7 @@ private:
             // connection must be serialized even with multiple IO workers.
             if (v6_flows_)
                 asio::co_spawn(asio::make_strand(ioc_),
-                    handle_connection_v6(std::move(sock), *v6_flows_, groups_),
+                    handle_connection_v6(std::move(sock), *v6_flows_, groups_, egress_),
                     asio::detached);
             else
                 asio::co_spawn(asio::make_strand(ioc_),

@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "domain/strand_bound.hpp"
+#include "proxy/ipv6_egress.hpp"
 
 namespace clew {
 
@@ -19,7 +20,8 @@ class config_store;
 
 class group_service {
 public:
-    group_service(strand_bound_manager& exec, config_store& cfg);
+    group_service(strand_bound_manager& exec, config_store& cfg,
+                  ipv6_egress* egress = nullptr);
 
     group_service(const group_service&)            = delete;
     group_service& operator=(const group_service&) = delete;
@@ -49,6 +51,13 @@ public:
     // missing.
     void migrate_group(std::uint32_t source_id, std::uint32_t target_id);
 
+    // IPv6 egress check for ipv6.mode = proxy: SOCKS5 CONNECT through the
+    // group to an IPv6 literal (ipv6_probe_url). Success clears the group's
+    // "no IPv6" mark; a failure at the proxy-to-target stage sets it, so the
+    // group's IPv6 is blocked and applications fall back to IPv4.
+    static constexpr const char* ipv6_probe_url = "http://[2606:4700:4700::1111]/";
+    [[nodiscard]] nlohmann::json test_group_ipv6(std::uint32_t id);
+
     // Staged SOCKS5 probe (proxy/proxy_probe.hpp), 8 s budget, at most 4
     // at once. Always HTTP 200:
     //   success {latency_ms, total_ms, detail, target, stages:[{name,ms}]}
@@ -59,6 +68,7 @@ public:
 private:
     strand_bound_manager& exec_;
     config_store&         cfg_;
+    ipv6_egress*          egress_;
 };
 
 } // namespace clew

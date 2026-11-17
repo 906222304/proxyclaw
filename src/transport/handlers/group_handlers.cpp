@@ -50,6 +50,11 @@ void handle_test_group(const httplib::Request& req, httplib::Response& res, cons
     write_json(res, ctx.groups.test_group(id));
 }
 
+void handle_test_group_ipv6(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
+    auto id = parse_match_u32(req, 1, "id");
+    write_json(res, ctx.groups.test_group_ipv6(id));
+}
+
 } // namespace
 
 void register_group_handlers(route_registry& r) {
@@ -60,6 +65,7 @@ void register_group_handlers(route_registry& r) {
     r.add({delete_, R"(/api/proxy-groups/(\d+))",       &handle_delete_group});
     r.add({post,    R"(/api/proxy-groups/(\d+)/migrate)", &handle_migrate_group});
     r.add({post,    R"(/api/proxy-groups/(\d+)/test)",  &handle_test_group});
+    r.add({post,    R"(/api/proxy-groups/(\d+)/test-ipv6)", &handle_test_group_ipv6});
 }
 
 } // namespace clew

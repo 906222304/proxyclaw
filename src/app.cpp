@@ -80,13 +80,13 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , exec_(tree_mgr_, strand_)
     , dns_mgr_(ioc_, exe_relative("dns_state.json"))
     , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
-    , acceptor_v6_(ioc_, *port_tracker_, strand_, tcp_groups_, &v6_flows_)
+    , acceptor_v6_(ioc_, *port_tracker_, strand_, tcp_groups_, &v6_flows_, &ipv6_egress_)
     , socks5_udp_mgr_(ioc_, {})
     , projection_(tree_mgr_, strand_)
     , cfg_bridge_(cfg_store_)
     , config_svc_(cfg_store_)
     , connection_svc_(exec_, udp_port_tracker_.get(), &udp_session_table_, decision_log_.get())
-    , group_svc_(exec_, cfg_store_)
+    , group_svc_(exec_, cfg_store_, &ipv6_egress_)
     , icon_svc_(icons_)
     , process_svc_(exec_)
     , rule_svc_(exec_, cfg_store_)
@@ -163,6 +163,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         else if (v != v6_verdict::none)     v6_flows_.erase(port);
         if (wd_network_v6_) wd_network_v6_->on_decided(port, v);
     });
+    wd_socket_->set_ipv6_egress(&ipv6_egress_);
     PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_,
@@ -181,6 +182,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         wd_network_udp_->set_decision_log(decision_log_.get());
         wd_network_udp_->set_ipv6_block(&ipv6_block_);
         wd_network_udp_->set_ipv6_proxy(&ipv6_proxy_);
+        wd_network_udp_->set_ipv6_egress(&ipv6_egress_);
     }
     wd_socket_udp_->set_decision_listener([this](uint16_t port) {
         if (wd_network_udp_) wd_network_udp_->release(port);
@@ -258,9 +260,16 @@ void app::sync_groups() {
     const ConfigV2 cfg = cfg_store_.get();
     ProxyGroupMap                                     tcp;
     std::unordered_map<uint32_t, UdpProxyGroupConfig> udp;
+    std::string endpoints;
     for (const auto& g : cfg.proxy_groups) {
         tcp[g.id] = {g.host, g.port};
         udp[g.id] = {g.host, g.port};
+        endpoints += std::format("{}={}:{};", g.id, g.host, g.port);
+    }
+    // A changed proxy may well reach IPv6: forget what the old ones taught.
+    if (endpoints != group_endpoints_) {
+        group_endpoints_ = std::move(endpoints);
+        ipv6_egress_.clear();
     }
     const auto n = tcp.size();
     tcp_groups_.publish(std::move(tcp));
@@ -296,6 +305,14 @@ nlohmann::json app::traffic_stats() const {
     }
     j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", redirect_port_v6_ != 0},
                  {"flows", v6_flows_.size()}};
+    // ipv6.mode = proxy: groups found unable to reach IPv6 (blocked, so
+    // applications fall back to IPv4) and why.
+    auto egress = nlohmann::json::array();
+    for (const auto& e : ipv6_egress_.snapshot()) {
+        egress.push_back({{"group_id", e.group_id}, {"unavailable", e.unavailable},
+                          {"seconds_left", e.seconds_left}, {"reason", e.reason}});
+    }
+    j["ipv6"]["egress"] = std::move(egress);
     if (wd_network_v6_) {
         j["ipv6"]["syn_proxied"]   = wd_network_v6_->proxied();
         j["ipv6"]["nat"]           = wd_network_v6_->nat_count();

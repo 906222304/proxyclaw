@@ -207,6 +207,13 @@ export function testProxyGroup(id: number): Promise<ProxyTestResult> {
   })
 }
 
+/** IPv6 egress check (ipv6.mode = proxy); a failure blocks the group's IPv6 so apps fall back to IPv4. */
+export function testProxyGroupIpv6(id: number): Promise<ProxyTestResult & { ipv6_available?: boolean }> {
+  return request<ProxyTestResult & { ipv6_available?: boolean }>(`/proxy-groups/${id}/test-ipv6`, {
+    method: 'POST',
+  })
+}
+
 // -- Stats --
 
 export function getStats(signal?: AbortSignal): Promise<Stats> {

@@ -12,6 +12,7 @@
 #include "core/ip_family.hpp"
 #include "core/ipv6_flow_table.hpp"
 #include "core/ipv6_gate.hpp"
+#include "proxy/ipv6_egress.hpp"
 
 using namespace clew;
 using namespace std::chrono_literals;
@@ -221,6 +222,62 @@ void proxy_verdict_slides() {
 
 }  // namespace
 
+
+// ipv6.mode = proxy: a group whose proxy cannot reach IPv6 is learned from
+// SOCKS5 replies (src/proxy/ipv6_egress.hpp).
+void egress_learns_from_socks_replies() {
+    using clock = ipv6_egress::clock;
+    const auto t0 = clock::time_point{} + std::chrono::hours(1);
+    ipv6_egress e(std::chrono::seconds(300));
+    check(!e.unavailable(1, t0), "fresh group available");
+    check(!e.report_failure(1, 0x05, t0), "refused does not count");
+    check(!e.report_failure(1, 0x02, t0), "ruleset does not count");
+    check(!e.unavailable(1, t0), "still available after non-IPv6 failures");
+    check(!e.report_failure(1, 0x04, t0), "first host-unreachable: not yet");
+    check(!e.unavailable(1, t0), "one failure is not enough");
+    check(e.report_failure(1, 0x03, t0), "second network-unreachable marks");
+    check(e.unavailable(1, t0), "marked");
+    check(!e.unavailable(2, t0), "other group unaffected");
+    check(!e.report_failure(1, 0x03, t0), "already marked: no new mark");
+
+    // Expiry goes half-open: available again, one failure re-marks.
+    const auto t1 = t0 + std::chrono::seconds(301);
+    check(!e.unavailable(1, t1), "mark expired");
+    check(e.report_failure(1, 0x01, t1), "half-open: one failure re-marks");
+    check(e.unavailable(1, t1), "re-marked");
+
+    e.report_success(1);
+    check(!e.unavailable(1, t1), "success clears");
+    check(!e.report_failure(1, 0x04, t1), "cleared group needs two failures again");
+
+    // A success in between resets the streak.
+    e.report_success(1);
+    check(!e.report_failure(1, 0x04, t1), "streak 1");
+    e.report_success(1);
+    check(!e.report_failure(1, 0x04, t1), "streak restarted");
+    check(!e.unavailable(1, t1), "never reached threshold");
+
+    // ATYP 4 unsupported is definitive.
+    check(e.report_failure(3, 0x08, t1), "address type not supported marks at once");
+    check(e.unavailable(3, t1), "group 3 marked");
+
+    // The probe marks directly; snapshot reports it.
+    e.mark_unavailable(4, "network unreachable", t1);
+    check(e.unavailable(4, t1), "probe mark");
+    bool seen = false;
+    for (const auto& x : e.snapshot(t1)) {
+        if (x.group_id == 4) {
+            seen = true;
+            check(x.unavailable && x.seconds_left == 300 && x.reason == "network unreachable",
+                  "snapshot entry");
+        }
+    }
+    check(seen, "snapshot lists group 4");
+
+    e.clear();
+    check(!e.unavailable(3, t1) && !e.unavailable(4, t1), "clear forgets every group");
+}
+
 int main() {
     flow_table_lifecycle();
     proxy_verdict_slides();
@@ -231,6 +288,7 @@ int main() {
     local_scope();
     socket_words_to_bytes();
     rst_answers_the_syn();
+    egress_learns_from_socks_replies();
     if (failures) {
         std::cerr << "ipv6_gate_tests: " << failures << " failure(s)\n";
         return 1;

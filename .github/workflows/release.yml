@@ -105,6 +105,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/run_dns_network_tests.py --exe build/Release/dns_forwarder_harness.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Collect crash dumps of proxyclaw.exe (WER LocalDumps)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $PWD 'build\crash-dumps'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\proxyclaw.exe'
+          New-Item -Force $key | Out-Null
+          New-ItemProperty -Force -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dir | Out-Null
+          New-ItemProperty -Force -Path $key -Name DumpType -PropertyType DWord -Value 2 | Out-Null
+          New-ItemProperty -Force -Path $key -Name DumpCount -PropertyType DWord -Value 5 | Out-Null
       - name: Live rule-policy test (WinDivert, elevated runner)
         run: |
           python tests/e2e_rule_policy.py --exe build/Release/proxyclaw.exe
@@ -128,6 +138,13 @@ jobs:
           python -m pip install --disable-pip-version-check -q playwright
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/ui_webview2_screenshots.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/ui-screenshots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Shutdown stress (close while proxying, packaged app)
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.package }}
+        run: |
+          python tests/shutdown_stress.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --out build/shutdown-stress --rounds 24
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: API e2e test (packaged app)
         shell: pwsh
@@ -156,6 +173,42 @@ jobs:
           name: stress-summary
           path: build/stress/
           if-no-files-found: warn
+          retention-days: 14
+      - name: Print crash stacks
+        if: always()
+        shell: pwsh
+        run: |
+          $dumps = @(Get-ChildItem build/crash-dumps -Filter *.dmp -ErrorAction SilentlyContinue)
+          if ($dumps.Count -eq 0) { Write-Output 'no crash dumps'; exit 0 }
+          $cdb = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cdb) { Write-Output 'cdb.exe not found; dumps are in the crash-dumps artifact'; exit 0 }
+          $sym = "$PWD\build\Release;srv*$env:TEMP\sym*https://msdl.microsoft.com/download/symbols"
+          foreach ($d in $dumps) {
+            Write-Output "===== $($d.Name) ====="
+            $txt = [IO.Path]::ChangeExtension($d.FullName, '.stacks.txt')
+            & $cdb.FullName -z $d.FullName -y $sym -lines -c '.ecxr; kP 40; ~*kc 40; q' 2>&1 | Set-Content -LiteralPath $txt
+            Get-Content -LiteralPath $txt | Where-Object { $_ -match '^\s*[#.]?\s*\d+\s+Id:|^\d+\s|proxyclaw!|WinDivert|quill|Wait|ntdll!Nt' }
+          }
+          exit 0
+      - name: Upload crash dumps
+        if: always() && hashFiles('build/crash-dumps/*') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: crash-dumps
+          path: |
+            build/crash-dumps/*.dmp
+            build/crash-dumps/*.stacks.txt
+            build/Release/proxyclaw.pdb
+            build/Release/proxyclaw.exe
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload shutdown stress logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: shutdown-stress
+          path: build/shutdown-stress/
+          if-no-files-found: ignore
           retention-days: 14
       - name: Upload UI screenshots
         if: always()

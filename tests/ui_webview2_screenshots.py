@@ -677,6 +677,7 @@ def main() -> int:
                 rc = 1
         except subprocess.TimeoutExpired:
             print("FAIL: proxyclaw.exe did not exit within 20s after close; killing")
+            dump_hung_process(proc.pid)
             proc.kill()
             rc = 1
         (out / "console.log").write_text("\n".join(console) + "\n", encoding="utf-8")
@@ -685,6 +686,21 @@ def main() -> int:
             shutil.copy2(log, out / "proxyclaw.log")
         shutil.rmtree(work, ignore_errors=True)
     return rc
+
+
+def dump_hung_process(pid: int) -> None:
+    """Full dump of a hung proxyclaw.exe into build/crash-dumps (CI prints
+    every thread's stack from it). comsvcs.dll MiniDump needs an elevated
+    shell, which the CI runner is."""
+    dumps = pathlib.Path("build/crash-dumps")
+    try:
+        dumps.mkdir(parents=True, exist_ok=True)
+        target = (dumps / f"proxyclaw-hang-{pid}.dmp").resolve()
+        subprocess.run(["rundll32.exe", "C:\\Windows\\System32\\comsvcs.dll,", "MiniDump",
+                        str(pid), str(target), "full"], timeout=60, check=False)
+        print(f"hang dump: {target} exists={target.exists()}")
+    except Exception as e:  # noqa: BLE001
+        print(f"hang dump failed: {e!r}")
 
 
 if __name__ == "__main__":

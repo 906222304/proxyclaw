@@ -214,6 +214,11 @@ private:
         pass_count_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    // IP version nibble of a raw packet (parked bytes are a whole datagram).
+    static udp_family packet_family(const std::vector<uint8_t>& b) {
+        return (!b.empty() && (b[0] >> 4) == 6) ? udp_family::v6 : udp_family::v4;
+    }
+
     // A parked datagram whose port now has a decision (or was closed).
     void dispatch_decided(PolicyReader& policies, parked_packet& p) {
         handle_packet(policies, p.bytes.data(), static_cast<UINT>(p.bytes.size()), p.addr,
@@ -230,8 +235,12 @@ private:
                 // No BIND seen in time (socket older than ProxyClaw, or the
                 // strand is backed up): pin direct so the port stops parking.
                 // If a decision landed meanwhile, the pin loses and the
-                // packets follow that decision instead.
-                if (tracker_.pin_direct_if_empty(port) && decisions_) {
+                // packets follow that decision instead. Pinned per family of
+                // what was parked; one record per port.
+                bool pinned = false;
+                for (const auto& p : packets)
+                    pinned |= tracker_.pin_direct_if_empty(packet_family(p.bytes), port);
+                if (pinned && decisions_) {
                     DecisionRecord rec;
                     rec.proto      = decision_proto::udp;
                     rec.local_port = port;
@@ -278,7 +287,7 @@ private:
                      const WINDIVERT_ADDRESS& addr, const WINDIVERT_IPV6HDR& ip6,
                      uint16_t src_port, uint16_t dest_port,
                      const void* payload, UINT payload_len) {
-        const auto tracked = tracker_.get(src_port);
+        const auto tracked = tracker_.get(udp_family::v6, src_port);
         if (!tracked || !ipv6_block_ || !ipv6_block_->load(std::memory_order_relaxed)) {
             send_direct(pkt_buf, pkt_len, addr);
             return;
@@ -349,12 +358,13 @@ private:
         }
 
         uint16_t src_port = ntohs(udp->SrcPort);
+        const udp_family family = ip6 ? udp_family::v6 : udp_family::v4;
 
         if (may_park && park_deadline_.count() > 0 &&
-            tracker_.state(src_port) == udp_slot_state::empty) {
+            tracker_.state(family, src_port) == udp_slot_state::empty) {
             parked_packet p{std::vector<uint8_t>(pkt_buf, pkt_buf + pkt_len), addr};
             const auto r = parker_.park(src_port, p, std::chrono::steady_clock::now(),
-                                        [&] { return !tracker_.decided(src_port); });
+                                        [&] { return !tracker_.decided(family, src_port); });
             if (r == udp_park_result::parked) {
                 park_count_.fetch_add(1, std::memory_order_relaxed);
                 return;
@@ -374,7 +384,7 @@ private:
         }
 
         // Check if this port is tracked for UDP proxy
-        auto tracked = tracker_.get(src_port);
+        auto tracked = tracker_.get(udp_family::v4, src_port);
         if (!tracked) {
             // Not tracked — passthrough
             send_direct(pkt_buf, pkt_len, addr);

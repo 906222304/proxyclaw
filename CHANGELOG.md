@@ -28,6 +28,15 @@
   检测 button for the default proxy in proxy mode. A failure past the proxy
   handshake blocks the group's IPv6 the same way, a success clears it.
 
+### Fixed
+
+- UDP decisions are kept per address family. An IPv4 socket and an
+  IPv6-only socket of two different processes can share a port number; the
+  second one's BIND (or its CLOSE) used to overwrite (or clear) the first
+  one's decision, so a proxied IPv4 socket could start going direct. A
+  dual-stack socket's IPv4 datagrams still follow its IPv6-layer BIND until
+  an IPv4 CONNECT decides IPv4 for it.
+
 ## v0.14.1 (2026-11-17)
 
 ### Added

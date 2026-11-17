@@ -987,6 +987,8 @@ using clew::IpExcludePolicy;
 using clew::IpExcludeReason;
 using clew::UdpTrackerEntry;
 using clew::UdpPortTracker;
+using clew::udp_family;
+using clew::udp_slot_state;
 using clew::PolicyTable;
 using clew::PolicyPublisher;
 using clew::PolicyReader;
@@ -1104,17 +1106,63 @@ TEST(udp_tracker_carries_policy_id_to_workers) {
     UdpTrackerEntry entry;
     entry.pid = 4242;
     entry.policy_id = 7;
-    tracker->put(5353, entry);
+    tracker->put(udp_family::v4, 5353, entry);
 
-    auto tracked = tracker->get(5353);
+    auto tracked = tracker->get(udp_family::v4, 5353);
     ASSERT_TRUE(tracked.has_value());
     ASSERT_EQ(tracked->policy_id, 7u);
     ASSERT_EQ(tracked->pid, 4242u);
 
-    tracker->clear(5353);
-    ASSERT_TRUE(!tracker->get(5353).has_value());
+    tracker->clear(udp_family::v4, 5353, 4242);
+    ASSERT_TRUE(!tracker->get(udp_family::v4, 5353).has_value());
     // clear() wipes the entry too, so a stale policy id can't be observed.
-    ASSERT_EQ(tracker->peek(5353).policy_id, GLOBAL_ONLY_POLICY);
+    ASSERT_EQ(tracker->peek(udp_family::v4, 5353).policy_id, GLOBAL_ONLY_POLICY);
+}
+
+TEST(udp_tracker_keeps_families_apart) {
+    auto tracker = std::make_unique<UdpPortTracker>();
+    UdpTrackerEntry a;
+    a.pid = 100;
+    a.group_id = 3;
+    // Process 100: IPv4 socket on 40000, proxied.
+    tracker->put(udp_family::v4, 40000, a);
+    // Process 200: IPv6-only socket on the same port number, direct.
+    tracker->put_direct(udp_family::v6, 40000, 200);
+    ASSERT_TRUE(tracker->is_active(udp_family::v4, 40000));
+    ASSERT_TRUE(!tracker->is_active(udp_family::v6, 40000));
+    ASSERT_EQ(tracker->get(udp_family::v4, 40000)->group_id, 3u);
+    // Its CLOSE leaves process 100's decision alone.
+    tracker->clear(udp_family::v6, 40000, 200);
+    ASSERT_TRUE(tracker->is_active(udp_family::v4, 40000));
+    ASSERT_TRUE(tracker->is_active(40000));
+    // IPv6 datagrams now fall back to the IPv4 slot (dual-stack rule) and the
+    // watchdog cannot pin a port that is decided through it.
+    ASSERT_TRUE(tracker->decided(udp_family::v6, 40000));
+    ASSERT_TRUE(!tracker->pin_direct_if_empty(udp_family::v6, 40000));
+    tracker->clear(udp_family::v4, 40000, 100);
+    ASSERT_TRUE(!tracker->decided(udp_family::v4, 40000));
+    ASSERT_TRUE(tracker->pin_direct_if_empty(udp_family::v6, 40000));
+    ASSERT_EQ(tracker->state(udp_family::v6, 40000), udp_slot_state::direct);
+}
+
+TEST(udp_tracker_dual_stack_falls_back_and_clears_own) {
+    auto tracker = std::make_unique<UdpPortTracker>();
+    UdpTrackerEntry e;
+    e.pid = 300;
+    e.group_id = 1;
+    // Dual-stack socket: BIND on the IPv6 layer decides proxied ...
+    tracker->put(udp_family::v6, 50000, e);
+    // ... and its IPv4 datagrams follow it while IPv4 has no decision.
+    ASSERT_TRUE(tracker->is_active(udp_family::v4, 50000));
+    ASSERT_EQ(tracker->get(udp_family::v4, 50000)->group_id, 1u);
+    // An IPv4 decision of its own wins over the fallback.
+    tracker->put_direct(udp_family::v4, 50000, 300);
+    ASSERT_TRUE(!tracker->get(udp_family::v4, 50000).has_value());
+    ASSERT_TRUE(tracker->is_active(udp_family::v6, 50000));
+    // Its CLOSE (IPv6 layer, same process) clears both slots.
+    tracker->clear(udp_family::v6, 50000, 300);
+    ASSERT_TRUE(!tracker->decided(udp_family::v4, 50000));
+    ASSERT_TRUE(!tracker->decided(udp_family::v6, 50000));
 }
 
 TEST(policy_table_row_lookup_and_fallback) {

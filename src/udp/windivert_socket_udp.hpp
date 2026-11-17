@@ -237,9 +237,17 @@ private:
         decisions_->record(rec);
     }
 
+    // The family a SOCKET event decides: IPv6 for an IPv6-layer event whose
+    // remote is not IPv4-mapped (BIND carries no remote, so an IPv6-layer
+    // BIND is IPv6), IPv4 otherwise.
+    static udp_family event_family(const WINDIVERT_ADDRESS& addr) {
+        return is_unmanaged_ipv6(addr.IPv6 != 0, addr.Socket.RemoteAddr) ? udp_family::v6
+                                                                          : udp_family::v4;
+    }
+
     void decide_direct(uint16_t port, const WINDIVERT_ADDRESS& addr, decision_reason why,
                        const process_entry* entry = nullptr) {
-        tracker_.put_direct(port);
+        tracker_.put_direct(event_family(addr), port, addr.Socket.ProcessId);
         notify(port);
         DecisionRecord rec;
         rec.reason = why;
@@ -270,7 +278,7 @@ private:
             // Handle CLOSE: clear tracker entry
             if (addr.Event == WINDIVERT_EVENT_SOCKET_CLOSE) {
                 uint16_t port = static_cast<uint16_t>(addr.Socket.LocalPort);
-                tracker_.clear(port);
+                tracker_.clear(event_family(addr), port, addr.Socket.ProcessId);
                 notify(port);   // anything still parked for a closed socket goes direct
             }
             return;
@@ -288,11 +296,11 @@ private:
             DecisionRecord rec;
             rec.flags  = decision_flags::IPV6;
             const auto port = static_cast<uint16_t>(addr.Socket.LocalPort);
-            if (!tracker_.is_active(port)) {
+            if (!tracker_.is_active(udp_family::v6, port)) {
                 rec.reason = decision_reason::not_proxied;
             } else if (ipv6_block_ && ipv6_block_->load(std::memory_order_relaxed) &&
                        ipv6_proxy_ && ipv6_proxy_->load(std::memory_order_relaxed)) {
-                const auto t = tracker_.get(port);
+                const auto t = tracker_.get(udp_family::v6, port);
                 rec.verdict  = decision_verdict::proxied;
                 rec.reason   = decision_reason::none;
                 if (t) rec.group_id = t->group_id;
@@ -315,7 +323,8 @@ private:
         // new: per-destination excludes are evaluated per packet by the
         // NETWORK workers. A port decided direct is re-evaluated, as before,
         // so a rule enabled after the socket was bound still takes effect.
-        if (is_connect && tracker_.is_active(src_port)) {
+        const udp_family family = event_family(addr);
+        if (is_connect && tracker_.is_active(family, src_port)) {
             log_excluded_connect(addr, pid, src_port);
             return;
         }
@@ -362,7 +371,7 @@ private:
         te.pid = pid;
         te.policy_id = rules_.policy_id_for(tree_, pid);
 
-        tracker_.put(src_port, te);
+        tracker_.put(family, src_port, te);
         match_count_++;
         notify(src_port);
 

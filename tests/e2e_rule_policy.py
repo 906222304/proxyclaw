@@ -726,6 +726,87 @@ SPEED_CASES = [
 ]
 
 
+# UDP port per family (#5): a proxied IPv4 socket keeps its decision while an
+# unproxied process binds, then closes, an IPv6-only socket on the same port.
+UDP_FAMILY_RULE = rule("udpfam", "udp")
+UDP_FAMILY_CHECKS = 3   # before, while the IPv6 socket is bound, after it closed
+
+UDP_FAMILY_V4 = r"""
+import random, socket, struct, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("0.0.0.0", 0))
+s.settimeout(1.0)
+print("PORT", s.getsockname()[1], flush=True)
+for _ in sys.stdin:
+    txid = random.randint(1, 65535)
+    q = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0) + b"\x07example\x03com\x00" + struct.pack("!HH", 1, 1)
+    ok = False
+    for attempt in range(3):
+        s.sendto(q, ("1.1.1.1", 53))
+        try:
+            while True:
+                data, src = s.recvfrom(4096)
+                if data[:2] == q[:2]:
+                    ok = src == ("1.1.1.1", 53)
+                    break
+        except socket.timeout:
+            continue
+        break
+    print("OK" if ok else "ERR", flush=True)
+"""
+
+UDP_FAMILY_V6 = r"""
+import socket, sys
+s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+s.bind(("::", int(sys.argv[1])))
+print("BOUND", flush=True)
+sys.stdin.readline()
+"""
+
+
+def run_udp_family_case(probe: pathlib.Path, work: pathlib.Path, socks: "Socks5Server",
+                        failures: list[str]) -> None:
+    v4_script = work / "udp_family_v4.py"
+    v4_script.write_text(UDP_FAMILY_V4, encoding="utf-8")
+    v6_script = work / "udp_family_v6.py"
+    v6_script.write_text(UDP_FAMILY_V6, encoding="utf-8")
+    a = subprocess.Popen([str(probe), str(v4_script)], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, text=True)
+    b = None
+    try:
+        port = int(a.stdout.readline().split()[1])
+
+        def ask(name: str) -> None:
+            socks.take_udp()
+            a.stdin.write("go\n")
+            a.stdin.flush()
+            got = a.stdout.readline().strip()
+            time.sleep(0.3)
+            relayed = ("1.1.1.1", 53) in socks.take_udp()
+            _check(failures, name, got == "OK" and relayed,
+                   {"port": port, "probe": got, "relayed": relayed})
+
+        ask("e2e_udpfam v4 proxied")
+        # Plain python.exe: no rule, so its BIND is decided direct.
+        b = subprocess.Popen([sys.executable, str(v6_script), str(port)], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True)
+        line = b.stdout.readline().strip()
+        if line != "BOUND":
+            _check(failures, "e2e_udpfam v6-only bind", False, {"port": port, "v6": line})
+            return
+        time.sleep(0.5)   # let the SOCKET layer see the BIND
+        ask("e2e_udpfam v6 bind keeps v4")
+        b.stdin.close()
+        b.wait(10)
+        time.sleep(0.5)   # ... and the CLOSE
+        ask("e2e_udpfam v6 close keeps v4")
+    finally:
+        for p in (a, b):
+            if p and p.poll() is None:
+                p.kill()
+
+
 DECISION_CHECKS = 6   # run_decision_case: via proxy, proxied row, excluded row, conflict, stale, survives delete
 
 
@@ -758,7 +839,7 @@ def main() -> int:
         ],
         "next_group_id": 3,
         "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES] + [c[0] for c in V6_CASES]
-                      + [DECISION_RULE, DECISION_SHADOW],
+                      + [DECISION_RULE, DECISION_SHADOW, UDP_FAMILY_RULE],
         "log_level": "debug",
         "dns": {"enabled": False},
     }
@@ -796,6 +877,9 @@ def main() -> int:
     decision_probe = py_dir / DECISION_RULE["process_name"]
     shutil.copy2(sys.executable, decision_probe)
     udp_probes[DECISION_RULE["id"]] = decision_probe   # removed with the UDP probes
+    udp_family_probe = py_dir / UDP_FAMILY_RULE["process_name"]
+    shutil.copy2(sys.executable, udp_family_probe)
+    udp_probes[UDP_FAMILY_RULE["id"]] = udp_family_probe
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
     proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
@@ -810,7 +894,7 @@ def main() -> int:
                 rules = api_get("/auto-rules", token)
                 # tree_ready: initial process rundown verified (builds
                 # without the flag are not waited on).
-                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 2
+                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 3
                         and api_get("/stats", token).get("tree_ready", True)):
                     break
             except Exception:
@@ -869,6 +953,8 @@ def main() -> int:
         run_v6_cases(udp_probes, v6_script, token, failures, v6_proxy_script, socks,
                      v6_udp_proxy_script)
 
+        run_udp_family_case(udp_family_probe, work, socks, failures)
+
         # Last: it deletes its rules.
         decision_failures: list[str] = []
         run_decision_case(decision_probe, decision_script, socks, token, decision_failures)
@@ -892,7 +978,7 @@ def main() -> int:
             shutil.rmtree(work, ignore_errors=True)
 
     total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + 2 + len(SPEED_CASES)
-             + DECISION_CHECKS)
+             + DECISION_CHECKS + UDP_FAMILY_CHECKS)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 

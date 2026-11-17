@@ -71,22 +71,38 @@ inline const char* ip_exclude_reason_name(IpExcludeReason reason) noexcept {
     return IpExcludeReason::none;
 }
 
-// The same check for an IPv6 destination, used to decide whether a proxied
-// process's IPv6 flow follows ipv6.mode (blocked or proxied).
-// The CIDR lists hold IPv4 ranges only: an exclude CIDR never matches, and a
-// rule that names include CIDRs never covers an IPv6 destination. Local-scope
-// IPv6 (link-local, unique local, multicast) counts as a global exclude, the
-// counterpart of the default private IPv4 excludes.
+// The same check for an IPv6 destination (16 bytes, network order), used to
+// decide whether a proxied process's IPv6 flow follows ipv6.mode (blocked or
+// proxied). Same order as the IPv4 check; each CIDR list may mix IPv4 and
+// IPv6 ranges and only the IPv6 ones can match. Local-scope IPv6 (loopback,
+// link-local, unique local, multicast) is always a global exclude, the
+// counterpart of the default private IPv4 excludes. A rule whose include
+// CIDRs hold no matching IPv6 range does not cover the destination, the same
+// way an IPv4 destination misses an include list of IPv6 ranges.
 [[nodiscard]] inline IpExcludeReason evaluate_destination_v6(
+        const std::vector<CidrRange>& global_cidrs,
         bool local_scope,
         const TrafficFilter* rule,
+        const uint8_t* dest_ip,
         uint16_t dest_port) noexcept {
     if (local_scope) return IpExcludeReason::global;
+    for (const auto& cidr : global_cidrs) {
+        if (cidr.matches_v6(dest_ip)) return IpExcludeReason::global;
+    }
     if (!rule) return IpExcludeReason::none;
+    for (const auto& cidr : rule->exclude_cidrs) {
+        if (cidr.matches_v6(dest_ip)) return IpExcludeReason::rule;
+    }
     for (const auto& pr : rule->exclude_ports) {
         if (pr.matches(dest_port)) return IpExcludeReason::rule_port;
     }
-    if (!rule->include_cidrs.empty()) return IpExcludeReason::include_cidr_miss;
+    if (!rule->include_cidrs.empty()) {
+        bool hit = false;
+        for (const auto& cidr : rule->include_cidrs) {
+            if (cidr.matches_v6(dest_ip)) { hit = true; break; }
+        }
+        if (!hit) return IpExcludeReason::include_cidr_miss;
+    }
     if (!rule->include_ports.empty()) {
         bool hit = false;
         for (const auto& pr : rule->include_ports) {
@@ -108,8 +124,9 @@ struct IpExcludePolicy {
         return evaluate_destination(global_cidrs, &rule, dest_ip, dest_port);
     }
 
-    [[nodiscard]] IpExcludeReason evaluate_v6(bool local_scope, uint16_t dest_port) const noexcept {
-        return evaluate_destination_v6(local_scope, &rule, dest_port);
+    [[nodiscard]] IpExcludeReason evaluate_v6(bool local_scope, const uint8_t* dest_ip,
+                                              uint16_t dest_port) const noexcept {
+        return evaluate_destination_v6(global_cidrs, local_scope, &rule, dest_ip, dest_port);
     }
 };
 

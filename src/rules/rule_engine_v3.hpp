@@ -579,6 +579,7 @@ public:
                                                   DWORD pid,
                                                   bool is_udp,
                                                   bool local_scope,
+                                                  const uint8_t* dest_ip,
                                                   uint16_t dest_port) const {
         uint32_t idx = tree.find_by_pid(pid);
         if (idx != INVALID_IDX) {
@@ -590,12 +591,14 @@ public:
                     if (!(is_udp ? rule.matches_udp() : rule.matches_tcp())) {
                         return IpExcludeReason::protocol;
                     }
-                    return evaluate_destination_v6(local_scope, &rule.dst_filter, dest_port);
+                    return evaluate_destination_v6(default_exclude_cidrs_, local_scope, &rule.dst_filter,
+                                                   dest_ip, dest_port);
                 }
                 if (is_udp) return IpExcludeReason::protocol;
             }
         }
-        return evaluate_destination_v6(local_scope, nullptr, dest_port);
+        return evaluate_destination_v6(default_exclude_cidrs_, local_scope, nullptr,
+                                       dest_ip, dest_port);
     }
 
     std::optional<RuleMatchResult> get_match_info(const flat_tree& tree, DWORD pid) const {

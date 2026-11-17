@@ -443,6 +443,11 @@ published `PolicyTable`) and the connection list API. Order:
 4. `dst_filter.include_cidrs` (when non-empty, must match)
 5. `dst_filter.include_ports` (when non-empty, must match)
 
+CIDR lists may mix IPv4 and IPv6 ranges; a range only matches its own
+family, so an include list without an IPv6 range never covers an IPv6
+destination. IPv6 destinations take `evaluate_destination_v6` (same order,
+local-scope IPv6 always counts as a global exclude).
+
 Manual hijacks skip 1 and 3–5. Since v0.14 the connection list reads the
 verdict recorded at decision time (see "Per-connection decision record") and
 only falls back to evaluating it for rows without a record. `/api/tcp` and `/api/udp` return the verdict as

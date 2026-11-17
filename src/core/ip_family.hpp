@@ -4,11 +4,9 @@
 //
 // WinDivert reports socket addresses as four host-order 32-bit words, least
 // significant word first. IPv4 is carried as an IPv4-mapped IPv6 address:
-// [0] = the IPv4 address, [1] = 0x0000FFFF, [2] = [3] = 0. The TCP/UDP
-// decision path (CIDR policy, PortTracker, relay) only understands IPv4 and
-// reads word [0]. A real IPv6 remote would therefore be evaluated as the
-// IPv4 address formed by its low 32 bits, so IPv6 flows are kept out of the
-// decision path entirely until IPv6 proxying exists (they go direct).
+// [0] = the IPv4 address, [1] = 0x0000FFFF, [2] = [3] = 0. The IPv4 decision
+// path reads word [0]; a real IPv6 remote takes the IPv6 path instead
+// (ipv6_bytes_from_socket, route_reason_v6, ipv6.mode).
 //
 // A dual-stack socket connecting to an IPv4-mapped address is IPv4 traffic
 // on the wire and stays managed, whichever layer flag WinDivert sets.

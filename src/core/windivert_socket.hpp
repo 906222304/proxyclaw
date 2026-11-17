@@ -505,6 +505,7 @@ private:
         const auto remote = ipv6_bytes_from_socket(addr.Socket.RemoteAddr);
         const auto why = rules_.route_reason_v6(tree_, pid, /*is_udp=*/false,
                                                 is_local_scope_ipv6(remote.data()),
+                                                remote.data(),
                                                 static_cast<uint16_t>(addr.Socket.RemotePort));
         if (why != IpExcludeReason::none) {
             rec.reason = to_decision_reason(why);

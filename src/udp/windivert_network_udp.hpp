@@ -269,7 +269,7 @@ private:
     }
 
     // An IPv6 datagram. Sent unchanged unless its port is proxied, the rule
-    // covers this destination port and the destination is not local-scope;
+    // covers this destination (CIDRs and port) and the destination is not local-scope;
     // then ipv6.mode decides: proxy hands it to the relay, block drops it.
     void handle_ipv6(PolicyReader& policies, const uint8_t* pkt_buf, UINT pkt_len,
                      const WINDIVERT_ADDRESS& addr, const WINDIVERT_IPV6HDR& ip6,
@@ -282,7 +282,7 @@ private:
         }
         uint8_t dst[16];
         std::memcpy(dst, ip6.DstAddr, sizeof(dst));   // network order
-        if (policies.evaluate_v6(tracked->policy_id, is_local_scope_ipv6(dst), dest_port)
+        if (policies.evaluate_v6(tracked->policy_id, is_local_scope_ipv6(dst), dst, dest_port)
                 != IpExcludeReason::none) {
             send_direct(pkt_buf, pkt_len, addr);
             return;

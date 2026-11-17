@@ -185,16 +185,19 @@ jobs:
           $sym = "$PWD\build\Release;srv*$env:TEMP\sym*https://msdl.microsoft.com/download/symbols"
           foreach ($d in $dumps) {
             Write-Output "===== $($d.Name) ====="
-            & $cdb.FullName -z $d.FullName -y $sym -lines -c '.ecxr; kP 40; ~*k 30; q' 2>&1 | Select-Object -Last 400
+            $txt = [IO.Path]::ChangeExtension($d.FullName, '.stacks.txt')
+            & $cdb.FullName -z $d.FullName -y $sym -lines -c '.ecxr; kP 40; ~*kc 40; q' 2>&1 | Set-Content -LiteralPath $txt
+            Get-Content -LiteralPath $txt | Where-Object { $_ -match '^\s*[#.]?\s*\d+\s+Id:|^\d+\s|proxyclaw!|WinDivert|quill|Wait|ntdll!Nt' }
           }
           exit 0
       - name: Upload crash dumps
-        if: always() && hashFiles('build/crash-dumps/*.dmp') != ''
+        if: always() && hashFiles('build/crash-dumps/*') != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: crash-dumps
           path: |
             build/crash-dumps/*.dmp
+            build/crash-dumps/*.stacks.txt
             build/Release/proxyclaw.pdb
             build/Release/proxyclaw.exe
           if-no-files-found: ignore

@@ -71,18 +71,16 @@ public:
             return false;
         }
 
-        // Register with Asio IOCP
-        std::error_code ec;
-        asio::use_service<asio::detail::win_iocp_io_context>(ioc_)
-            .register_handle(handle_, ec);
-
-        if (ec) {
-            PC_LOG_WARN("[WD-SOCKET-UDP] IOCP register failed: {}, using blocking fallback",
-                         ec.message());
-            use_iocp_ = false;
-        } else {
-            use_iocp_ = true;
-        }
+        // Not associated with the io_context's IOCP: WinDivertShutdown (and
+        // every other synchronous WinDivert call) issues its ioctl with an
+        // OVERLAPPED on the caller's stack whose hEvent lacks the low bit, so
+        // on an IOCP-associated handle its completion is also queued to the
+        // port. An io_context worker then dequeued a pointer into the main
+        // thread's (already unwound) shutdown stack and ran it as an Asio
+        // operation: the exit crashes (0xC0000005 / 0xC0000409) and hangs
+        // seen in the shutdown stress test. A dedicated receive thread
+        // avoids the association altogether.
+        use_iocp_ = false;
 
         PC_LOG_INFO("[WD-SOCKET-UDP] Opened (SNIFF+RECV_ONLY, IOCP={})", use_iocp_);
         return true;

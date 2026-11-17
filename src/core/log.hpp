@@ -29,14 +29,6 @@ inline void set_log_level(const std::string& level) {
     if (g_logger) g_logger->set_log_level(parse_log_level(level));
 }
 
-// Block until everything logged so far is written. Shutdown uses it so a
-// crash part-way leaves the last finished step in the log.
-inline void log_flush() noexcept {
-    if (g_logger) {
-        try { g_logger->flush_log(); } catch (...) {}
-    }
-}
-
 } // namespace clew
 
 // ---- Convenience macros: hide the logger pointer ----

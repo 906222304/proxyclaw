@@ -161,6 +161,11 @@ def one_round(i: int, exe: pathlib.Path, work: pathlib.Path, churn_exe: pathlib.
     log = exe.parent / "proxyclaw.log"
     if problem and log.exists():
         shutil.copy2(log, out / f"round-{i}-proxyclaw.log")
+    trace = exe.parent / "proxyclaw.shutdown.log"
+    if problem and trace.exists():
+        shutil.copy2(trace, out / f"round-{i}-shutdown.log")
+        tail = trace.read_text(encoding="utf-8", errors="replace").splitlines()[-3:]
+        print(f"  shutdown trace tail: {tail}", flush=True)
     return problem
 
 

@@ -14,6 +14,7 @@
 #include "config/types.hpp"
 #include "core/exe_paths.hpp"
 #include "core/log.hpp"
+#include "core/shutdown_trace.hpp"
 #include "services/autostart_service.hpp"
 
 namespace clew {
@@ -592,12 +593,12 @@ int app::run_main_loop() {
 void app::shutdown() noexcept {
     if (shut_down_.exchange(true)) return;
     PC_LOG_INFO("Shutting down...");
-    // Each phase is logged and flushed before the next starts: the backend
-    // writes asynchronously, so without this a crash during shutdown loses the
-    // lines that say how far it got.
-    const auto step = [](const char* what) {
+    // Each phase also leaves a synchronous breadcrumb; the quill log is async
+    // and its flush_log() was itself seen to hang during shutdown on CI.
+    shutdown_trace trace;
+    const auto step = [&trace](const char* what) {
+        trace.mark(what);
         PC_LOG_INFO("[shutdown] {}", what);
-        clew::log_flush();
     };
 
     // A window move/resize may still be waiting in the debouncer.
@@ -631,6 +632,7 @@ void app::shutdown() noexcept {
     // Drain parked SYNs (sent through the still-open NETWORK handle) now that
     // no worker can park new ones.
     if (parker_)     parker_->stop();
+    step("syn parker stopped");
     PC_LOG_INFO("WinDivert layers stopped");
 
     acceptor_.stop();
@@ -641,6 +643,7 @@ void app::shutdown() noexcept {
 
     ioc_.stop();
     for (auto& w : workers_) w.join();
+    trace.mark("io_context workers joined");
     PC_LOG_INFO("io_context stopped, {} workers joined", num_workers_);
 
     // Nothing can touch a WinDivert handle any more.
@@ -650,6 +653,7 @@ void app::shutdown() noexcept {
     if (wd_network_)     wd_network_->close();
     if (wd_network_v6_)  wd_network_v6_->close();
     PC_LOG_INFO("WinDivert layers closed");
+    trace.mark("windivert layers closed");
 
     tree_mgr_.stop();
     step("process tree stopped");
@@ -657,8 +661,11 @@ void app::shutdown() noexcept {
     icons_.shutdown();
     step("icons stopped");
     if (autostart_check_.joinable()) autostart_check_.join();
+    trace.mark("autostart check joined");
     PC_LOG_INFO("Goodbye!");
+    trace.mark("quill backend stopping");
     quill::Backend::stop();
+    trace.mark("quill backend stopped");
     if (g_console_done) SetEvent(g_console_done);
 }
 

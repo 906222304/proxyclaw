@@ -74,13 +74,7 @@ static clew::cli_options parse_args(int argc, char* argv[]) {
 }
 
 static void setup_logger() {
-    // No timestamp-ordering hold: with the default 1 us grace period the
-    // backend keeps a record whose TSC time reads as "in the future", and on
-    // CI the shutdown flush_log() waited on such a record forever (the main
-    // thread slept in flush_log while the backend sat idle).
-    quill::BackendOptions backend_options;
-    backend_options.log_timestamp_ordering_grace_period = std::chrono::microseconds{0};
-    quill::Backend::start(backend_options);
+    quill::Backend::start();
 
     // Always log next to proxyclaw.exe so the file is predictable regardless of
     // launcher cwd (Task Scheduler, double-click, shell — all deposit cwd

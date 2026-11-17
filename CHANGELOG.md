@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.1 (2026-11-17)
 
 ### Added
 
@@ -27,7 +27,7 @@
   `/api/stats` `ipv6` adds `proxy_available`, `flows`, `syn_proxied`, `nat`.
 
 - IPv6 block for proxied processes (`ipv6.mode`, default `block`; Settings →
-  Network → IPv6). ProxyClaw does not proxy IPv6, so a proxied process that
+  Network → IPv6). Before `ipv6.mode = proxy`, a proxied process that
   reached a dual-stack host over IPv6 used to leave direct, past the proxy.
   Now its IPv6 TCP connect is refused at once (a new WinDivert handle diverts
   only outbound IPv6 SYNs; the SOCKET layer's verdict is applied per port,
@@ -46,6 +46,29 @@
   unchanged unless blocked).
 - IPv6 decision records name why a connection was not blocked
   (`not-proxied`, `self`, a route reason, or `ipv6` in direct mode).
+
+### Fixed
+
+- Exit crash / hang after closing the window (0xC0000005, 0xC0000409, or no
+  exit within 20 s). WinDivert 2.2.2's synchronous calls such as
+  `WinDivertShutdown` issue their ioctl with an `OVERLAPPED` on the caller's
+  stack; the TCP and UDP SOCKET-layer handles were associated with the
+  io_context's IOCP, so that completion was also queued to the port and an
+  io_context worker ran a pointer into the main thread's unwound shutdown
+  stack as an Asio operation. Both SOCKET layers now receive on a dedicated
+  thread and are no longer associated with the IOCP.
+
+### Tests / CI
+
+- Shutdown stress test (`tests/shutdown_stress.py`): 24 rounds of closing
+  the packaged app while it proxies live TCP and UDP; a crash or a hang fails
+  the build. Crash and hang dumps (WER LocalDumps, comsvcs MiniDump) are
+  uploaded with full thread stacks; Release builds now emit PDBs (`/Zi`).
+- Shutdown phases are traced synchronously to `proxyclaw.shutdown.log`
+  next to the exe, independent of the asynchronous log.
+- WebView2 screenshot test: readiness checks poll with `page.evaluate` from
+  Python instead of `Page.wait_for_function`, which intermittently timed out
+  waiting for `#root` after the reload although the app had rendered.
 
 ## v0.14.0 (2026-11-09)
 

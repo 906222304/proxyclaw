@@ -2,7 +2,7 @@
 
 > **English summary.** v0.14 makes every decision explainable from one source of truth: all C++ unit tests in CTest first, then a per-connection decision record captured at CONNECT time, connection JSON built off the strand (activity poll merged in), a hit-rule column with the reason and conflict hints, blocking IPv6 for proxied processes so they fall back to IPv4, DNS TCP-only startup and asynchronous enable, an icon cache keyed by full path with backoff and a cap, `psn` in the pushed process tree, keyboard / ARIA for the process tree, a split CI with /W4 and ESLint, and a docs sweep. v0.15: child-process-tree exceptions, an engine state view with config import / export, editable presets, rule match state keyed by (pid, psn), and end-to-end IPv6 last (may slip). Later: a performance baseline first (decision latency, missed proxies, RSS vs process count), then resource caps, RecvEx/SendEx batching only if the baseline shows a need, a process info cache, nightly soak tests, service mode (with a Program Files installer and WebView2 profile protection as an interim step) and build tidy-up. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols; the `http` upstream type is dropped and SOCKS5 username / password stays unsupported (rejected with 400) until implemented.
 
-当前版本 v0.14.0（2026-11-09），已完成 v0.14 第 1–4 项（测试归位、每连接决定记录、连接 JSON 移出 strand、命中规则列），其余各项在后续 v0.14.x 发布。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。v0.13.1 已完成：代理组快照替换、窗口位置经配置存储保存、自启动仅限管理员专属目录、开发钩子需 `--dev-hooks`、IPv6 移出判定路径（`ipv6_unmanaged` 计数）、进程排除改为运行时 (pid, psn) 状态、孤儿进程按 (pid, psn) 跟踪并限时限量、TCP :53 使用配置的 DNS 上游、代理组输入校验、WinDivert 关闭顺序、控制台模式不再一小时后退出。
+当前版本 v0.14.1（2026-11-17），已完成 v0.14 第 1–5 项（测试归位、每连接决定记录、连接 JSON 移出 strand、命中规则列、IPv6 阻断回落），并提前带上 v0.15 第 5 项的 IPv6 TCP / UDP 代理（`ipv6.mode = proxy`）；其余各项在后续 v0.14.x 发布。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。v0.13.1 已完成：代理组快照替换、窗口位置经配置存储保存、自启动仅限管理员专属目录、开发钩子需 `--dev-hooks`、IPv6 移出判定路径（`ipv6_unmanaged` 计数）、进程排除改为运行时 (pid, psn) 状态、孤儿进程按 (pid, psn) 跟踪并限时限量、TCP :53 使用配置的 DNS 上游、代理组输入校验、WinDivert 关闭顺序、控制台模式不再一小时后退出。
 
 **原则**：先有唯一的事实来源（CONNECT 时记录的决定），界面、统计和 IPv6 标注都从它读取；性能改动必须先有能测出策略延迟与漏代理的基准。
 
@@ -12,7 +12,6 @@
 
 | # | 项目 | 内容 |
 | --- | --- | --- |
-| 5 | IPv6 阻断回落 | 被代理进程的 IPv6 TCP 连接由 SYN 闸门回 RST、IPv6 UDP 丢弃，应用回落 IPv4 并经过代理；局域网 IPv6（链路本地、ULA、组播）与规则排除端口不阻断；设置 `ipv6.mode` = `block`（默认）/ `direct` / `proxy`（IPv6 TCP 与 UDP 经 SOCKS5 ATYP 4 出口，见 v0.15 第 5 项），运行时生效；决定记录原因 `ipv6_blocked`，`/api/stats` 计数。 |
 | 6 | DNS 仅 TCP 启动 | 启动不再强制 UDP ASSOCIATE 成功：探测上游 TCP 可用后允许以 TCP-only 方式启用（运行时已有 TCP 回退）；保留系统 DNS 备份与恢复。 |
 | 7 | DNS 异步启用 | 启用 DNS 的接口立即返回“启动中”，界面显示进度与失败原因，不再同步等待最长 10 秒，也不再在配置观察者中阻塞 API 线程。 |
 | 8 | 图标缓存 | 按完整路径为键（服务端由 pid 解析路径，去掉客户端 `path` 参数）；失败查找带重试退避，不再每次重新枚举进程；缓存设容量上限；工作线程初始化 COM；前端负结果短期过期并回收 object URL。 |

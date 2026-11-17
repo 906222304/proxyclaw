@@ -26,6 +26,7 @@ export const ROUTE_REASONS: Record<string, string> = {
   pool_exhausted: 'SYN 暂存池已满，直连放行',
   ipv6: 'IPv6 未接管，直连',
   ipv6_blocked: 'IPv6 已阻断，回落 IPv4 走代理',
+  ipv6_no_egress: '代理无法访问 IPv6，已阻断并回落 IPv4',
 }
 
 /** Decision reasons that are not route reasons (tooltip "原因" line). */
@@ -47,6 +48,7 @@ export const REASON_LABELS: Record<string, string> = {
   pool_exhausted: '暂存池已满',
   ipv6: 'IPv6 未接管',
   ipv6_blocked: 'IPv6 已阻断',
+  ipv6_no_egress: '代理无 IPv6',
 }
 
 export const MANUAL_LABEL = '手动'

@@ -50,8 +50,8 @@ void apply_input(ProxyGroup& g, const proxy_group_input& in) {
 
 } // namespace
 
-group_service::group_service(strand_bound_manager& exec, config_store& cfg)
-    : exec_(exec), cfg_(cfg) {}
+group_service::group_service(strand_bound_manager& exec, config_store& cfg, ipv6_egress* egress)
+    : exec_(exec), cfg_(cfg), egress_(egress) {}
 
 nlohmann::json group_service::list_groups() const {
     const auto cfg = cfg_.get();
@@ -214,8 +214,11 @@ void group_service::require_group(std::uint32_t id) const {
                         nlohmann::json{{"field", "group_id"}}};
 }
 
-nlohmann::json group_service::test_group(std::uint32_t id) {
-    auto snapshot = cfg_.get();
+namespace {
+struct probe_outcome { nlohmann::json json; probe::result r; bool ran = false; };
+}
+
+static probe_outcome run_group_probe(const ConfigV2& snapshot, std::uint32_t id, const std::string& url) {
     const ProxyGroup* group = nullptr;
     for (const auto& g : snapshot.proxy_groups) {
         if (g.id == id) { group = &g; break; }
@@ -224,18 +227,18 @@ nlohmann::json group_service::test_group(std::uint32_t id) {
         throw api_exception{api_error::not_found, "Group not found"};
     }
 
-    const auto target = probe::parse_test_url(group->test_url);
+    const auto target = probe::parse_test_url(url.empty() ? group->test_url : url);
     if (!target) {
-        return nlohmann::json{{"error", "invalid test URL"}, {"failed_stage", "config"},
-                              {"stages", nlohmann::json::array()}};
+        return {nlohmann::json{{"error", "invalid test URL"}, {"failed_stage", "config"},
+                               {"stages", nlohmann::json::array()}}, {}, false};
     }
 
     // Each probe holds an HTTP worker for up to its budget; cap concurrent
     // probes so "test all" cannot starve the polling endpoints (8 workers).
     static std::counting_semaphore<4> slots{4};
     if (!slots.try_acquire_for(std::chrono::seconds(10))) {
-        return nlohmann::json{{"error", "too many tests running"}, {"failed_stage", "queue"},
-                              {"stages", nlohmann::json::array()}};
+        return {nlohmann::json{{"error", "too many tests running"}, {"failed_stage", "queue"},
+                               {"stages", nlohmann::json::array()}}, {}, false};
     }
     struct release_slot { ~release_slot() { slots.release(); } } guard;
 
@@ -255,14 +258,32 @@ nlohmann::json group_service::test_group(std::uint32_t id) {
         out["latency_ms"] = r.total_ms;  // legacy field: success is latency_ms present
         out["detail"]     = r.detail;
         PC_LOG_DEBUG("[group_service] test group {}: {}ms ({}) to {}", id, r.total_ms, r.detail,
-                     group->test_url);
+                     target->host);
     } else {
         out["error"]        = r.error;
         out["failed_stage"] = r.failed_stage;
         PC_LOG_INFO("[group_service] test group {} failed at {}: {} ({}ms)", id, r.failed_stage,
                     r.error, r.total_ms);
     }
-    return out;
+    return {std::move(out), r, true};
+}
+
+nlohmann::json group_service::test_group(std::uint32_t id) {
+    return run_group_probe(cfg_.get(), id, {}).json;
+}
+
+nlohmann::json group_service::test_group_ipv6(std::uint32_t id) {
+    auto o = run_group_probe(cfg_.get(), id, ipv6_probe_url);
+    if (o.ran && egress_) {
+        if (o.r.ok) {
+            egress_->report_success(id);
+        } else if (o.r.failed_stage == "remote" || o.r.failed_stage == "first_byte") {
+            // The proxy itself answered; it is the IPv6 leg that failed.
+            egress_->mark_unavailable(id, o.r.error);
+        }
+    }
+    o.json["ipv6_available"] = o.ran && o.r.ok;
+    return o.json;
 }
 
 } // namespace clew

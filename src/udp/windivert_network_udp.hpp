@@ -34,6 +34,7 @@
 #include <thread>
 #include <atomic>
 #include <cstring>
+#include "proxy/ipv6_egress.hpp"
 #include "core/decision_log.hpp"
 #include "core/log.hpp"
 #include "core/ip_family.hpp"
@@ -147,6 +148,7 @@ public:
     // counts while block is set too (ipv6_blocks() is true for proxy).
     void set_ipv6_block(const std::atomic<bool>* block) { ipv6_block_ = block; }
     void set_ipv6_proxy(const std::atomic<bool>* proxy) { ipv6_proxy_ = proxy; }
+    void set_ipv6_egress(ipv6_egress* egress) { ipv6_egress_ = egress; }
     uint64_t ipv6_blocked_count() const { return ipv6_blocked_.load(std::memory_order_relaxed); }
     uint64_t ipv6_proxied_count() const { return ipv6_proxied_.load(std::memory_order_relaxed); }
 
@@ -187,6 +189,7 @@ private:
     DecisionLog* decisions_{nullptr};
     const std::atomic<bool>* ipv6_block_{nullptr};
     const std::atomic<bool>* ipv6_proxy_{nullptr};
+    ipv6_egress* ipv6_egress_{nullptr};
     std::atomic<uint64_t> ipv6_blocked_{0};
     std::atomic<uint64_t> ipv6_proxied_{0};
     std::atomic<uint64_t> handoff_count_{0};
@@ -287,7 +290,11 @@ private:
             send_direct(pkt_buf, pkt_len, addr);
             return;
         }
-        if (!ipv6_proxy_ || !ipv6_proxy_->load(std::memory_order_relaxed)) {
+        // Block mode, or proxy mode for a group whose proxy cannot reach
+        // IPv6 (learned from its TCP CONNECTs / the probe): drop, so the
+        // application falls back to IPv4.
+        if (!ipv6_proxy_ || !ipv6_proxy_->load(std::memory_order_relaxed) ||
+            (ipv6_egress_ && ipv6_egress_->unavailable(tracked->group_id))) {
             ipv6_blocked_.fetch_add(1, std::memory_order_relaxed);
             return;
         }

@@ -27,6 +27,16 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// The proxy answered CONNECT with a non-zero REP (RFC 1928).
+class socks5_reply_error : public socks5_protocol_error {
+public:
+    socks5_reply_error(uint8_t rep, const std::string& what)
+        : socks5_protocol_error(what), rep_(rep) {}
+    [[nodiscard]] uint8_t rep() const noexcept { return rep_; }
+private:
+    uint8_t rep_;
+};
+
 // SOCKS5 CONNECT destination: IPv4 (host order) or IPv6 (network order).
 struct socks5_dest {
     bool ipv6 = false;
@@ -88,8 +98,9 @@ socks5_handshake(tcp::socket& sock, const socks5_dest& dest)
     }
     if (connect_reply[1] != 0x00) {
         PC_LOG_WARN("[SOCKS5] Connect failed: reply code 0x{:02X}", connect_reply[1]);
-        throw socks5_protocol_error(std::format("SOCKS5 connect: server returned error {}",
-                                                 connect_reply[1]));
+        throw socks5_reply_error(connect_reply[1],
+                                 std::format("SOCKS5 connect: server returned error {}",
+                                             connect_reply[1]));
     }
 
     // Consume the entire BND endpoint, including IPv6/domain replies. Leaving

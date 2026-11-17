@@ -42,6 +42,7 @@
 #include "projection/config_sse_bridge.hpp"
 #include "projection/process_projection.hpp"
 #include "proxy/acceptor.hpp"
+#include "proxy/ipv6_egress.hpp"
 #include "proxy/proxy_group_table.hpp"
 #include "services/config_service.hpp"
 #include "services/connection_service.hpp"
@@ -142,6 +143,8 @@ private:
     std::mutex                                        groups_sync_mu_;
     DnsManager                                        dns_mgr_;
     ipv6_flow_table<>                                 v6_flows_;        // IPv6 TCP flows (ipv6.mode = proxy)
+    ipv6_egress                                       ipv6_egress_;     // groups whose proxy cannot reach IPv6
+    std::string                                       group_endpoints_; // last synced host:port list (sync_groups)
     async_acceptor                                    acceptor_;
     async_acceptor                                    acceptor_v6_;     // [::1], serves v6_flows_
     uint16_t                                          redirect_port_ = 0;

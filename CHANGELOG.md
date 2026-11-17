@@ -12,6 +12,21 @@
   such a process's IPv6 traffic stays direct as before. Local-scope IPv6 is
   still always excluded. The TCP SOCKET layer, the UDP NETWORK layer and the
   connection list share the one verdict (`evaluate_destination_v6`).
+- IPv4 fallback when the proxy cannot reach IPv6 (`ipv6.mode = proxy`). A
+  proxied IPv6 TCP connection is accepted locally before the SOCKS5 CONNECT,
+  so a proxy without IPv6 egress used to break it instead of letting the
+  application fall back. Now a group whose IPv6 CONNECTs fail with
+  "address type not supported" (once) or "general failure" / "network
+  unreachable" / "host unreachable" (twice in a row) has its IPv6 blocked for
+  5 minutes: TCP connects are refused at the SYN (connection list reason
+  `ipv6_no_egress`) and IPv6 UDP is dropped, so applications use IPv4 through
+  the same proxy. After the 5 minutes one more failure blocks again; a
+  successful IPv6 CONNECT, or editing the group's proxy, clears it.
+  `/api/stats` reports the blocked groups under `ipv6.egress`.
+- IPv6 proxy check: `POST /api/proxy-groups/:id/test-ipv6` connects through
+  the group to `http://[2606:4700:4700::1111]/`; the settings page shows a
+  检测 button for the default proxy in proxy mode. A failure past the proxy
+  handshake blocks the group's IPv6 the same way, a success clears it.
 
 ## v0.14.1 (2026-11-17)
 

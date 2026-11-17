@@ -60,6 +60,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "proxy/ipv6_egress.hpp"
 #include "core/log.hpp"
 
 #include "process/flat_tree.hpp"
@@ -113,6 +114,10 @@ public:
         ipv6_proxy_    = proxy;
         ipv6_listener_ = std::move(listener);
     }
+
+    // ipv6.mode = proxy: groups whose proxy cannot reach IPv6 are blocked
+    // instead (so applications fall back to IPv4). Optional.
+    void set_ipv6_egress(ipv6_egress* egress) { ipv6_egress_ = egress; }
 
     bool open() {
         // No `processId != self` clause: see the header comment.
@@ -238,6 +243,7 @@ private:
     std::atomic<uint64_t> ipv6_blocked_count_{0};
     const std::atomic<bool>* ipv6_block_{nullptr};
     const std::atomic<bool>* ipv6_proxy_{nullptr};
+    ipv6_egress* ipv6_egress_{nullptr};
     ipv6_listener ipv6_listener_;
     std::atomic<uint64_t> ipv6_proxied_count_{0};
 
@@ -516,6 +522,10 @@ private:
             return v6_verdict::allow;
         }
         if (ipv6_proxy_ && ipv6_proxy_->load(std::memory_order_relaxed)) {
+            if (ipv6_egress_ && ipv6_egress_->unavailable(entry.group_id)) {
+                rec.reason = decision_reason::ipv6_no_egress;
+                return v6_verdict::block;
+            }
             flow.remote      = remote;
             flow.remote_port = static_cast<uint16_t>(addr.Socket.RemotePort);
             flow.group_id    = entry.group_id;

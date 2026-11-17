@@ -301,12 +301,14 @@ struct UdpFirstPacketConfig {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UdpFirstPacketConfig, enabled, watchdog_ms)
 
-// IPv6 handling for proxied processes. ProxyClaw does not proxy IPv6.
+// IPv6 handling for proxied processes.
 //   mode  "block" (default): a proxied process's IPv6 TCP connect is refused
 //         (RST) and its IPv6 UDP datagrams are dropped, so it falls back to
 //         IPv4 and goes through the proxy. Local-scope IPv6 and destinations
 //         its rule excludes are not blocked.
 //         "direct": IPv6 leaves direct, past the proxy (pre-v0.14.1).
+//         "proxy": IPv6 TCP and UDP go through the SOCKS5 proxy (ATYP 4);
+//         opt-in, since the proxy must reach IPv6 and relay IPv6 UDP.
 //         Read at runtime; any other value means block.
 struct Ipv6Config {
     std::string mode = "block";
@@ -315,8 +317,8 @@ struct Ipv6Config {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Ipv6Config, mode)
 
 // mode: "block" (default) refuse IPv6 of proxied processes so they fall back
-// to IPv4; "proxy" send their IPv6 TCP through SOCKS5 (ATYP 4; IPv6 UDP is
-// still dropped); "direct" leave IPv6 alone.
+// to IPv4; "proxy" send their IPv6 TCP and UDP through SOCKS5 (ATYP 4);
+// "direct" leave IPv6 alone.
 inline bool ipv6_blocks(const Ipv6Config& c) noexcept { return c.mode != "direct"; }
 inline bool ipv6_proxies(const Ipv6Config& c) noexcept { return c.mode == "proxy"; }
 

@@ -129,7 +129,8 @@ public:
 
     uint64_t event_count() const { return event_count_; }
     uint64_t match_count() const { return match_count_; }
-    // IPv6 CONNECTs ignored (not proxied). Written on the strand, read by /api/stats.
+    // IPv6 CONNECTs to a real IPv6 remote (all of them, whatever ipv6.mode
+    // made of them; name kept for the API). Written on the strand, read by /api/stats.
     uint64_t ipv6_unmanaged_count() const { return ipv6_unmanaged_count_.load(std::memory_order_relaxed); }
 
     // ipv6.mode = block flag (shared with the NETWORK workers). Set before start().

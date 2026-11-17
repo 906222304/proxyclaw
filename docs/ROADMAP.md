@@ -12,7 +12,7 @@
 
 | # | 项目 | 内容 |
 | --- | --- | --- |
-| 5 | IPv6 阻断回落 | 被代理进程的 IPv6 TCP 连接由 SYN 闸门回 RST、IPv6 UDP 丢弃，应用回落 IPv4 并经过代理；局域网 IPv6（链路本地、ULA、组播）与规则排除端口不阻断；设置 `ipv6.mode` = `block`（默认）/ `direct`，运行时生效；决定记录原因 `ipv6_blocked`，`/api/stats` 计数。 |
+| 5 | IPv6 阻断回落 | 被代理进程的 IPv6 TCP 连接由 SYN 闸门回 RST、IPv6 UDP 丢弃，应用回落 IPv4 并经过代理；局域网 IPv6（链路本地、ULA、组播）与规则排除端口不阻断；设置 `ipv6.mode` = `block`（默认）/ `direct` / `proxy`（IPv6 TCP 与 UDP 经 SOCKS5 ATYP 4 出口，见 v0.15 第 5 项），运行时生效；决定记录原因 `ipv6_blocked`，`/api/stats` 计数。 |
 | 6 | DNS 仅 TCP 启动 | 启动不再强制 UDP ASSOCIATE 成功：探测上游 TCP 可用后允许以 TCP-only 方式启用（运行时已有 TCP 回退）；保留系统 DNS 备份与恢复。 |
 | 7 | DNS 异步启用 | 启用 DNS 的接口立即返回“启动中”，界面显示进度与失败原因，不再同步等待最长 10 秒，也不再在配置观察者中阻塞 API 线程。 |
 | 8 | 图标缓存 | 按完整路径为键（服务端由 pid 解析路径，去掉客户端 `path` 参数）；失败查找带重试退避，不再每次重新枚举进程；缓存设容量上限；工作线程初始化 COM；前端负结果短期过期并回收 object URL。 |

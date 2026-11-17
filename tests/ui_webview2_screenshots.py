@@ -212,13 +212,33 @@ def start_network_demo(token: str, probes: dict[str, pathlib.Path], script: path
     console.append(f"[info] demo net: {net.stdout.readline().strip()}")
     return procs
 
-# Page.wait_for_function defaults to requestAnimationFrame polling, and rAF
-# only fires when the compositor produces a frame. Run 42372296123 timed out
-# waiting for #root after the reload although the reloaded app was demonstrably
-# alive (ready handshake, /api polls every few seconds): the predicate was never
-# re-evaluated because no frame was produced for the (CI, possibly occluded)
-# window. Poll on a timer instead so readiness never depends on painting.
+# Readiness is polled from Python with page.evaluate rather than
+# Page.wait_for_function. The latter first used rAF polling, which never
+# re-evaluated without a compositor frame (run 42372296123); with timer
+# polling it still timed out after the reload on run 43813582229 (main
+# 6df2a1c) while a page.evaluate right after the timeout saw #root with two
+# children, rAF firing and the app polling /api: most likely the in-page poll
+# task was lost across the reload's execution-context swap. A Python loop re-issues
+# each check in the current context and retries one that hits a context
+# being torn down.
 POLL_MS = 200
+
+
+def wait_js(page, expr: str, timeout_ms: int = 30000) -> None:
+    """Wait until the JS expression is truthy in the page's current context."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_error = None
+    while True:
+        try:
+            if page.evaluate(expr):
+                return
+            last_error = None
+        except Exception as e:  # noqa: BLE001 - context destroyed during navigation
+            last_error = e
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"wait_js timed out after {timeout_ms} ms: {expr}"
+                               + (f" (last error: {last_error!r})" if last_error else ""))
+        time.sleep(POLL_MS / 1000)
 
 # Chromium flags that keep an occluded / unfocused CI window rendering at full
 # rate (native occlusion tracking otherwise stops frames, and with them rAF and
@@ -402,8 +422,7 @@ def main() -> int:
             print(f"viewport (real window client area): {vp}")
 
             try:
-                page.wait_for_function("document.querySelector('#root')?.childElementCount > 0",
-                                       polling=POLL_MS, timeout=30000)
+                wait_js(page, "document.querySelector('#root')?.childElementCount > 0")
             finally:
                 console.append(f"[info] after reload {page_diag(page)}")
             page.get_by_role("tablist", name="主导航").wait_for(timeout=30000)
@@ -418,9 +437,8 @@ def main() -> int:
             # sees the full tree including proxyclaw.exe itself.
             backend_count = wait_tree_ready(token, proc)
             want = max(1, int(backend_count * 0.7))
-            page.wait_for_function(
-                f"Number(document.querySelector('[data-testid=process-count]')?.textContent) >= {want}",
-                polling=POLL_MS, timeout=30000)
+            wait_js(page,
+                f"Number(document.querySelector('[data-testid=process-count]')?.textContent) >= {want}")
             settle_start = stable_since = time.time()
             prev = None
             while time.time() - stable_since < 1.5:
@@ -447,9 +465,8 @@ def main() -> int:
             def set_dark(want: bool) -> None:
                 if page.evaluate("document.documentElement.classList.contains('dark')") != want:
                     page.get_by_title("切换主题").click()
-                page.wait_for_function(
-                    f"document.documentElement.classList.contains('dark') === {str(want).lower()}",
-                    polling=POLL_MS)
+                wait_js(page,
+                    f"document.documentElement.classList.contains('dark') === {str(want).lower()}")
 
             def tab(name: str) -> None:
                 page.get_by_role("tab", name=re.compile("^" + name)).click()

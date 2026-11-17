@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- IPv6 CIDRs in rules and global excludes. `dst_filter.exclude_cidrs`,
+  `dst_filter.include_cidrs` and `default_exclude_cidrs` accept IPv6 ranges
+  (`2001:db8::/32`, `2001:db8::1`) next to IPv4 ones; each range only matches
+  destinations of its own family. An include list with no IPv6 range does not
+  cover IPv6 destinations (and an IPv6-only list does not cover IPv4), so
+  such a process's IPv6 traffic stays direct as before. Local-scope IPv6 is
+  still always excluded. The TCP SOCKET layer, the UDP NETWORK layer and the
+  connection list share the one verdict (`evaluate_destination_v6`).
+
 ## v0.14.1 (2026-11-17)
 
 ### Added

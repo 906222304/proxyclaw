@@ -319,6 +319,11 @@ V6_TARGET = "2001:db8:5::1"
 V6_CASES = [
     (rule("v6block", "both"), "refused", True),
     (rule("v6exc", "both", exclude_ports=["80", "5353"]), "timeout", False),
+    # IPv6 rule CIDRs (v0.14.2): an IPv6 exclude range goes direct, an include
+    # list of IPv4 ranges does not cover IPv6, an IPv6 include range does.
+    (rule("v6exccidr", "both", exclude_cidrs=["2001:db8:5::/64"]), "timeout", False),
+    (rule("v6inc4", "both", include_cidrs=["1.0.0.0/24"]), "timeout", False),
+    (rule("v6inc6", "both", include_cidrs=["2001:db8:5::/64", "1.0.0.0/24"]), "refused", True),
 ]
 
 V6_PROBE = r"""

@@ -12,6 +12,7 @@
 #include <winsock2.h>
 #include <windows.h>
 
+#include <array>
 #include <format>
 #include <functional>
 #include <initializer_list>
@@ -207,22 +208,93 @@ TEST(tree_children_inherit_the_rule_filter) {
     CHECK_REASON(engine.route_reason(tree, 101, TCP, ip("198.51.100.9"), 443), IpExcludeReason::none);
 }
 
-// v0.14 #5: the IPv6 block uses the same rule fields. CIDR lists are IPv4,
-// so include CIDRs never cover IPv6 and exclude CIDRs never match it.
+// IPv6 destinations use the same rule fields; CIDR lists may mix IPv4 and
+// IPv6 ranges and each family only matches its own destinations.
+static std::array<uint8_t, 16> ip6(const char* s) {
+    const auto b = CidrRange::parse_ipv6(s);
+    if (!b) throw std::runtime_error(std::string("bad ipv6 literal ") + s);
+    return *b;
+}
+
+TEST(cidr_range_ipv6_parse_and_match) {
+    CHECK(CidrRange::parse_ipv6("::").has_value());
+    CHECK(CidrRange::parse_ipv6("::1").has_value());
+    CHECK(CidrRange::parse_ipv6("2001:db8::1").has_value());
+    CHECK(CidrRange::parse_ipv6("1:2:3:4:5:6:7:8").has_value());
+    CHECK(CidrRange::parse_ipv6("::ffff:192.0.2.1").has_value());
+    CHECK(!CidrRange::parse_ipv6("1:2:3:4:5:6:7:8:9").has_value());
+    CHECK(!CidrRange::parse_ipv6("2001::db8::1").has_value());
+    CHECK(!CidrRange::parse_ipv6("2001:db8:").has_value());
+    CHECK(!CidrRange::parse_ipv6(":1").has_value());
+    CHECK(!CidrRange::parse_ipv6("12345::").has_value());
+    CHECK(!CidrRange::parse_ipv6("g::").has_value());
+    CHECK(ip6("::ffff:192.0.2.1")[12] == 192 && ip6("::ffff:192.0.2.1")[15] == 1);
+
+    const auto r = CidrRange::parse("2001:DB8:5::1/64");
+    CHECK(r.v6 && r.prefix6 == 64);
+    CHECK(r.to_string() == "2001:db8:5::/64");
+    CHECK(r.matches_v6(ip6("2001:db8:5::1").data()));
+    CHECK(r.matches_v6(ip6("2001:db8:5:0:ffff::9").data()));
+    CHECK(!r.matches_v6(ip6("2001:db8:6::1").data()));
+    CHECK(!r.matches(0u));                       // never an IPv4 match
+    CHECK(!CidrRange::parse("0.0.0.0/0").matches_v6(ip6("2001:db8::1").data()));
+
+    CHECK(CidrRange::parse("::/0").matches_v6(ip6("2606:4700::1").data()));
+    CHECK(CidrRange::parse("2001:db8::7").to_string() == "2001:db8::7/128");
+    CHECK(CidrRange::parse("2001:db8::7").matches_v6(ip6("2001:db8::7").data()));
+    CHECK(!CidrRange::parse("2001:db8::7").matches_v6(ip6("2001:db8::8").data()));
+    CHECK(CidrRange::parse("2001:db8::/29").matches_v6(ip6("2001:dbf::1").data()));
+    CHECK(!CidrRange::parse("2001:db8::/29").matches_v6(ip6("2001:dc0::1").data()));
+    CHECK(CidrRange::parse("1:0:0:2::/64").to_string() == "1:0:0:2::/64");
+    CHECK(CidrRange::parse("1:0:0:2:0:0:0:3").to_string() == "1:0:0:2::3/128");
+
+    // Garbage matches nothing (not "::/0").
+    CHECK(!CidrRange::parse("zz::/0").matches_v6(ip6("2001:db8::1").data()));
+
+    // JSON round trip.
+    nlohmann::json j = CidrRange::parse("2001:db8::/32");
+    CHECK(j.get<std::string>() == "2001:db8::/32");
+    CHECK(j.get<CidrRange>().matches_v6(ip6("2001:db8:ffff::1").data()));
+}
+
 TEST(ipv6_destination_reasons) {
+    const auto dst = ip6("2001:db8:5::1");
+    const auto other = ip6("2606:4700::1");
+    const std::vector<CidrRange> none;
     TrafficFilter f;
     f.exclude_ports = {PortRange::parse("22")};
-    CHECK_REASON(evaluate_destination_v6(true, &f, 443), IpExcludeReason::global);
-    CHECK_REASON(evaluate_destination_v6(false, &f, 22), IpExcludeReason::rule_port);
-    CHECK_REASON(evaluate_destination_v6(false, &f, 443), IpExcludeReason::none);
+    CHECK_REASON(evaluate_destination_v6(none, true, &f, dst.data(), 443), IpExcludeReason::global);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 22), IpExcludeReason::rule_port);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 443), IpExcludeReason::none);
     f.include_ports = {PortRange::parse("443")};
-    CHECK_REASON(evaluate_destination_v6(false, &f, 80), IpExcludeReason::include_port_miss);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 80), IpExcludeReason::include_port_miss);
+
+    // IPv4 ranges never match an IPv6 destination...
     f.exclude_cidrs = {CidrRange::parse("198.51.100.0/24")};
-    CHECK_REASON(evaluate_destination_v6(false, &f, 443), IpExcludeReason::none);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 443), IpExcludeReason::none);
+    // ...IPv6 ranges do.
+    f.exclude_cidrs.push_back(CidrRange::parse("2001:db8:5::/64"));
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 443), IpExcludeReason::rule);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, other.data(), 443), IpExcludeReason::none);
+
+    // Include list with only IPv4 ranges does not cover IPv6.
+    f.exclude_cidrs.clear();
     f.include_cidrs = {CidrRange::parse("198.51.100.0/24")};
-    CHECK_REASON(evaluate_destination_v6(false, &f, 443), IpExcludeReason::include_cidr_miss);
-    CHECK_REASON(evaluate_destination_v6(false, nullptr, 22), IpExcludeReason::none);
-    CHECK_REASON(evaluate_destination_v6(true, nullptr, 22), IpExcludeReason::global);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 443), IpExcludeReason::include_cidr_miss);
+    f.include_cidrs.push_back(CidrRange::parse("2001:db8::/32"));
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, dst.data(), 443), IpExcludeReason::none);
+    CHECK_REASON(evaluate_destination_v6(none, false, &f, other.data(), 443), IpExcludeReason::include_cidr_miss);
+    // ...and the IPv4 side mirrors it: an IPv6-only include list misses IPv4.
+    TrafficFilter v6only;
+    v6only.include_cidrs = {CidrRange::parse("2001:db8::/32")};
+    CHECK_REASON(evaluate_destination({}, &v6only, ip("198.51.100.9"), 443), IpExcludeReason::include_cidr_miss);
+
+    // Global excludes take IPv6 ranges too.
+    const std::vector<CidrRange> global = {CidrRange::parse("10.0.0.0/8"), CidrRange::parse("2001:db8:5::/48")};
+    CHECK_REASON(evaluate_destination_v6(global, false, nullptr, dst.data(), 22), IpExcludeReason::global);
+    CHECK_REASON(evaluate_destination_v6(global, false, nullptr, other.data(), 22), IpExcludeReason::none);
+    CHECK_REASON(evaluate_destination(global, nullptr, ip("10.1.2.3"), 22), IpExcludeReason::global);
+    CHECK_REASON(evaluate_destination_v6(none, true, nullptr, dst.data(), 22), IpExcludeReason::global);
 }
 
 TEST(ipv6_route_reason_follows_the_rule) {
@@ -231,29 +303,47 @@ TEST(ipv6_route_reason_follows_the_rule) {
     add_entry(tree, 100, 4, L"tcp_only.exe");
     add_entry(tree, 200, 4, L"inc.exe");
     add_entry(tree, 300, 4, L"manual.exe");
-    add_entry(tree, 400, 4, L"other.exe");
+    add_entry(tree, 400, 4, L"exc6.exe");
 
+    const auto dst = ip6("2001:db8:5::1");
+    const auto other = ip6("2606:4700::1");
     auto inc = make_rule("inc", "inc.exe", "both");
     inc.dst_filter.include_cidrs = {CidrRange::parse("198.51.100.0/24")};
+    auto exc6 = make_rule("exc6", "exc6.exe", "both");
+    exc6.dst_filter.exclude_cidrs = {CidrRange::parse("2001:db8:5::/64")};
     rule_engine_v3 engine;
-    engine.set_auto_rules({make_rule("t", "tcp_only.exe", "tcp"), inc});
+    engine.set_auto_rules({make_rule("t", "tcp_only.exe", "tcp"), inc, exc6});
     engine.apply_auto_rules(tree);
     engine.manual_hijack(tree, 300, 0);
 
-    CHECK_REASON(engine.route_reason_v6(tree, 100, TCP, false, 443), IpExcludeReason::none);
-    CHECK_REASON(engine.route_reason_v6(tree, 100, UDP, false, 443), IpExcludeReason::protocol);
-    CHECK_REASON(engine.route_reason_v6(tree, 100, TCP, true, 443), IpExcludeReason::global);
-    CHECK_REASON(engine.route_reason_v6(tree, 200, TCP, false, 443), IpExcludeReason::include_cidr_miss);
-    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, false, 22), IpExcludeReason::none);
-    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, true, 22), IpExcludeReason::global);
+    CHECK_REASON(engine.route_reason_v6(tree, 100, TCP, false, dst.data(), 443), IpExcludeReason::none);
+    CHECK_REASON(engine.route_reason_v6(tree, 100, UDP, false, dst.data(), 443), IpExcludeReason::protocol);
+    CHECK_REASON(engine.route_reason_v6(tree, 100, TCP, true, dst.data(), 443), IpExcludeReason::global);
+    CHECK_REASON(engine.route_reason_v6(tree, 200, TCP, false, dst.data(), 443), IpExcludeReason::include_cidr_miss);
+    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, false, dst.data(), 22), IpExcludeReason::none);
+    CHECK_REASON(engine.route_reason_v6(tree, 400, TCP, false, dst.data(), 443), IpExcludeReason::rule);
+    CHECK_REASON(engine.route_reason_v6(tree, 400, UDP, false, other.data(), 443), IpExcludeReason::none);
+
+    engine.set_default_exclude_cidrs({"2606:4700::/32"});
+    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, false, other.data(), 443), IpExcludeReason::global);
+    CHECK_REASON(engine.route_reason_v6(tree, 300, TCP, false, dst.data(), 443), IpExcludeReason::none);
 
     // The NETWORK-side table agrees (UDP IPv6 datagrams).
     engine.set_default_exclude_cidrs({});
     const auto table = engine.build_policy_table();
-    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 200), false, 53),
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 200), false, dst.data(), 53),
                  IpExcludeReason::include_cidr_miss);
-    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 300), false, 53), IpExcludeReason::none);
-    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 300), true, 53), IpExcludeReason::global);
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 400), false, dst.data(), 53),
+                 IpExcludeReason::rule);
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 400), false, other.data(), 53),
+                 IpExcludeReason::none);
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 300), false, dst.data(), 53), IpExcludeReason::none);
+    CHECK_REASON(table->evaluate_v6(engine.policy_id_for(tree, 300), true, dst.data(), 53), IpExcludeReason::global);
+
+    engine.set_default_exclude_cidrs({"2001:db8:5::/64"});
+    const auto table2 = engine.build_policy_table();
+    CHECK_REASON(table2->evaluate_v6(engine.policy_id_for(tree, 300), false, dst.data(), 53),
+                 IpExcludeReason::global);
 }
 
 TEST(network_policy_table_matches_rule_engine) {

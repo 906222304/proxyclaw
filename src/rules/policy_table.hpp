@@ -44,11 +44,12 @@ struct PolicyTable {
     }
 
     [[nodiscard]] IpExcludeReason evaluate_v6(uint32_t policy_id, bool local_scope,
+                                              const uint8_t* dest_ip,
                                               uint16_t host_order_port) const noexcept {
         if (rows.empty()) return local_scope ? IpExcludeReason::global : IpExcludeReason::none;
         const auto& row = (policy_id < rows.size()) ? rows[policy_id]
                                                     : rows[GLOBAL_ONLY_POLICY];
-        return row.evaluate_v6(local_scope, host_order_port);
+        return row.evaluate_v6(local_scope, dest_ip, host_order_port);
     }
 };
 
@@ -101,9 +102,10 @@ public:
     }
 
     [[nodiscard]] IpExcludeReason evaluate_v6(uint32_t policy_id, bool local_scope,
+                                              const uint8_t* dest_ip,
                                               uint16_t host_order_port) {
         if (publisher_.generation() != seen_generation_) refresh();
-        return table_->evaluate_v6(policy_id, local_scope, host_order_port);
+        return table_->evaluate_v6(policy_id, local_scope, dest_ip, host_order_port);
     }
 
 private:

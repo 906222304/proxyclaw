@@ -372,12 +372,12 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             {advanced && (
               <div className="mt-4 space-y-5 border-l-2 border-border pl-4">
                 <TagField control={control} name="excludeCidrs" id={`${ids}-xc`} label="直连网段（CIDR）"
-                  help="访问这些网段时使用直连。配置文件中的默认排除网段对所有规则生效。"
-                  placeholder="例如 192.168.0.0/16（回车添加）" note="按回车或逗号添加，点击 × 删除。" />
+                  help="访问这些网段时使用直连，支持 IPv4 与 IPv6。配置文件中的默认排除网段对所有规则生效。"
+                  placeholder="例如 192.168.0.0/16 或 2001:db8::/32（回车添加）" note="按回车或逗号添加，点击 × 删除。" />
                 <TagField control={control} name="includePorts" id={`${ids}-ip`} label="代理端口"
                   help="仅代理这些目标端口，留空则代理所有端口。" placeholder="例如 443（回车添加）" />
                 <TagField control={control} name="includeCidrs" id={`${ids}-ic`} label="仅代理网段（CIDR）"
-                  help="只代理访问这些网段的流量，其余直连。留空则不限制。" placeholder="例如 203.0.113.0/24（回车添加）" />
+                  help="只代理访问这些网段的流量，其余直连，支持 IPv4 与 IPv6。只填 IPv4 网段时 IPv6 流量不在范围内（反之亦然）。留空则不限制。" placeholder="例如 203.0.113.0/24（回车添加）" />
                 <TagField control={control} name="excludePorts" id={`${ids}-xp`} label="直连端口"
                   help="访问这些目标端口时直连，优先于代理端口。支持范围，如 6000-6100。" placeholder="例如 22（回车添加）" />
                 <p className="text-xs text-muted-foreground">判定顺序：全局排除网段 → 直连网段 → 直连端口 → 仅代理网段 → 代理端口。TCP 与 UDP 使用同一套判定。</p>

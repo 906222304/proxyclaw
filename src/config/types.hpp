@@ -4,6 +4,10 @@
 #include <format>
 #include <vector>
 #include <cstdint>
+#include <array>
+#include <cstdio>
+#include <optional>
+#include <string_view>
 #include <unordered_set>
 #include <chrono>
 #include <nlohmann/json.hpp>
@@ -22,8 +26,12 @@ namespace clew {
 // ============================================================
 
 struct CidrRange {
-    uint32_t network = 0;   // Host byte order
+    uint32_t network = 0;   // IPv4, host byte order
     uint32_t mask = 0;
+    // IPv6 range (v0.14.2): network bytes in network order, prefix 0..128.
+    bool v6 = false;
+    std::array<uint8_t, 16> net6{};
+    uint8_t prefix6 = 0;
 
     static uint32_t ip_to_uint(const std::string& ip) {
         uint32_t a;
@@ -40,10 +48,120 @@ struct CidrRange {
                            (ip >> 8)  & 0xFF,  ip        & 0xFF);
     }
 
-    // Parse "10.0.0.0/8" or "1.2.3.4"
+    // RFC 4291 text form ("2001:db8::1", "::", "::ffff:1.2.3.4") to network
+    // order bytes. No zone ids. Portable on purpose (unit tests run off Windows).
+    static std::optional<std::array<uint8_t, 16>> parse_ipv6(std::string_view s) {
+        std::array<uint8_t, 16> out{};
+        std::array<uint16_t, 8> groups{};
+        int n = 0;          // groups written
+        int gap = -1;       // index where "::" sits
+        size_t i = 0;
+        if (s.empty()) return std::nullopt;
+        if (s.starts_with("::")) { gap = 0; i = 2; if (s.size() == 2) return out; }
+        else if (s[0] == ':') return std::nullopt;
+        while (i < s.size()) {
+            if (n >= 8) return std::nullopt;
+            const size_t start = i;
+            const size_t end = s.find(':', i);
+            const std::string_view tok = s.substr(start, (end == std::string_view::npos ? s.size() : end) - start);
+            if (tok.find('.') != std::string_view::npos) {
+                // Embedded IPv4 tail: must be last, takes two groups.
+                if (end != std::string_view::npos || n > 6) return std::nullopt;
+                unsigned a, b, c, d; char extra;
+                const std::string t(tok);
+                if (std::sscanf(t.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4 ||
+                    a > 255 || b > 255 || c > 255 || d > 255) return std::nullopt;
+                groups[n++] = static_cast<uint16_t>((a << 8) | b);
+                groups[n++] = static_cast<uint16_t>((c << 8) | d);
+                i = s.size();
+                break;
+            }
+            if (tok.empty() || tok.size() > 4) return std::nullopt;
+            uint16_t v = 0;
+            for (char ch : tok) {
+                int h;
+                if (ch >= '0' && ch <= '9') h = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') h = ch - 'a' + 10;
+                else if (ch >= 'A' && ch <= 'F') h = ch - 'A' + 10;
+                else return std::nullopt;
+                v = static_cast<uint16_t>((v << 4) | h);
+            }
+            groups[n++] = v;
+            if (end == std::string_view::npos) { i = s.size(); break; }
+            i = end + 1;
+            if (i < s.size() && s[i] == ':') {
+                if (gap >= 0) return std::nullopt;
+                gap = n; ++i;
+            } else if (i == s.size()) {
+                return std::nullopt;   // trailing single ':'
+            }
+        }
+        if (gap < 0 && n != 8) return std::nullopt;
+        if (gap >= 0 && n >= 8) return std::nullopt;
+        std::array<uint16_t, 8> full{};
+        if (gap < 0) {
+            full = groups;
+        } else {
+            const int tail = n - gap;
+            for (int k = 0; k < gap; ++k) full[k] = groups[k];
+            for (int k = 0; k < tail; ++k) full[8 - tail + k] = groups[gap + k];
+        }
+        for (int k = 0; k < 8; ++k) {
+            out[2 * k]     = static_cast<uint8_t>(full[k] >> 8);
+            out[2 * k + 1] = static_cast<uint8_t>(full[k] & 0xFF);
+        }
+        return out;
+    }
+
+    // Shortest form: lowercase, longest run (>= 2) of zero groups as "::".
+    static std::string ipv6_to_string(const uint8_t* b) {
+        uint16_t g[8];
+        for (int k = 0; k < 8; ++k) g[k] = static_cast<uint16_t>((b[2 * k] << 8) | b[2 * k + 1]);
+        int best = -1, best_len = 0;
+        for (int k = 0; k < 8;) {
+            if (g[k] != 0) { ++k; continue; }
+            int j = k;
+            while (j < 8 && g[j] == 0) ++j;
+            if (j - k > best_len) { best = k; best_len = j - k; }
+            k = j;
+        }
+        if (best_len < 2) best = -1;
+        std::string out;
+        for (int k = 0; k < 8; ++k) {
+            if (k == best) { out += "::"; k += best_len - 1; continue; }
+            if (!out.empty() && out.back() != ':') out += ':';
+            out += std::format("{:x}", g[k]);
+        }
+        return out;
+    }
+
+    // Parse "10.0.0.0/8", "1.2.3.4", "2001:db8::/32" or "2001:db8::1".
     static CidrRange parse(const std::string& cidr) {
         CidrRange r;
         size_t slash = cidr.find('/');
+        const std::string addr = cidr.substr(0, slash);
+        if (addr.find(':') != std::string::npos) {
+            r.v6 = true;
+            int prefix_len = 128;
+            if (slash != std::string::npos) prefix_len = std::stoi(cidr.substr(slash + 1));
+            if (prefix_len < 0) prefix_len = 0;
+            if (prefix_len > 128) prefix_len = 128;
+            r.prefix6 = static_cast<uint8_t>(prefix_len);
+            const auto bytes = parse_ipv6(addr);
+            if (!bytes) {
+                // Unparseable: match nothing rather than "::/0".
+                r.prefix6 = 128;
+                r.net6.fill(0xFF);
+                return r;
+            }
+            r.net6 = *bytes;
+            for (int k = 0; k < 16; ++k) {
+                const int bits = prefix_len - 8 * k;
+                const uint8_t m = bits >= 8 ? 0xFF : bits <= 0 ? 0 : static_cast<uint8_t>(0xFF << (8 - bits));
+                r.net6[k] &= m;
+            }
+            return r;
+        }
         if (slash == std::string::npos) {
             r.network = ip_to_uint(cidr);
             r.mask = 0xFFFFFFFF;
@@ -55,15 +173,28 @@ struct CidrRange {
         return r;
     }
 
+    // IPv4 destination (host order). An IPv6 range never matches it.
     bool matches(uint32_t ip) const {
-        return (ip & mask) == network;
+        return !v6 && (ip & mask) == network;
     }
 
     bool matches(const std::string& ip) const {
         return matches(ip_to_uint(ip));
     }
 
+    // IPv6 destination (16 bytes, network order). An IPv4 range never matches it.
+    bool matches_v6(const uint8_t* ip) const {
+        if (!v6) return false;
+        int bits = prefix6;
+        for (int k = 0; k < 16 && bits > 0; ++k, bits -= 8) {
+            const uint8_t m = bits >= 8 ? 0xFF : static_cast<uint8_t>(0xFF << (8 - bits));
+            if ((ip[k] & m) != net6[k]) return false;
+        }
+        return true;
+    }
+
     std::string to_string() const {
+        if (v6) return std::format("{}/{}", ipv6_to_string(net6.data()), prefix6);
         // Find prefix length from mask
         int prefix = 0;
         uint32_t m = mask;

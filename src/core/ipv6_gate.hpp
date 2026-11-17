@@ -1,10 +1,11 @@
 #pragma once
 
-// IPv6 block for proxied processes (ROADMAP v0.14 #5).
+// IPv6 verdicts for proxied processes (ROADMAP v0.14 #5, v0.15 #5).
 //
-// ProxyClaw does not proxy IPv6 yet. A proxied process that reaches a
-// dual-stack host over IPv6 would therefore leave direct, past the proxy.
-// With `ipv6.mode = block` (the default) such a flow is refused instead:
+// A proxied process that reaches a dual-stack host over IPv6 would leave
+// direct, past the proxy. With `ipv6.mode = proxy` the flow is handed to
+// the [::1] acceptor (TCP, ipv6_flow_table.hpp) or the UDP relay; with
+// `ipv6.mode = block` (the default) it is refused instead:
 //   - TCP: the SOCKET layer decides block / allow for the IPv6 CONNECT and
 //     stores it here per local port; the IPv6 NETWORK worker answers a
 //     blocked SYN with a TCP RST, so connect() fails at once and the

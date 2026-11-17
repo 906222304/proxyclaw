@@ -71,8 +71,8 @@ inline const char* ip_exclude_reason_name(IpExcludeReason reason) noexcept {
     return IpExcludeReason::none;
 }
 
-// The same check for an IPv6 destination, used only to decide whether a
-// proxied process's IPv6 flow is blocked (ProxyClaw does not proxy IPv6).
+// The same check for an IPv6 destination, used to decide whether a proxied
+// process's IPv6 flow follows ipv6.mode (blocked or proxied).
 // The CIDR lists hold IPv4 ranges only: an exclude CIDR never matches, and a
 // rule that names include CIDRs never covers an IPv6 destination. Local-scope
 // IPv6 (link-local, unique local, multicast) counts as a global exclude, the

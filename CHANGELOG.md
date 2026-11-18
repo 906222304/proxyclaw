@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- DNS proxy starts TCP-only when the proxy refuses UDP ASSOCIATE. Enabling
+  `dns` used to fail outright; now the forwarder checks that a SOCKS5 CONNECT
+  to the upstream succeeds (within the 3 s TCP timeout) and, if so, sends
+  every query as DNS over TCP through the proxy, so DNS still leaves through
+  the proxy and nothing falls back to direct UDP. If the TCP path fails too,
+  DNS stays off and system DNS is left untouched. The log says
+  `Forwarder started (TCP only)`.
+
 ## v0.14.2 (2026-11-18)
 
 ### Added

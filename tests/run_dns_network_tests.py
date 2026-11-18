@@ -87,6 +87,8 @@ class Proxy:
             head = exact(conn, 4); assert head[0] == 5 and head[2:] == b'\x00\x01'
             destination = exact(conn, 6)
             if head[1] == 3:
+                if self.udp_mode == 'reject':
+                    conn.sendall(b'\x05\x07\x00\x01' + b'\0' * 6); return
                 host, port = self.relay.getsockname()
                 conn.sendall(b'\x05\x00\x00\x01' + socket.inet_aton(host) + struct.pack('!H', port))
                 # Keep UDP ASSOCIATE's control connection alive until stop().
@@ -165,8 +167,9 @@ class Forwarder:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT)
         ready = queue.Queue()
         threading.Thread(target=lambda: ready.put(self.process.stdout.readline().strip()), daemon=True).start()
-        if ready.get(timeout=5) != 'READY':
-            self.process.kill(); raise AssertionError('forwarder start failed')
+        self.mode = ready.get(timeout=5)
+        if not self.mode.startswith('READY'):
+            self.process.kill(); self.process.wait(); raise AssertionError('forwarder start failed')
     def client(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('127.0.0.1', 0)); sock.settimeout(2)
@@ -204,6 +207,7 @@ def check_answer(response, packet):
 
 def tests(exe):
     with running(exe, udp='ok') as (fwd, proxy):
+        assert fwd.mode == 'READY'
         response, _ = fwd.exchange(); check_answer(response, query())
         time.sleep(.12); assert proxy.tcp_accepted == 0
     print('PASS UDP success cancels fallback timer')
@@ -269,6 +273,20 @@ def tests(exe):
                 assert response[3] & 15 == 2; ids.add(struct.unpack('!H', response[:2])[0])
             assert len(ids) == 70 and proxy.tcp_accepted <= 64
     print('PASS bounded concurrent TCP fallback connections')
+    with running(exe, udp='reject', udp_ms=1000) as (fwd, proxy):
+        assert fwd.mode == 'READY TCP', fwd.mode
+        for tx in (1, 2):
+            packet = query(tx=tx); response, elapsed = fwd.exchange(packet)
+            check_answer(response, packet); assert elapsed < .5
+        assert len(proxy.tcp_queries) == 2 and not proxy.udp_queries
+    print('PASS UDP ASSOCIATE refused -> TCP-only forwarder')
+    for tcp_mode in ['connect_reject', 'stall_auth']:
+        proxy = Proxy(udp='reject', tcp=tcp_mode)
+        try:
+            try: Forwarder(exe, proxy); raise RuntimeError('started without a working TCP path')
+            except AssertionError: pass
+        finally: proxy.close()
+        print(f'PASS UDP ASSOCIATE refused and TCP unusable -> start fails ({tcp_mode})')
 
 def compile_host(compiler, asio_include):
     build = ROOT / 'build' / 'dns-network-tests'; build.mkdir(parents=True, exist_ok=True)

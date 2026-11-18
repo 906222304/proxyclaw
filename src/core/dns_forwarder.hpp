@@ -1,6 +1,8 @@
 #pragma once
 
 // Local UDP DNS -> SOCKS5 UDP, with bounded TCP fallback through the same proxy.
+// A proxy that refuses UDP ASSOCIATE but tunnels TCP to the upstream runs the
+// forwarder TCP-only: every query goes straight to DNS over TCP.
 #define ASIO_STANDALONE
 #include <asio.hpp>
 #include <asio/use_awaitable.hpp>
@@ -61,6 +63,7 @@ class dns_forwarder {
         uint16_t dns_port;
         std::chrono::milliseconds udp_timeout, tcp_timeout;
         bool running = false;
+        bool tcp_only = false;
         std::random_device random;
         size_t tcp_active = 0;
         static constexpr size_t max_pending = 1024, max_tcp = 64;
@@ -155,25 +158,26 @@ class dns_forwarder {
         }
         // Consume the whole variable-length SOCKS5 reply (RFC 1928), including
         // domain/IPv6 BND.ADDR, before reading the DNS TCP length prefix.
-        asio::awaitable<void> connect_tunnel(const std::shared_ptr<pending_query>& q) {
-            auto eps = co_await q->resolver.async_resolve(proxy_host, std::to_string(proxy_port),
-                                                          asio::use_awaitable);
-            if (q->done)
-                co_return;
-            co_await asio::async_connect(q->socket, eps, asio::use_awaitable);
+        asio::awaitable<void> connect_tunnel(tcp::resolver& resolver, tcp::socket& socket,
+                                             const bool& done) {
+            auto eps = co_await resolver.async_resolve(proxy_host, std::to_string(proxy_port),
+                                                       asio::use_awaitable);
+            if (done)
+                throw asio::system_error(asio::error::operation_aborted);
+            co_await asio::async_connect(socket, eps, asio::use_awaitable);
             std::array<uint8_t, 3> greeting{5, 1, 0};
-            co_await asio::async_write(q->socket, asio::buffer(greeting), asio::use_awaitable);
+            co_await asio::async_write(socket, asio::buffer(greeting), asio::use_awaitable);
             std::array<uint8_t, 2> auth{};
-            co_await asio::async_read(q->socket, asio::buffer(auth), asio::use_awaitable);
+            co_await asio::async_read(socket, asio::buffer(auth), asio::use_awaitable);
             if (auth[0] != 5 || auth[1] != 0)
                 throw std::runtime_error("SOCKS5 authentication rejected");
             std::array<uint8_t, 10> request{5, 1, 0, 1};
             std::memcpy(request.data() + 4, &dns_ip_net, 4);
             request[8] = static_cast<uint8_t>(dns_port >> 8);
             request[9] = static_cast<uint8_t>(dns_port);
-            co_await asio::async_write(q->socket, asio::buffer(request), asio::use_awaitable);
+            co_await asio::async_write(socket, asio::buffer(request), asio::use_awaitable);
             std::array<uint8_t, 4> reply{};
-            co_await asio::async_read(q->socket, asio::buffer(reply), asio::use_awaitable);
+            co_await asio::async_read(socket, asio::buffer(reply), asio::use_awaitable);
             if (reply[0] != 5 || reply[1] != 0 || reply[2] != 0)
                 throw std::runtime_error("SOCKS5 CONNECT rejected");
             size_t remainder;
@@ -183,19 +187,19 @@ class dns_forwarder {
                 remainder = 18;
             else if (reply[3] == 3) {
                 std::array<uint8_t, 1> length{};
-                co_await asio::async_read(q->socket, asio::buffer(length), asio::use_awaitable);
+                co_await asio::async_read(socket, asio::buffer(length), asio::use_awaitable);
                 if (!length[0])
                     throw std::runtime_error("empty SOCKS5 bound address");
                 remainder = size_t(length[0]) + 2;
             } else
                 throw std::runtime_error("invalid SOCKS5 address type");
             std::vector<uint8_t> bound(remainder);
-            co_await asio::async_read(q->socket, asio::buffer(bound), asio::use_awaitable);
+            co_await asio::async_read(socket, asio::buffer(bound), asio::use_awaitable);
         }
         asio::awaitable<void> tcp_query(std::shared_ptr<pending_query> q) {
             if (q->done)
                 co_return;
-            co_await connect_tunnel(q);
+            co_await connect_tunnel(q->resolver, q->socket, q->done);
             if (q->done)
                 co_return;
             // DNS over TCP has a two-byte big-endian payload length (RFC 7766).
@@ -216,6 +220,42 @@ class dns_forwarder {
             if (!dns_wire::matches(response, q->packet) || (response[2] & 2))
                 throw std::runtime_error("invalid TCP DNS reply");
             finish(q, std::move(response));
+        }
+        // Run before the worker starts: can the proxy tunnel TCP to the upstream?
+        // Only the SOCKS5 CONNECT is checked, bounded by the TCP timeout.
+        bool probe_tcp() {
+            tcp::socket socket(ioc);
+            tcp::resolver resolver(ioc);
+            asio::steady_timer timer(ioc);
+            bool done = false, ok = false, timed_out = false;
+            timer.expires_after(tcp_timeout);
+            timer.async_wait([&](asio::error_code ec) {
+                if (ec || done)
+                    return;
+                done = timed_out = true;
+                resolver.cancel();
+                asio::error_code ignored;
+                socket.close(ignored);
+            });
+            asio::co_spawn(ioc, connect_tunnel(resolver, socket, done),
+                           [&](std::exception_ptr error) {
+                               if (error && !done) {
+                                   try {
+                                       std::rethrow_exception(error);
+                                   } catch (const std::exception& e) {
+                                       PC_LOG_WARN("[DNS-FWD] TCP probe failed: {}", e.what());
+                                   }
+                               }
+                               ok = !error && !done;
+                               done = true;
+                               timer.cancel();
+                           });
+            ioc.restart();
+            ioc.run();
+            ioc.restart();
+            if (timed_out)
+                PC_LOG_WARN("[DNS-FWD] TCP probe timed out");
+            return ok;
         }
         asio::awaitable<void> query_loop() {
             std::array<uint8_t, 65535> buf{};
@@ -244,7 +284,7 @@ class dns_forwarder {
                     if (!error)
                         begin_tcp(q);
                 });
-                if (!session->is_alive()) {
+                if (tcp_only || !session->is_alive()) {
                     begin_tcp(q);
                     continue;
                 }
@@ -311,9 +351,16 @@ class dns_forwarder {
             state_->listener.bind(state_->listen_ep);
             state_->session = std::make_shared<Socks5UdpSession>(state_->ioc, state_->proxy_host,
                                                                  state_->proxy_port);
+            state_->tcp_only = false;
             if (!state_->session->establish()) {
-                state_->shutdown();
-                return false;
+                state_->session->close();
+                state_->session.reset();
+                if (!state_->probe_tcp()) {
+                    state_->shutdown();
+                    return false;
+                }
+                state_->tcp_only = true;
+                PC_LOG_WARN("[DNS-FWD] Proxy refused UDP ASSOCIATE; forwarding DNS over TCP only");
             }
             state_->running = true;
             auto report_loop_error = [](std::exception_ptr error) {
@@ -326,7 +373,8 @@ class dns_forwarder {
                 }
             };
             asio::co_spawn(state_->ioc, state_->query_loop(), report_loop_error);
-            asio::co_spawn(state_->ioc, state_->response_loop(), report_loop_error);
+            if (!state_->tcp_only)
+                asio::co_spawn(state_->ioc, state_->response_loop(), report_loop_error);
             worker_ = std::thread([s = state_] { s->ioc.run(); });
             PC_LOG_INFO("[DNS-FWD] UDP timeout={}ms, TCP fallback timeout={}ms",
                         state_->udp_timeout.count(), state_->tcp_timeout.count());
@@ -337,6 +385,8 @@ class dns_forwarder {
             return false;
         }
     }
+    // True when started without a SOCKS5 UDP session (UDP ASSOCIATE refused).
+    bool tcp_only() const { return state_->tcp_only; }
     void stop() {
         if (worker_.joinable()) {
             asio::post(state_->ioc, [s = state_] { s->shutdown(); });

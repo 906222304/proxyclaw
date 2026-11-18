@@ -151,7 +151,8 @@ private:
             proxy_host, proxy_port,
             cfg.upstream_host, cfg.upstream_port);
         if (forwarder_->start()) {
-            PC_LOG_INFO("[DNS-MGR] Forwarder started: {}:{} -> SOCKS5 {}:{} -> {}:{}",
+            PC_LOG_INFO("[DNS-MGR] Forwarder started{}: {}:{} -> SOCKS5 {}:{} -> {}:{}",
+                         forwarder_->tcp_only() ? " (TCP only)" : "",
                          cfg.listen_host, cfg.listen_port,
                          proxy_host, proxy_port,
                          cfg.upstream_host, cfg.upstream_port);

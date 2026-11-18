@@ -504,12 +504,12 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 ### DNS proxy (optional, off by default)
 
 - User enables via Settings → DNS Proxy toggle
-- **Forwarder mode** (only mode implemented): `dns_forwarder` listens UDP on `127.0.0.2:53`, forwards queries to upstream (default `8.8.8.8:53`) via SOCKS5 UDP ASSOCIATE using the first proxy group's endpoint
+- **Forwarder mode** (only mode implemented): `dns_forwarder` listens UDP on `127.0.0.2:53`, forwards queries to upstream (default `8.8.8.8:53`) via SOCKS5 UDP ASSOCIATE using the first proxy group's endpoint; a query with no UDP answer within 1.5 s, or a truncated one, is retried as DNS over TCP through a SOCKS5 CONNECT. If the proxy refuses UDP ASSOCIATE at start, the forwarder checks that CONNECT to the upstream works and runs TCP-only (every query over TCP); if that fails too, DNS is not enabled and system DNS is untouched
 - `DnsManager` (src/core/dns_manager.hpp) orchestrates:
   - **System DNS auto-config**: on enable, saves original DNS per active IPv4 interface to `dns_state.json`, points interfaces to `127.0.0.2` via `SetInterfaceDnsSettings`
   - **Hot-reload**: Settings UI changes trigger `apply()`, which diffs new vs current config and starts / stops / restarts forwarder + updates system DNS accordingly, no restart required
   - **Crash recovery**: on startup, if `dns_state.json` exists it means the previous session exited abnormally — restore system DNS from file, then delete it
-- Limitation: forwarder is UDP-only.
+- Limitation: clients reach the forwarder over UDP only (no TCP listener on `127.0.0.2:53`).
 - TCP:53 from a *proxied* process (e.g. Chromium's built-in resolver) is handled by the TCP relay, not the forwarder, whether or not the DNS proxy is enabled: the destination is rewritten to `dns.upstream_host:dns.upstream_port` and sent through the process's proxy group (`proxy/tcp_dns_upstream.hpp`, published by `DnsManager::apply`). The relay speaks SOCKS5 with an IPv4 destination, so when `upstream_host` is not an IPv4 literal (a hostname, IPv6, loopback or `0.0.0.0`) it falls back to `8.8.8.8:53` and logs a warning. Before v0.13.1 this was hardcoded to `8.8.8.8:53`.
 
 ## API Endpoints

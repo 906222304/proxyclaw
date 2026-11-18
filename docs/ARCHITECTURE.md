@@ -106,7 +106,7 @@ src/
     socks5_udp_manager.hpp / socks5_udp_session.hpp / socks5_udp_codec.hpp
 
   api/
-    icon_cache.hpp                   - GDI+ icon extraction + PNG cache (AUMID-aware)
+    icon_cache.hpp                   - GDI+ icon extraction + PNG cache keyed by full path (from pid, name fallback; LRU 512, failure backoff)
 
   ui/
     webview_app.hpp                  - Frameless WebView2 host + tray; WndProc dispatcher
@@ -132,7 +132,8 @@ tests/
   ui_webview2_screenshots.py         - packaged app in a real WebView2 window, screenshots over CDP (CI)
   test_components.cpp                - component suite (rule engine, tree, port tracker, SYN parker,
                                        policy table, SOCKS5 UDP, system DNS state); CTest components_tests
-  test_icon_resolution.cpp           - real Shell icon extraction + 64x64 PNG; CTest icon_resolution_tests
+  test_icon_resolution.cpp           - real Shell icon extraction + 64x64 PNG, negative cache, pid lookup; CTest icon_resolution_tests
+  test_icon_store.cpp                - bounded_backoff_cache: LRU cap, negative entries + backoff; CTest icon_store_tests
   test_window_dpi.cpp                - native window PerMonitorV2 / DPI change / icons, asInvoker
                                        manifest; CTest window_dpi_tests (WebView2 builds only)
   network_fakes/ dns_fakes/ projection_fakes/ - header fakes for the unit tests

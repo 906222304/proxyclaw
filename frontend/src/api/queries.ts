@@ -42,7 +42,7 @@ export const LOG_INTERVAL_MS = 3_000
 export const ACTIVITY_TIMEOUT_MS = 30_000
 
 export function createQueryClient(): QueryClient {
-  return new QueryClient({
+  const qc = new QueryClient({
     defaultOptions: {
       queries: {
         // Local backend: a failure is retried by the next poll, not by a
@@ -54,6 +54,13 @@ export function createQueryClient(): QueryClient {
       },
     },
   })
+  // Icons are blob object URLs: free the blob when its entry leaves the cache.
+  qc.getQueryCache().subscribe((e) => {
+    if (e.type !== 'removed' || e.query.queryKey[0] !== 'processIcon') return
+    const url = e.query.state.data
+    if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
+  })
+  return qc
 }
 
 // pid 0 (Idle / orphaned TIME_WAIT sockets) and pid 4 (System) are noise in
@@ -61,13 +68,23 @@ export function createQueryClient(): QueryClient {
 // show whatever it owns, including pid 0/4.
 export const SYSTEM_PIDS = new Set([0, 4])
 
-/** Exe icon as an object URL, or null (204 = no icon, or any failure). */
-export function processIconQuery(name: string) {
+/** How long "no icon" is trusted before the next mount asks again. */
+export const ICON_NEGATIVE_STALE_MS = 60_000
+/** Unused icons (exited processes, closed views) are dropped after this. */
+export const ICON_GC_MS = 10 * 60_000
+
+/**
+ * Exe icon as an object URL, or null (204 = no icon, or any failure).
+ * A found icon never goes stale; "no icon" goes stale after a minute so a
+ * process that becomes readable gets its icon. Entries unused for
+ * ICON_GC_MS are removed and their object URLs revoked (createQueryClient).
+ */
+export function processIconQuery(name: string, pid = 0) {
   return queryOptions({
-    queryKey: queryKeys.processIcon(name),
-    queryFn: ({ signal }) => fetchProcessIcon(name, signal).catch(() => null),
-    staleTime: Infinity,
-    gcTime: Infinity,
+    queryKey: queryKeys.processIcon(name, pid),
+    queryFn: ({ signal }) => fetchProcessIcon(name, pid, signal).catch(() => null),
+    staleTime: (q) => (q.state.data ? Infinity : ICON_NEGATIVE_STALE_MS),
+    gcTime: ICON_GC_MS,
     retry: false,
   })
 }

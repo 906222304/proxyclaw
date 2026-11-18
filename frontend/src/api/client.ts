@@ -56,8 +56,14 @@ async function requestVoid(url: string, options?: RequestInit): Promise<void> {
 // a normal answer: no failed image load, no console error.
 
 /** Object URL of the exe's 16x16 PNG icon, or null when it has none. */
-export async function fetchProcessIcon(name: string, signal?: AbortSignal): Promise<string | null> {
-  const res = await fetch(`${BASE}/icon?name=${encodeURIComponent(name)}`, { signal })
+/**
+ * Icon of a running process (`pid`, resolved to its image path server-side)
+ * or of any running exe with this name (`pid` 0). Object URL, or null.
+ */
+export async function fetchProcessIcon(name: string, pid = 0, signal?: AbortSignal): Promise<string | null> {
+  const q = new URLSearchParams({ name })
+  if (pid > 0) q.set('pid', String(pid))
+  const res = await fetch(`${BASE}/icon?${q}`, { signal })
   if (res.status === 204 || !res.ok) return null
   if (!(res.headers.get('Content-Type') ?? '').startsWith('image/')) return null
   const blob = await res.blob()

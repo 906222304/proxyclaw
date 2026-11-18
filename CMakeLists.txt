@@ -285,6 +285,9 @@ if(BUILD_TESTING AND WIN32)
         LIBS ws2_32)
     proxyclaw_unit_test(udp_first_packet_tests
         SOURCES tests/test_udp_first_packet.cpp)
+    # v0.14 #8: icon cache bookkeeping (LRU cap, negative entries + backoff).
+    proxyclaw_unit_test(icon_store_tests
+        SOURCES tests/test_icon_store.cpp)
     # v0.14 #5: IPv6 block (SYN verdict gate, RST builder, local-scope check).
     proxyclaw_unit_test(ipv6_gate_tests
         SOURCES tests/test_ipv6_gate.cpp)

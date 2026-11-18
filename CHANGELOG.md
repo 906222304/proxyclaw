@@ -21,6 +21,17 @@
   `restore_failed`, `mode_unsupported`); changes are pushed as `dns_status`.
   The settings page shows 启动中… / 运行中 / the failure reason next to the
   DNS switch. Closing the app waits for a DNS start already in progress.
+- Process icons are keyed by the executable's full path. `GET /api/icon`
+  takes `pid` (the server reads that process's image path) and `name`
+  (checked against the PID's image, and the fallback when the process is
+  gone); the client-supplied `path` parameter is removed. Two programs with
+  the same file name now show their own icons in the process tree. Failed
+  lookups are remembered and retried with backoff (5 s doubling to 10 min)
+  instead of being cached forever or re-enumerating processes; the path and
+  name caches are LRU-bounded at 512 entries each; COM is initialized on
+  the HTTP worker threads that extract icons. Frontend: "no icon" goes
+  stale after a minute, unused icons are dropped after 10 minutes and their
+  object URLs revoked; icon responses are `no-store` (PIDs are reused).
 
 ## v0.14.2 (2026-11-18)
 

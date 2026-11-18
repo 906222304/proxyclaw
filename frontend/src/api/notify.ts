@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { queryKeys } from './queryKeys'
-import type { ProcessInfo } from './types'
+import type { DnsStatus, ProcessInfo } from './types'
 
 // Backend->frontend push channel. The C++ host (webview_app) uses
 // ICoreWebView2::PostWebMessageAsJson; each message arrives in JS as a
@@ -27,6 +27,7 @@ declare global {
 export interface NotificationEvents {
   process_update: ProcessInfo[]
   auto_rule_changed: { action: string }
+  dns_status: DnsStatus
 }
 
 export type NotificationEvent = keyof NotificationEvents
@@ -46,6 +47,9 @@ export function applyPush(queryClient: QueryClient, envelope: Envelope): void {
       // Match counts and the rule list itself changed server-side.
       void queryClient.invalidateQueries({ queryKey: queryKeys.autoRules })
       void queryClient.invalidateQueries({ queryKey: queryKeys.stats })
+      break
+    case 'dns_status':
+      queryClient.setQueryData(queryKeys.dnsStatus, envelope.data as DnsStatus)
       break
   }
 }

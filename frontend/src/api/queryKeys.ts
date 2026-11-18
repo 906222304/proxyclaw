@@ -9,6 +9,8 @@ export const queryKeys = {
   /** Object URL of an exe's icon (null = none). Fetched once per name per session. */
   processIcon: (name: string) => ['processIcon', name] as const,
   stats: ['stats'] as const,
+  /** DNS proxy state: fetched from /api/stats, then kept fresh by the `dns_status` push. */
+  dnsStatus: ['dnsStatus'] as const,
   /** TCP+UDP connections for one PID, or for all processes ('all'), from GET /api/connections. */
   connections: (pid: number | undefined) => ['connections', pid ?? 'all'] as const,
   /** pid -> last time (ms) it was seen owning a socket; drives tree dimming. Written by the connections poll, never fetched. */

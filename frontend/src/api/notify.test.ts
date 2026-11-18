@@ -29,6 +29,12 @@ describe('push channel', () => {
     expect(qc.getQueryState(queryKeys.autoRules)?.isInvalidated).toBe(true)
   })
 
+  it('dns_status writes the DNS state into the query cache', () => {
+    const qc = createQueryClient()
+    applyPush(qc, { event: 'dns_status', data: { state: 'running', tcp_only: true } })
+    expect(qc.getQueryData(queryKeys.dnsStatus)).toEqual({ state: 'running', tcp_only: true })
+  })
+
   it('wires WebView2 messages, sends the ready handshake and exposes the test bridge', () => {
     let listener: ((e: MessageEvent) => void) | undefined
     const postMessage = vi.fn()

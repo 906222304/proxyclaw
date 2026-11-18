@@ -1332,6 +1332,18 @@ def _wait_system_dns(pred, timeout=15.0):
         time.sleep(0.2)
 
 
+def _wait_dns_state(pred, timeout=20.0):
+    """Poll /api/stats `dns` until pred(state) holds; returns the last state."""
+    deadline = time.monotonic() + timeout
+    state = {}
+    while time.monotonic() < deadline:
+        state = requests.get(f"{BASE}/stats", timeout=5).json().get("dns") or {}
+        if pred(state):
+            break
+        time.sleep(0.2)
+    return state
+
+
 def _query_dns(server_ip, hostname='example.com', timeout=5.0):
     """Raw UDP DNS A-query. Return True on response, False on timeout."""
     import socket as sk
@@ -1372,8 +1384,16 @@ def test_dns_proxy_roundtrip():
     try:
         # --- Enable ---
         enable_cfg = dict(raw, dns=dict(original_dns, enabled=True))
+        t0 = time.monotonic()
         r = requests.put(f"{BASE}/config", json=enable_cfg)
+        put_ms = (time.monotonic() - t0) * 1000
         assert r.status_code == 200, f"PUT enable failed: {r.status_code} {r.text}"
+        # DNS starts in the background: the PUT does not wait for the
+        # SOCKS5 UDP ASSOCIATE / system DNS swap (v0.14 #7).
+        print(f"    PUT enable took {put_ms:.0f} ms")
+        assert put_ms < 1000, f"PUT enable blocked for {put_ms:.0f} ms"
+        state = _wait_dns_state(lambda s: s.get("state") == "running")
+        assert state.get("state") == "running", f"dns status never reached running: {state}"
 
         servers_after_enable = _wait_system_dns(lambda s: "127.0.0.2" in s)
         assert "127.0.0.2" in servers_after_enable, (
@@ -1392,6 +1412,8 @@ def test_dns_proxy_roundtrip():
         assert r.status_code == 200, f"PUT disable failed: {r.status_code} {r.text}"
 
         servers_after_disable = _wait_system_dns(lambda s: "127.0.0.2" not in s)
+        state = _wait_dns_state(lambda s: s.get("state") == "off")
+        assert state.get("state") == "off", f"dns status not off after disable: {state}"
         assert "127.0.0.2" not in servers_after_disable, (
             f"127.0.0.2 still in system DNS after disable: "
             f"{sorted(servers_after_disable)}"

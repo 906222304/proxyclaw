@@ -52,6 +52,7 @@ nlohmann::json stats_service::get_stats() const {
         };
         j["ipv6_proxied"] = {{"tcp", proxied("socket")}, {"udp", proxied("udp_socket")}};
         if (t.contains("ipv6")) j["ipv6"] = t["ipv6"];
+        if (t.contains("dns")) j["dns"] = t["dns"];
         if (t.contains("decisions")) j["decisions"] = t["decisions"];
         j["tcp_syn_parking"] = std::move(t);
     }

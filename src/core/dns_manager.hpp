@@ -95,6 +95,10 @@ public:
         // Cheap and lock-free for readers; TCP :53 must follow the config at once.
         publish_tcp_dns_upstream(cfg);
         const bool want = cfg.enabled && cfg.mode == "forwarder";
+        {
+            std::lock_guard lk(req_mu_);
+            if (stopping_) return;
+        }
         // Show progress before the worker can pick the request up, so its
         // final state is never overwritten by this one.
         auto st = status();

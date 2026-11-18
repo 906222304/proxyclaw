@@ -1,9 +1,13 @@
 // Compile the production manager against controlled network/Windows adapters.
 // These tests never open sockets or change the machine's DNS settings.
 #include "core/dns_manager.hpp"
+#include <chrono>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <utility>
+#include <vector>
 
 using clew::DnsManager;
 using clew::DnsConfig;
@@ -143,6 +147,87 @@ static void unsupported_mode_does_not_enable() {
     CHECK(fwd::starts == 0); CHECK(dns::sets == 0); original_dns();
 }
 
+// --- request(): background apply + status ---
+using namespace std::chrono_literals;
+struct recording_sink : clew::frontend_push_sink {
+    std::mutex mu;
+    std::vector<std::string> events;
+    void push(std::string_view event, std::string body) override {
+        std::lock_guard lk(mu);
+        events.push_back(std::string(event) + " " + body);
+    }
+    std::vector<std::string> get() { std::lock_guard lk(mu); return events; }
+};
+static clew::DnsStatus wait_state(DnsManager& mgr, const std::string& state) {
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto st = mgr.status();
+        if (st.state == state) return st;
+        std::this_thread::sleep_for(5ms);
+    }
+    throw std::runtime_error("status never became " + state + " (is " + mgr.status().state + ")");
+}
+static void request_returns_before_start_finishes() {
+    reset(); asio::io_context ioc; DnsManager mgr(ioc);
+    recording_sink sink; mgr.set_sink(&sink);
+    fwd::start_delay_ms = 300;
+    const auto t0 = std::chrono::steady_clock::now();
+    mgr.request(enabled(), "127.0.0.1", 7890);
+    CHECK(std::chrono::steady_clock::now() - t0 < 100ms);
+    CHECK(mgr.status().state == "starting");
+    auto st = wait_state(mgr, "running");
+    CHECK(!st.tcp_only); CHECK(st.listen == "127.0.0.2");
+    proxy_dns();
+    auto ev = sink.get();
+    CHECK(ev.size() == 2);
+    CHECK(ev[0].find("\"starting\"") != std::string::npos);
+    CHECK(ev[1].find("\"running\"") != std::string::npos);
+    mgr.stop(); original_dns();
+}
+static void request_reports_failure_reason() {
+    reset(); asio::io_context ioc; DnsManager mgr(ioc);
+    fwd::start_ok = false; mgr.request(enabled(), "127.0.0.1", 7890);
+    CHECK(wait_state(mgr, "failed").error == "proxy_unreachable");
+    fwd::start_ok = true; dns::save_ok = false; mgr.request(enabled(), "127.0.0.1", 7890);
+    CHECK(wait_state(mgr, "failed").error == "backup_failed");
+    dns::save_ok = true; dns::interfaces.clear(); mgr.request(enabled(), "127.0.0.1", 7890);
+    CHECK(wait_state(mgr, "failed").error == "no_interface");
+    original_dns();
+}
+static void request_reports_tcp_only_and_off() {
+    reset(); asio::io_context ioc; DnsManager mgr(ioc);
+    fwd::tcp_only = true; mgr.request(enabled(), "127.0.0.1", 7890);
+    CHECK(wait_state(mgr, "running").tcp_only);
+    mgr.request(DnsConfig{}, "127.0.0.1", 7890);
+    wait_state(mgr, "off"); original_dns(); CHECK(fwd::active == 0);
+}
+static void queued_requests_are_coalesced() {
+    reset(); asio::io_context ioc; DnsManager mgr(ioc);
+    fwd::start_delay_ms = 200;
+    mgr.request(enabled(), "127.0.0.1", 7890);
+    std::this_thread::sleep_for(50ms);  // first one is being applied
+    auto a = enabled(); a.upstream_host = "1.1.1.1"; mgr.request(a, "127.0.0.1", 7890);
+    auto b = enabled(); b.upstream_host = "9.9.9.9"; mgr.request(b, "127.0.0.1", 7890);
+    std::this_thread::sleep_for(50ms);
+    wait_state(mgr, "running");
+    std::this_thread::sleep_for(300ms);  // let any (wrongly) queued apply run
+    wait_state(mgr, "running");
+    CHECK(fwd::starts == 2);  // first + newest; the middle one was dropped
+}
+static void stop_waits_for_start_and_restores() {
+    reset(); asio::io_context ioc;
+    {
+        DnsManager mgr(ioc);
+        fwd::start_delay_ms = 200;
+        mgr.request(enabled(), "127.0.0.1", 7890);
+        std::this_thread::sleep_for(50ms);
+        mgr.stop();
+        CHECK(fwd::active == 0); original_dns(); CHECK(!dns::backup);
+        mgr.request(enabled(), "127.0.0.1", 7890);  // ignored after stop
+    }
+    CHECK(fwd::starts == 1);
+}
+
 int main() {
     const std::pair<const char*, void(*)()> cases[] = {
         {"failed start leaves DNS unchanged", failed_start_does_not_change_dns},
@@ -160,6 +245,11 @@ int main() {
         {"unchanged config does not restart", unchanged_config_does_not_restart},
         {"no interfaces stops listener", no_interfaces_stops_listener},
         {"unsupported mode stays disabled", unsupported_mode_does_not_enable},
+        {"request returns before start finishes", request_returns_before_start_finishes},
+        {"request reports failure reason", request_reports_failure_reason},
+        {"request reports TCP-only and off", request_reports_tcp_only_and_off},
+        {"queued requests are coalesced", queued_requests_are_coalesced},
+        {"stop waits for start and restores", stop_waits_for_start_and_restores},
     };
     int failures = 0;
     for (const auto& [name, test] : cases) {

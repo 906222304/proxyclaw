@@ -315,7 +315,8 @@ if(BUILD_TESTING AND WIN32)
         FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)
     proxyclaw_unit_test(dns_manager_tests
         SOURCES tests/test_dns_manager.cpp
-        FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes)
+        FAKES ${CMAKE_SOURCE_DIR}/tests/dns_fakes
+        LIBS nlohmann_json::nlohmann_json)
     proxyclaw_unit_test(ui_config_tests
         SOURCES tests/test_ui_config_and_paths.cpp src/common/api_exception.cpp
         FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes

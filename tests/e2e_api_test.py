@@ -351,8 +351,9 @@ def test_icon_api_pid():
     me = pathlib.Path(sys.executable).name
     r = requests.get(f"{BASE}/icon", params={"pid": os.getpid(), "name": me}, timeout=5)
     assert r.status_code == 200, f"pid {os.getpid()} ({me}): status {r.status_code}"
-    assert r.headers.get("Content-Type") == "image/png"
-    assert r.headers.get("Cache-Control") == "no-store"
+    assert r.headers.get("Content-Type") == "image/png", r.headers.get("Content-Type")
+    cc = r.headers.get("Cache-Control", "")
+    assert "no-store" in cc and "max-age" not in cc, f"Cache-Control {cc!r}"
     # A name that does not match the PID's image (reused PID) is not served
     # that image's icon.
     r = requests.get(f"{BASE}/icon",

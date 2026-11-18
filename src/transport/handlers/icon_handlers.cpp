@@ -40,16 +40,15 @@ void handle_icon(const httplib::Request& req, httplib::Response& res, const api_
     const auto png = ctx.icons.get(pid, name);
     if (!png || png->empty()) {
         // "No icon" is a normal answer, not an error: 204 keeps the browser
-        // console clean while the frontend shows its generic icon. Not cached
-        // by the browser: the exe may become resolvable later (the server
-        // retries failed lookups with backoff).
+        // console clean while the frontend shows its generic icon. The exe
+        // may become resolvable later (the server retries with backoff).
         res.status = 204;
-        res.set_header("Cache-Control", "no-store");
         return;
     }
-    // Keyed by PID, which Windows reuses: the frontend keeps its own cache,
-    // so the browser must not serve an old process's icon for a new one.
-    res.set_header("Cache-Control", "no-store");
+    // No Cache-Control here: install_default_headers sends no-store for all
+    // of /api/. Icons are keyed by PID, which Windows reuses, so the browser
+    // must not serve an old process's icon for a new one; the frontend keeps
+    // its own cache.
     res.set_content(
         std::string(reinterpret_cast<const char*>(png->data()), png->size()),
         "image/png");

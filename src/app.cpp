@@ -203,8 +203,10 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     if (gui_) {
         projection_.set_sink(gui_.get());
         cfg_bridge_.set_sink(gui_.get());
+        dns_mgr_.set_sink(gui_.get());
         gui_->set_on_ready([this]() {
             projection_.replay_to_frontend();
+            dns_mgr_.replay_to_frontend();
         });
         // Visibility hand-off. Host transitions IsVisible on minimize /
         // restore / tray hide / tray show; projection drops on_tree_changed
@@ -302,6 +304,8 @@ nlohmann::json app::traffic_stats() const {
                            {"ipv6_proxied",
                             wd_network_udp_ ? wd_network_udp_->ipv6_proxied_count() : 0}};
     }
+    // DNS proxy: off / starting / running / stopping / failed (+ reason).
+    j["dns"] = dns_mgr_.status().to_json();
     j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", redirect_port_v6_ != 0},
                  {"flows", v6_flows_.size()}};
     // ipv6.mode = proxy: groups found unable to reach IPv6 (blocked, so
@@ -389,7 +393,7 @@ void app::wire_observers() {
             }
             if (gui_) gui_->set_close_to_tray(cfg.ui.close_to_tray);
             auto [ph, pp] = pick_proxy_endpoint(cfg);
-            dns_mgr_.apply(cfg.dns, ph, pp);
+            dns_mgr_.request(cfg.dns, ph, pp);
         });
 }
 
@@ -484,7 +488,7 @@ void app::start_servers_and_workers() {
     {
         const ConfigV2 cfg = cfg_store_.get();
         auto [ph, pp] = pick_proxy_endpoint(cfg);
-        dns_mgr_.apply(cfg.dns, ph, pp);
+        dns_mgr_.request(cfg.dns, ph, pp);
     }
 
     tree_mgr_.start();

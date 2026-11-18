@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
 import { setAutostart, testProxyGroupIpv6, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
-import { autostartQuery, configQuery } from '@/api/queries'
+import { autostartQuery, configQuery, dnsStatusQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,6 +17,8 @@ import { LogViewer } from './LogViewer'
 
 const JsonEditor = lazy(() => import('./JsonEditor'))
 
+import type { DnsStatus } from '@/api/types'
+
 type Config = Record<string, unknown>
 type Obj = Record<string, unknown>
 
@@ -25,6 +27,26 @@ export function patchConfig(config: Config, patch: (c: Config) => void): Config 
   const next = structuredClone(config)
   patch(next)
   return next
+}
+
+const DNS_ERRORS: Record<string, string> = {
+  proxy_unreachable: '代理不可用（UDP 与 TCP 都无法连到上游 DNS）',
+  no_interface: '没有可用的网络接口',
+  backup_failed: '无法备份系统 DNS，未做修改',
+  set_failed: '修改系统 DNS 失败，已恢复',
+  restore_failed: '恢复系统 DNS 失败，将在下次启动时重试',
+  mode_unsupported: '不支持的模式',
+}
+
+/** Status line under the DNS switch; empty when there is nothing to show. */
+export function dnsStatusText(s: DnsStatus | undefined): string {
+  switch (s?.state) {
+    case 'starting': return '启动中…'
+    case 'stopping': return '正在关闭…'
+    case 'running': return s.tcp_only ? '运行中（代理不支持 UDP，仅经 TCP 转发）' : '运行中'
+    case 'failed': return `启动失败：${DNS_ERRORS[s.error ?? ''] ?? s.error ?? '未知错误'}`
+    default: return ''
+  }
 }
 
 export function dnsPatch(enabled: boolean, mode: string, upstream: string) {
@@ -47,6 +69,8 @@ export function ConfigEditor() {
   const ids = useId()
   const { data: config } = useQuery(configQuery)
   const { data: autostart = { enabled: false, start_minimized: false } } = useQuery(autostartQuery)
+  const { data: dnsStatus } = useQuery(dnsStatusQuery)
+  const dnsText = dnsStatusText(dnsStatus)
 
   const ui = (config?.ui ?? {}) as Obj
   const dns = (config?.dns ?? {}) as Obj
@@ -111,7 +135,10 @@ export function ConfigEditor() {
   const canEnableAutostart = autostart.enabled || !locationUnsafe
 
   const saveDns = (enabled = dnsEnabled, mode = dnsMode, upstream = upstreamDraft) =>
-    patch.mutate({ fn: dnsPatch(enabled, mode, upstream), ok: 'DNS 设置已保存', fail: '保存 DNS 设置失败' })
+    patch.mutate({ fn: dnsPatch(enabled, mode, upstream), ok: 'DNS 设置已保存', fail: '保存 DNS 设置失败' }, {
+      // The backend applies DNS in the background; pick up "starting" now.
+      onSuccess: () => { void qc.invalidateQueries({ queryKey: queryKeys.dnsStatus }) },
+    })
 
   return (
     <div className="thin-scrollbar min-h-0 flex-1 overflow-auto">
@@ -179,7 +206,18 @@ export function ConfigEditor() {
               description="通过代理转发 DNS 查询。"
               hint="适用于系统 DNS 无法解析目标服务的情况。此模式会修改系统 DNS，影响整台电脑。"
             >
-              <Switch checked={dnsEnabled} aria-label="DNS 代理" onCheckedChange={v => saveDns(v)} />
+              <div className="flex items-center gap-3">
+                {dnsText && (
+                  <span
+                    data-testid="dns-status"
+                    role="status"
+                    className={dnsStatus?.state === 'failed' ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}
+                  >
+                    {dnsText}
+                  </span>
+                )}
+                <Switch checked={dnsEnabled} aria-label="DNS 代理" onCheckedChange={v => saveDns(v)} />
+              </div>
             </Row>
             {dnsEnabled && (
               <div className="space-y-2.5 py-3 pr-4 pl-9">

@@ -8,21 +8,56 @@
 // - Set system DNS to listen_host (default 127.0.0.2) on active interfaces
 // - Restore system DNS on disable or clean shutdown
 // - Recover from previous crash (dns_state.json exists at startup)
+//
+// Config changes go through request(): it returns at once and a dedicated
+// worker thread runs apply() (the UDP ASSOCIATE / TCP probe can take up to
+// ~13 s against a slow proxy). Requests that arrive while one is applied
+// are coalesced; only the newest is applied next. status() reports
+// off / starting / running / stopping / failed with a reason, and every
+// change is pushed to the frontend as `dns_status`.
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
-#include <memory>
-#include <string>
+#include <atomic>
+#include <condition_variable>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+
+#include <nlohmann/json.hpp>
 
 #include "config/types.hpp"
 #include "core/dns_forwarder.hpp"
 #include "core/system_dns.hpp"
 #include "core/log.hpp"
 #include "proxy/tcp_dns_upstream.hpp"
+#include "transport/frontend_push_sink.hpp"
 
 namespace clew {
+
+// state: "off" | "starting" | "running" | "stopping" | "failed".
+// error (failed only): "proxy_unreachable" (neither UDP ASSOCIATE nor a TCP
+// CONNECT to the upstream worked), "no_interface", "backup_failed",
+// "set_failed", "restore_failed", "mode_unsupported".
+struct DnsStatus {
+    std::string state = "off";
+    bool tcp_only = false;
+    std::string error;
+    std::string listen;
+
+    nlohmann::json to_json() const {
+        nlohmann::json j{{"state", state}, {"tcp_only", tcp_only}};
+        if (!error.empty()) j["error"] = error;
+        if (!listen.empty()) j["listen"] = listen;
+        return j;
+    }
+    bool operator==(const DnsStatus&) const = default;
+};
 
 class DnsManager {
 public:
@@ -54,13 +89,48 @@ public:
         restore_system_dns();
     }
 
-    // Apply new config. Handles diff against current state:
+    // Non-blocking apply: hand the config to the worker and return. Called
+    // from the config observer (API thread) and at startup.
+    void request(const DnsConfig& cfg, const std::string& proxy_host, uint16_t proxy_port) {
+        // Cheap and lock-free for readers; TCP :53 must follow the config at once.
+        publish_tcp_dns_upstream(cfg);
+        const bool want = cfg.enabled && cfg.mode == "forwarder";
+        // Show progress before the worker can pick the request up, so its
+        // final state is never overwritten by this one.
+        auto st = status();
+        if (want && st.state != "running") {
+            set_status(DnsStatus{"starting", false, {}, cfg.listen_host});
+        } else if (!want && (st.state == "running" || st.state == "starting")) {
+            st.state = "stopping";
+            set_status(std::move(st));
+        }
+        {
+            std::lock_guard lk(req_mu_);
+            if (stopping_) return;
+            pending_ = request_t{cfg, proxy_host, proxy_port};
+            if (!worker_.joinable())
+                worker_ = std::thread([this] { worker_loop(); });
+        }
+        req_cv_.notify_one();
+    }
+
+    DnsStatus status() const {
+        std::lock_guard lk(status_mu_);
+        return status_;
+    }
+
+    // Push target for `dns_status` (the WebView2 host). Any thread.
+    void set_sink(frontend_push_sink* sink) noexcept { sink_.store(sink); }
+    void replay_to_frontend() {
+        if (auto* sink = sink_.load()) sink->push("dns_status", status().to_json().dump());
+    }
+
+    // Apply new config synchronously (worker thread, or tests). Handles diff against current state:
     //   off → on:  start forwarder + set system DNS
     //   on → off:  stop forwarder + restore system DNS
     //   both on:   if upstream/listen changed → restore DNS, then restart
     void apply(const DnsConfig& cfg,
                const std::string& proxy_host, uint16_t proxy_port) {
-        publish_tcp_dns_upstream(cfg);
         const bool want_enabled = cfg.enabled && cfg.mode == "forwarder";
 
         if (cfg.enabled && cfg.mode != "forwarder") {
@@ -71,11 +141,14 @@ public:
             // Keep the listener alive if an interface still points at it.
             if (!restore_system_dns()) {
                 current_cfg_.enabled = false;
+                fail("restore_failed", cfg);
                 return;
             }
             stop_forwarder();
             current_cfg_ = cfg;
             current_cfg_.enabled = false;
+            if (cfg.enabled) fail("mode_unsupported", cfg);
+            else set_status(DnsStatus{});
             return;
         }
 
@@ -90,28 +163,46 @@ public:
 
         if (forwarder_ && current_cfg_.enabled && !fwd_target_changed) {
             current_cfg_ = cfg;
+            set_running();
             return;
         }
 
+        set_status(DnsStatus{"starting", false, {}, cfg.listen_host});
         // Restore first, so a failed restart cannot strand system DNS on a
         // dead listener or capture the old loopback address as the backup.
         if (!restore_system_dns()) {
             current_cfg_.enabled = false;
+            fail("restore_failed", cfg);
             return;
         }
         stop_forwarder();
         current_cfg_ = cfg;
         current_cfg_.enabled = false;
-        if (!start_forwarder(cfg, proxy_host, proxy_port)) return;
-        if (!set_system_dns(cfg.listen_host)) {
+        if (!start_forwarder(cfg, proxy_host, proxy_port)) {
+            fail("proxy_unreachable", cfg);
+            return;
+        }
+        if (const char* why = set_system_dns(cfg.listen_host)) {
             if (restore_system_dns()) stop_forwarder();
+            fail(why, cfg);
             return;
         }
         current_cfg_.enabled = true;
+        set_running();
     }
 
-    // Clean shutdown: restore system DNS, retaining the backup on failure.
+    // Clean shutdown: finish the request in progress (bounded by the SOCKS5
+    // timeouts), drop the queued one, then restore system DNS, retaining the
+    // backup on failure.
     void stop() {
+        sink_.store(nullptr);
+        {
+            std::lock_guard lk(req_mu_);
+            stopping_ = true;
+            pending_.reset();
+        }
+        req_cv_.notify_one();
+        if (worker_.joinable()) worker_.join();
         if (system_dns_modified_) {
             restore_system_dns();
         }
@@ -119,6 +210,57 @@ public:
     }
 
 private:
+    struct request_t {
+        DnsConfig cfg;
+        std::string proxy_host;
+        uint16_t proxy_port;
+    };
+
+    void worker_loop() {
+        for (;;) {
+            request_t r;
+            {
+                std::unique_lock lk(req_mu_);
+                req_cv_.wait(lk, [this] { return stopping_ || pending_.has_value(); });
+                if (stopping_) return;
+                r = std::move(*pending_);
+                pending_.reset();
+            }
+            try {
+                apply(r.cfg, r.proxy_host, r.proxy_port);
+            } catch (const std::exception& e) {
+                PC_LOG_ERROR("[DNS-MGR] apply failed: {}", e.what());
+                fail("proxy_unreachable", r.cfg);
+            }
+        }
+    }
+
+    void set_status(DnsStatus st) {
+        {
+            std::lock_guard lk(status_mu_);
+            if (status_ == st) return;
+            status_ = st;
+        }
+        PC_LOG_INFO("[DNS-MGR] status {}{}", st.state, st.error.empty() ? "" : " (" + st.error + ")");
+        if (auto* sink = sink_.load()) sink->push("dns_status", st.to_json().dump());
+    }
+    void set_running() {
+        set_status(DnsStatus{"running", forwarder_ && forwarder_->tcp_only(), {},
+                             current_cfg_.listen_host});
+    }
+    void fail(const char* why, const DnsConfig& cfg) {
+        set_status(DnsStatus{"failed", false, why, cfg.listen_host});
+    }
+
+    std::mutex req_mu_;
+    std::condition_variable req_cv_;
+    std::optional<request_t> pending_;
+    bool stopping_ = false;
+    std::thread worker_;
+    mutable std::mutex status_mu_;
+    DnsStatus status_;
+    std::atomic<frontend_push_sink*> sink_{nullptr};
+
     // Proxied TCP :53 goes to the configured upstream (proxy/tcp_dns_upstream.hpp).
     void publish_tcp_dns_upstream(const DnsConfig& cfg) {
         const auto ep = tcp_dns::resolve(cfg.upstream_host, cfg.upstream_port);
@@ -175,17 +317,18 @@ private:
         }
     }
 
-    bool set_system_dns(const std::string& listen_host) {
+    // nullptr on success, else the failure reason for DnsStatus::error.
+    const char* set_system_dns(const std::string& listen_host) {
         auto interfaces = system_dns::enumerate_active_interfaces();
         if (interfaces.empty()) {
             PC_LOG_WARN("[DNS-MGR] No active IPv4 interfaces found, skip system DNS");
-            return false;
+            return "no_interface";
         }
 
         // Do not modify any interface unless crash recovery is available.
         if (!system_dns::save_state(state_file_, interfaces)) {
             PC_LOG_WARN("[DNS-MGR] Failed to save original DNS; leaving system DNS unchanged");
-            return false;
+            return "backup_failed";
         }
 
         bool all_ok = true;
@@ -205,7 +348,7 @@ private:
             system_dns::delete_state(state_file_);
             saved_states_.clear();
         }
-        return all_ok;
+        return all_ok ? nullptr : "set_failed";
     }
 
     bool restore_system_dns() {

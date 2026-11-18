@@ -13,7 +13,7 @@ import {
   toNetworkConnections,
 } from './client'
 import { queryKeys } from './queryKeys'
-import type { NetworkConnection, ProcessInfo, ProxyTestResult } from './types'
+import type { DnsStatus, NetworkConnection, ProcessInfo, ProxyTestResult } from './types'
 
 // Polling contract (replaces the hand-written asyncPoller):
 // - refetchInterval drives the poll; TanStack Query never runs two fetches
@@ -77,6 +77,20 @@ export const statsQuery = queryOptions({
   queryFn: ({ signal }) => getStats(signal),
   refetchInterval: STATS_INTERVAL_MS,
   ...POLL,
+})
+
+/**
+ * DNS proxy state. Enabling DNS returns before the forwarder is up, so while
+ * it is starting or stopping this polls once a second (outside WebView2 there
+ * is no push); otherwise the `dns_status` push keeps it current.
+ */
+export const dnsStatusQuery = queryOptions({
+  queryKey: queryKeys.dnsStatus,
+  queryFn: async ({ signal }): Promise<DnsStatus> => (await getStats(signal)).dns ?? { state: 'off' },
+  refetchInterval: (q) => {
+    const s = q.state.data?.state
+    return s === 'starting' || s === 'stopping' ? 1_000 : false
+  },
 })
 
 export type ActivityMap = Record<number, number>

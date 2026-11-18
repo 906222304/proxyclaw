@@ -11,6 +11,16 @@
   the proxy and nothing falls back to direct UDP. If the TCP path fails too,
   DNS stays off and system DNS is left untouched. The log says
   `Forwarder started (TCP only)`.
+- DNS is enabled in the background. Saving the config no longer waits for
+  the SOCKS5 UDP ASSOCIATE, the TCP check and the system DNS swap (up to
+  ~13 s against a slow proxy, which also held up the API thread); a
+  dedicated DNS thread applies the newest request and skips ones replaced
+  meanwhile. `/api/stats` `dns` reports `state` (`off` / `starting` /
+  `running` / `stopping` / `failed`), `tcp_only` and, on failure, `error`
+  (`proxy_unreachable`, `no_interface`, `backup_failed`, `set_failed`,
+  `restore_failed`, `mode_unsupported`); changes are pushed as `dns_status`.
+  The settings page shows 启动中… / 运行中 / the failure reason next to the
+  DNS switch. Closing the app waits for a DNS start already in progress.
 
 ## v0.14.2 (2026-11-18)
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AutoRule, ProxyGroup } from '@/api/types'
-import { dnsPatch, patchConfig } from './ConfigEditor'
+import { dnsPatch, dnsStatusText, patchConfig } from './ConfigEditor'
 import { filterLog } from './LogViewer'
 import { failedLabel, groupFormSchema, groupFormToPayload, normalizeProxyHost, testTooltip } from './ProxiesTab'
 import { formToPayload, ruleToForm } from './RuleEditorDialog'
@@ -102,5 +102,17 @@ describe('proxy group form validation', () => {
     expect(groupFormToPayload({ ...base, host: '[::1]', port: ' 1080 ' })).toEqual({
       name: 'g', host: '::1', port: 1080, type: 'socks5', test_url: '',
     })
+  })
+})
+
+describe('DNS status line', () => {
+  it('shows progress, TCP-only mode and the failure reason', () => {
+    expect(dnsStatusText(undefined)).toBe('')
+    expect(dnsStatusText({ state: 'off' })).toBe('')
+    expect(dnsStatusText({ state: 'starting' })).toBe('启动中…')
+    expect(dnsStatusText({ state: 'running' })).toBe('运行中')
+    expect(dnsStatusText({ state: 'running', tcp_only: true })).toContain('仅经 TCP')
+    expect(dnsStatusText({ state: 'failed', error: 'proxy_unreachable' })).toContain('代理不可用')
+    expect(dnsStatusText({ state: 'failed', error: 'something_new' })).toBe('启动失败：something_new')
   })
 })

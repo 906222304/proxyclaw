@@ -162,7 +162,16 @@ export interface ConnectionsResponse {
   config_version?: number
 }
 
+/** DNS proxy state from /api/stats `dns` and the `dns_status` push. */
+export interface DnsStatus {
+  state: 'off' | 'starting' | 'running' | 'stopping' | 'failed'
+  tcp_only?: boolean
+  error?: string
+  listen?: string
+}
+
 export interface Stats {
   hijacked_pids: number
   auto_rules_count: number
+  dns?: DnsStatus
 }

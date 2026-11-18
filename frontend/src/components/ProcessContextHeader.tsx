@@ -153,7 +153,7 @@ export function ProcessContextHeader({ process, onCreateRule }: {
   return (
     <div className="shrink-0">
       <div className="flex h-12 items-center gap-3">
-        <ProcessIcon name={process.name} className="size-5.5" />
+        <ProcessIcon name={process.name} pid={process.pid} className="size-5.5" />
         <div className="group/path min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-sm font-medium">{process.name}</span>

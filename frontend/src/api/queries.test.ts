@@ -3,8 +3,8 @@
 import { QueryClient, QueryObserver, focusManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  ACTIVITY_REFRESH_MS, ACTIVITY_TIMEOUT_MS, CONNECTIONS_INTERVAL_MS, STATS_INTERVAL_MS,
-  activityQuery, connectionsQuery, createQueryClient, isActive, mergeActivity, statsQuery,
+  ACTIVITY_REFRESH_MS, ACTIVITY_TIMEOUT_MS, CONNECTIONS_INTERVAL_MS, ICON_GC_MS, ICON_NEGATIVE_STALE_MS, STATS_INTERVAL_MS,
+  activityQuery, connectionsQuery, createQueryClient, isActive, mergeActivity, processIconQuery, statsQuery,
   type ActivityMap,
 } from './queries'
 import { queryKeys } from './queryKeys'
@@ -156,5 +156,40 @@ describe('polling via refetchInterval', () => {
     expect(new Set(fetchMock.mock.calls.map(c => c[0]))).toEqual(new Set(['/api/connections']))
     unsubTable()
     unsubTree()
+  })
+})
+
+describe('processIconQuery', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('asks by pid and name, and drops the client path', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+    const qc = createQueryClient()
+    expect(await qc.fetchQuery(processIconQuery('Chrome.exe', 42))).toBeNull()
+    const url = String(fetchSpy.mock.calls[0]?.[0])
+    expect(url).toContain('name=Chrome.exe')
+    expect(url).toContain('pid=42')
+    expect(url).not.toContain('path=')
+    expect(queryKeys.processIcon('Chrome.exe', 42)).toEqual(['processIcon', 'chrome.exe', 42])
+  })
+
+  it('treats "no icon" as stale after a minute and a found icon as fresh forever', () => {
+    const opts = processIconQuery('a.exe')
+    const stale = opts.staleTime as (q: { state: { data: unknown } }) => number
+    expect(stale({ state: { data: null } })).toBe(ICON_NEGATIVE_STALE_MS)
+    expect(stale({ state: { data: 'blob:x' } })).toBe(Infinity)
+    expect(opts.gcTime).toBe(ICON_GC_MS)
+  })
+
+  it('revokes the object URL when an icon leaves the cache', () => {
+    const revoke = vi.fn()
+    ;(URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = revoke
+    const qc = createQueryClient()
+    qc.setQueryData(queryKeys.processIcon('a.exe', 7), 'blob:icon-a')
+    qc.setQueryData(queryKeys.stats, { hijacked_pids: 0, auto_rules_count: 0 })
+    qc.removeQueries({ queryKey: queryKeys.processIcon('a.exe', 7) })
+    qc.removeQueries({ queryKey: queryKeys.stats })
+    expect(revoke).toHaveBeenCalledTimes(1)
+    expect(revoke).toHaveBeenCalledWith('blob:icon-a')
   })
 })

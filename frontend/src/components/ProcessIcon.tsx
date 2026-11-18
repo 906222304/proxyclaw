@@ -5,10 +5,12 @@ import { cn } from '@/lib/utils'
 
 /**
  * The exe's icon, or a generic monitor glyph while loading and when the
- * backend answers 204 (no extractable icon).
+ * backend answers 204 (no extractable icon). With `pid` the backend reads
+ * that process's image path, so two exes with the same name get their own
+ * icons; without it (rules) any running exe of that name is used.
  */
-export function ProcessIcon({ name, className }: { name: string; className?: string }) {
-  const { data: src } = useQuery(processIconQuery(name))
+export function ProcessIcon({ name, pid, className }: { name: string; pid?: number; className?: string }) {
+  const { data: src } = useQuery(processIconQuery(name, pid))
   return src
     ? <img src={src} alt="" className={cn('shrink-0', className)} />
     : <Monitor aria-hidden className={cn('shrink-0 text-muted-foreground', className)} />

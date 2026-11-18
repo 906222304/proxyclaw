@@ -338,10 +338,31 @@ def test_icon_api_no_icon():
     assert r.content == b"", f"Expected empty body, got {len(r.content)} bytes"
 
 
-@test("Icon API rejects a request without name")
+@test("Icon API rejects a request without pid or name")
 def test_icon_api_missing_name():
     r = requests.get(f"{BASE}/icon", timeout=5)
     assert r.status_code == 400, f"Status {r.status_code}"
+    r = requests.get(f"{BASE}/icon", params={"pid": "abc", "name": "x.exe"}, timeout=5)
+    assert r.status_code == 400, f"invalid pid: status {r.status_code}"
+
+
+@test("Icon API resolves the exe from pid and ignores a client path")
+def test_icon_api_pid():
+    me = pathlib.Path(sys.executable).name
+    r = requests.get(f"{BASE}/icon", params={"pid": os.getpid(), "name": me}, timeout=5)
+    assert r.status_code == 200, f"pid {os.getpid()} ({me}): status {r.status_code}"
+    assert r.headers.get("Content-Type") == "image/png", r.headers.get("Content-Type")
+    cc = r.headers.get("Cache-Control", "")
+    assert "no-store" in cc and "max-age" not in cc, f"Cache-Control {cc!r}"
+    # A name that does not match the PID's image (reused PID) is not served
+    # that image's icon.
+    r = requests.get(f"{BASE}/icon",
+                     params={"pid": os.getpid(), "name": "proxyclaw-e2e-no-such-exe.exe"}, timeout=5)
+    assert r.status_code == 204, f"mismatched name: status {r.status_code}"
+    # `path` is no longer accepted: a client cannot point the server at a file.
+    r = requests.get(f"{BASE}/icon", params={"name": "proxyclaw-e2e-no-such-exe2.exe",
+                                             "path": r"C:\Windows\explorer.exe"}, timeout=5)
+    assert r.status_code == 204, f"client path honored: status {r.status_code}"
 
 
 @test("SSE endpoint connects")
@@ -1628,6 +1649,7 @@ def _run(name_filter: str | None) -> int:
         test_icon_api,
         test_icon_api_no_icon,
         test_icon_api_missing_name,
+        test_icon_api_pid,
         # test_sse retired: /api/events removed with the SSE->PostMessage
         # transport switch. Push-channel coverage now lives in Playwright
         # (test_no_event_source / test_push_after_hijack).

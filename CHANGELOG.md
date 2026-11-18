@@ -37,6 +37,12 @@
   dual-stack socket's IPv4 datagrams still follow its IPv6-layer BIND until
   an IPv4 CONNECT decides IPv4 for it.
 
+### Removed
+
+- The diagnostic `proxyclaw.shutdown.log` breadcrumbs added in v0.14.1. The
+  exit crash they tracked is fixed and the shutdown stress test stays clean;
+  shutdown phases are still logged as `[shutdown] …` in the regular log.
+
 ## v0.14.1 (2026-11-17)
 
 ### Added

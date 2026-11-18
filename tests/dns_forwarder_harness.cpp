@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
             std::cout << "FAILED" << std::endl;
             return 1;
         }
-        std::cout << "READY" << std::endl;
+        std::cout << (forwarder.tcp_only() ? "READY TCP" : "READY") << std::endl;
         std::string command;
         std::getline(std::cin, command);
         forwarder.stop();

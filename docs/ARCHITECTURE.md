@@ -558,7 +558,7 @@ would need an ACL'd named pipe.
 ```
 GET    /api/session?t=<token>      - Set the session cookie, redirect to /
 GET    /api/processes/:pid         - Single process info
-GET    /api/processes/:pid/detail  - Process detail (cmdline, path)
+GET    /api/processes/:pid/detail  - Process detail (cmdline, path); ?psn= -> 404 unless pid is still that process
 GET    /api/hijack                 - List all hijacked PIDs
 POST   /api/hijack/:pid            - Hijack a PID (manual rule); 400 if group_id does not exist
 DELETE /api/hijack/:pid            - Unhijack a PID

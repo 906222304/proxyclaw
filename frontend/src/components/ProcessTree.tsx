@@ -224,7 +224,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
       {/* gap-1 (not 1.5): with the PID column below at a fixed 5-digit width,
           the depth-capped row still fits "proxyclaw.exe" in the 240px sidebar. */}
       <span className="flex min-w-0 flex-1 items-center gap-1">
-        <ProcessIcon name={node.name} pid={node.pid} className={cn('size-4', iconDim)} />
+        <ProcessIcon name={node.name} pid={node.pid} psn={node.psn} className={cn('size-4', iconDim)} />
         <span className={cn(
           'min-w-0 truncate text-xs',
           selected ? 'font-medium text-foreground' : idle ? 'text-muted-foreground' : 'text-foreground',

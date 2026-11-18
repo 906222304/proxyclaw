@@ -5,9 +5,9 @@
 export const queryKeys = {
   /** Process tree. Push-only: filled by `process_update`, never fetched. */
   processTree: ['processTree'] as const,
-  processDetail: (pid: number) => ['processDetail', pid] as const,
+  processDetail: (pid: number, psn: number) => ['processDetail', pid, psn] as const,
   /** Object URL of an exe's icon (null = none), per running process (pid) or per exe name (pid 0). */
-  processIcon: (name: string, pid = 0) => ['processIcon', name.toLowerCase(), pid] as const,
+  processIcon: (name: string, pid = 0, psn = 0) => ['processIcon', name.toLowerCase(), pid, psn] as const,
   stats: ['stats'] as const,
   /** DNS proxy state: fetched from /api/stats, then kept fresh by the `dns_status` push. */
   dnsStatus: ['dnsStatus'] as const,

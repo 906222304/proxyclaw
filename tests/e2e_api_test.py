@@ -365,6 +365,25 @@ def test_icon_api_pid():
     assert r.status_code == 204, f"client path honored: status {r.status_code}"
 
 
+@test("Process detail is keyed by (pid, psn)")
+def test_process_detail_psn():
+    pid = os.getpid()
+    assert _wait_pid_in_tree(pid), f"test runner pid {pid} not in tree"
+    node = requests.get(f"{BASE}/processes/{pid}", timeout=5).json()
+    psn = node.get("psn")
+    assert isinstance(psn, int) and psn > 0, f"psn missing: {node}"
+    r = requests.get(f"{BASE}/processes/{pid}/detail", params={"psn": psn}, timeout=5)
+    assert r.status_code == 200, f"matching psn: status {r.status_code}"
+    d = r.json()
+    assert d["psn"] == psn, d
+    assert d.get("image_path", "").lower().endswith(pathlib.Path(sys.executable).name.lower()), d
+    # Another process's psn for the same pid (a recycled PID) is not found.
+    r = requests.get(f"{BASE}/processes/{pid}/detail", params={"psn": psn + 1}, timeout=5)
+    assert r.status_code == 404, f"stale psn: status {r.status_code}"
+    r = requests.get(f"{BASE}/processes/{pid}/detail", params={"psn": "x"}, timeout=5)
+    assert r.status_code == 400, f"invalid psn: status {r.status_code}"
+
+
 @test("SSE endpoint connects")
 def test_sse():
     r = requests.get(f"{BASE}/events", stream=True, timeout=3)
@@ -1650,6 +1669,7 @@ def _run(name_filter: str | None) -> int:
         test_icon_api_no_icon,
         test_icon_api_missing_name,
         test_icon_api_pid,
+        test_process_detail_psn,
         # test_sse retired: /api/events removed with the SSE->PostMessage
         # transport switch. Push-channel coverage now lives in Playwright
         # (test_no_event_source / test_push_after_hijack).

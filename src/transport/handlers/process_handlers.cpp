@@ -1,6 +1,8 @@
 // /api/processes*, /api/hijack*, /api/hijack/batch.
 
+#include <charconv>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "common/api_context.hpp"
+#include "common/api_exception.hpp"
 #include "services/group_service.hpp"
 #include "services/process_tree_service.hpp"
 #include "transport/response_utils.hpp"
@@ -30,7 +33,17 @@ void handle_process_by_pid(const httplib::Request& req, httplib::Response& res, 
 
 void handle_process_detail(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
-    write_json(res, ctx.processes.find_process_detail(pid));
+    std::optional<std::uint64_t> psn;
+    if (req.has_param("psn")) {
+        const std::string v = req.get_param_value("psn");
+        std::uint64_t n = 0;
+        const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), n);
+        if (ec != std::errc{} || end != v.data() + v.size()) {
+            throw api_exception{api_error::invalid_argument, "psn must be a non-negative integer"};
+        }
+        psn = n;
+    }
+    write_json(res, ctx.processes.find_process_detail(pid, psn));
 }
 
 void handle_list_hijacked(const httplib::Request&, httplib::Response& res, const api_context& ctx) {

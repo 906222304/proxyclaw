@@ -9,8 +9,8 @@ import { cn } from '@/lib/utils'
  * that process's image path, so two exes with the same name get their own
  * icons; without it (rules) any running exe of that name is used.
  */
-export function ProcessIcon({ name, pid, className }: { name: string; pid?: number; className?: string }) {
-  const { data: src } = useQuery(processIconQuery(name, pid))
+export function ProcessIcon({ name, pid, psn, className }: { name: string; pid?: number; psn?: number; className?: string }) {
+  const { data: src } = useQuery(processIconQuery(name, pid, psn))
   return src
     ? <img src={src} alt="" className={cn('shrink-0', className)} />
     : <Monitor aria-hidden className={cn('shrink-0 text-muted-foreground', className)} />

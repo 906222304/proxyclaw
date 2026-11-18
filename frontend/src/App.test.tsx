@@ -18,7 +18,7 @@ const routes: Record<string, unknown> = {
   '/api/proxy-groups': [{ id: 0, name: '默认', host: '127.0.0.1', port: 7890, type: 'socks5', test_url: 'https://www.google.com' }],
   '/api/config': { ui: { close_to_tray: true }, log_level: 'info', dns: { enabled: false } },
   '/api/autostart': { enabled: false, start_minimized: false },
-  '/api/processes/10/detail': { pid: 10, parent_pid: 1, name: 'app.exe', hijacked: true, cmdline: '"C:\\App\\app.exe" --flag', image_path: 'C:\\App\\app.exe' },
+  '/api/processes/10/detail': { pid: 10, psn: 100, parent_pid: 1, name: 'app.exe', hijacked: true, cmdline: '"C:\\App\\app.exe" --flag', image_path: 'C:\\App\\app.exe' },
 }
 
 let root: Root
@@ -64,8 +64,8 @@ describe('App', () => {
     act(() => root.render(<QueryClientProvider client={qc}><App /></QueryClientProvider>))
     act(() => applyPush(qc, {
       event: 'process_update',
-      data: [{ pid: 1, parent_pid: 0, name: 'explorer.exe', hijacked: false, children: [
-        { pid: 10, parent_pid: 1, name: 'app.exe', hijacked: true, hijack_source: 'manual', children: [] },
+      data: [{ pid: 1, psn: 1, parent_pid: 0, name: 'explorer.exe', hijacked: false, children: [
+        { pid: 10, psn: 100, parent_pid: 1, name: 'app.exe', hijacked: true, hijack_source: 'manual', children: [] },
       ] }],
     }))
     await flush()
@@ -92,6 +92,20 @@ describe('App', () => {
     await flush()
     expect(text()).toContain('PID 10')
     expect(text()).toContain('--flag')
+    const fetchMock = globalThis.fetch as unknown as { mock: { calls: unknown[][] } }
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/api/processes/10/detail?psn=100'))).toBe(true)
+
+    // PID 10 exits and Windows hands the PID to another process (new psn):
+    // the old selection and its command line must not carry over.
+    act(() => applyPush(qc, {
+      event: 'process_update',
+      data: [{ pid: 1, psn: 1, parent_pid: 0, name: 'explorer.exe', hijacked: false, children: [
+        { pid: 10, psn: 200, parent_pid: 1, name: 'other.exe', hijacked: false, children: [] },
+      ] }],
+    }))
+    await flush()
+    expect(text()).not.toContain('PID 10')
+    expect(text()).not.toContain('--flag')
 
     for (const [label, expected] of [['规则', '规则一'], ['代理', 'SOCKS5 · 127.0.0.1:7890 · 1 条规则'], ['设置', `v${PROXYCLAW_VERSION}`]] as const) {
       const tab = [...host.querySelectorAll('[role="tab"]')].find(t => t.textContent?.startsWith(label))!

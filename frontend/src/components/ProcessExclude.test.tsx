@@ -57,22 +57,22 @@ function renderHeader(process: ProcessInfo, rules: AutoRule[]) {
 
 describe('selected-process header', () => {
   it('shows the ⋯ menu for an auto-proxied process, no badge', async () => {
-    renderHeader({ pid: 10, parent_pid: 1, name: 'app.exe', hijacked: true, hijack_source: 'auto:a' }, [rule('a', [{ pid: 10 }])])
+    renderHeader({ pid: 10, psn: 10, parent_pid: 1, name: 'app.exe', hijacked: true, hijack_source: 'auto:a' }, [rule('a', [{ pid: 10 }])])
     await flush()
     expect(host.querySelector('[aria-label="进程操作"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="excluded-badge"]')).toBeNull()
   })
   it('shows 已排除 and the menu for an excluded process', async () => {
-    renderHeader({ pid: 10, parent_pid: 1, name: 'app.exe', hijacked: false, hijack_source: '' }, [rule('a', [{ pid: 10, excluded: true }])])
+    renderHeader({ pid: 10, psn: 10, parent_pid: 1, name: 'app.exe', hijacked: false, hijack_source: '' }, [rule('a', [{ pid: 10, excluded: true }])])
     await flush()
     expect(host.querySelector('[data-testid="excluded-badge"]')?.textContent).toBe('已排除')
     expect(host.querySelector('[aria-label="进程操作"]')).not.toBeNull()
   })
   it('has no menu for a manual hijack or a direct process', async () => {
-    renderHeader({ pid: 10, parent_pid: 1, name: 'app.exe', hijacked: true, hijack_source: 'manual' }, [rule('a', [{ pid: 10 }])])
+    renderHeader({ pid: 10, psn: 10, parent_pid: 1, name: 'app.exe', hijacked: true, hijack_source: 'manual' }, [rule('a', [{ pid: 10 }])])
     await flush()
     expect(host.querySelector('[aria-label="进程操作"]')).toBeNull()
-    renderHeader({ pid: 20, parent_pid: 1, name: 'x.exe', hijacked: false, hijack_source: '' }, [rule('a', [{ pid: 10 }])])
+    renderHeader({ pid: 20, psn: 20, parent_pid: 1, name: 'x.exe', hijacked: false, hijack_source: '' }, [rule('a', [{ pid: 10 }])])
     await flush()
     expect(host.querySelector('[aria-label="进程操作"]')).toBeNull()
   })

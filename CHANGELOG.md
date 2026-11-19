@@ -4,6 +4,13 @@
 
 ### Added
 
+- Process tree keyboard and screen-reader support. The list is a
+  `role="tree"` with `treeitem` rows (`aria-level`, `aria-expanded`,
+  `aria-selected`); ↑/↓, PageUp/PageDown, Home/End move, → expands or
+  enters the first child, ← collapses or goes to the parent, Enter/Space
+  selects. Focus stays on the tree (`aria-activedescendant`), so rows that
+  scroll out of the virtualised list never lose it; only the active row's
+  enable / disable proxy button is a Tab stop.
 - DNS proxy starts TCP-only when the proxy refuses UDP ASSOCIATE. Enabling
   `dns` used to fail outright; now the forwarder checks that a SOCKS5 CONNECT
   to the upstream succeeds (within the 3 s TCP timeout) and, if so, sends

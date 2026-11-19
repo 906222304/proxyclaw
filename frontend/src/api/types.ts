@@ -5,6 +5,8 @@ export type HijackSource = 'manual' | 'auto' | '' | `auto:${string}` | `tree:${s
 
 export interface ProcessInfo {
   pid: number
+  /** Boot-unique sequence number: (pid, psn) names one process across PID reuse. */
+  psn: number
   parent_pid: number
   name: string
   hijacked: boolean

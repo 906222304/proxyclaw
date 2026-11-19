@@ -21,24 +21,22 @@ namespace clew {
 
 namespace {
 
-std::pair<std::string, std::string> query_process_detail_impl(DWORD pid) {
-    auto cmdline = query_process_cmdline(pid);
+struct process_os_detail {
+    bool same_process = true;  // false: the PID now belongs to another process
+    std::string image_path;
+    std::string cmdline;
+};
 
+// Opens the process once and keeps the handle for every read: an open handle
+// pins the process object, so its PID cannot be reused mid-query. The PSN is
+// checked first; a mismatch means the tree entry's process has exited and
+// the PID was recycled before its ETW STOP arrived.
+process_os_detail query_process_detail_impl(DWORD pid, uint64_t expected_psn) {
     auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
-    if (!h) return {{}, std::move(cmdline)};
-
-    WCHAR path_buf[MAX_PATH];
-    DWORD path_len = MAX_PATH;
-    if (!QueryFullProcessImageNameW(h.get(), 0, path_buf, &path_len)) {
-        return {{}, std::move(cmdline)};
-    }
-
-    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, path_buf, path_len, nullptr, 0, nullptr, nullptr);
-    if (utf8_len <= 0) return {{}, std::move(cmdline)};
-
-    std::string image_path(utf8_len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, path_buf, path_len, image_path.data(), utf8_len, nullptr, nullptr);
-    return {std::move(image_path), std::move(cmdline)};
+    if (!h) return {};  // gone or protected: tree facts only, as before
+    const uint64_t live = query_process_psn(h.get());
+    if (live != INVALID_PSN && live != expected_psn) return {.same_process = false};
+    return {true, query_process_image_path(h.get()), query_process_cmdline(h.get())};
 }
 
 } // namespace
@@ -65,7 +63,8 @@ nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
     return result;
 }
 
-nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid) const {
+nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid,
+                                                         std::optional<std::uint64_t> psn) const {
     auto result = exec_.query([pid](const domain::process_tree_manager& m) -> nlohmann::json {
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
@@ -77,10 +76,17 @@ nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid) cons
     if (result.is_null() || result.empty()) {
         throw api_exception{api_error::not_found, "Process not found"};
     }
-    // query_process_detail runs OS calls outside the strand.
-    auto [image_path, cmdline] = query_process_detail_impl(static_cast<DWORD>(pid));
-    result["image_path"] = std::move(image_path);
-    result["cmdline"]    = std::move(cmdline);
+    const auto tree_psn = result["psn"].get<std::uint64_t>();
+    if (psn && *psn != tree_psn) {
+        throw api_exception{api_error::not_found, "Process not found"};
+    }
+    // OS calls run outside the strand.
+    auto os = query_process_detail_impl(static_cast<DWORD>(pid), tree_psn);
+    if (!os.same_process) {
+        throw api_exception{api_error::not_found, "Process not found"};
+    }
+    result["image_path"] = std::move(os.image_path);
+    result["cmdline"]    = std::move(os.cmdline);
     return result;
 }
 

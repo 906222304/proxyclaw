@@ -5,7 +5,7 @@ import { createQueryClient } from './queries'
 import { queryKeys } from './queryKeys'
 import type { ProcessInfo } from './types'
 
-const tree: ProcessInfo[] = [{ pid: 1, parent_pid: 0, name: 'a.exe', hijacked: false, children: [] }]
+const tree: ProcessInfo[] = [{ pid: 1, psn: 1, parent_pid: 0, name: 'a.exe', hijacked: false, children: [] }]
 
 describe('push channel', () => {
   afterEach(() => {

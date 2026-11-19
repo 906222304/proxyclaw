@@ -120,10 +120,9 @@ struct process_entry {
 
 // Query process command line from OS via NtQueryInformationProcess.
 // Returns empty string on failure (access denied, process exited, etc.)
-inline std::string query_process_cmdline(DWORD pid) {
-    auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
-    if (!h) return {};
-
+// The HANDLE overload reads from an already opened process, so the caller
+// can pin the process (and its PID) while checking its identity first.
+inline std::string query_process_cmdline(HANDLE process) {
     using NtQueryFn = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
     static auto NtQuery = reinterpret_cast<NtQueryFn>(
         GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess"));
@@ -132,11 +131,11 @@ inline std::string query_process_cmdline(DWORD pid) {
     ULONG buf_size = 1024;
     auto buf = std::make_unique<uint8_t[]>(buf_size);
     ULONG ret_len = 0;
-    LONG status = NtQuery(h.get(), 60, buf.get(), buf_size, &ret_len);
+    LONG status = NtQuery(process, 60, buf.get(), buf_size, &ret_len);
     if (status == static_cast<LONG>(0xC0000004) /* STATUS_INFO_LENGTH_MISMATCH */ && ret_len > 0) {
         buf_size = ret_len;
         buf = std::make_unique<uint8_t[]>(buf_size);
-        status = NtQuery(h.get(), 60, buf.get(), buf_size, &ret_len);
+        status = NtQuery(process, 60, buf.get(), buf_size, &ret_len);
     }
     if (status < 0) return {};
 
@@ -155,15 +154,18 @@ inline std::string query_process_cmdline(DWORD pid) {
     return cmdline;
 }
 
-// Query process image path via QueryFullProcessImageNameW.
-// Returns empty string on failure.
-inline std::string query_process_image_path(DWORD pid) {
+inline std::string query_process_cmdline(DWORD pid) {
     auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
     if (!h) return {};
+    return query_process_cmdline(h.get());
+}
 
+// Query process image path via QueryFullProcessImageNameW.
+// Returns empty string on failure.
+inline std::string query_process_image_path(HANDLE process) {
     WCHAR buf[MAX_PATH];
     DWORD len = MAX_PATH;
-    if (!QueryFullProcessImageNameW(h.get(), 0, buf, &len)) return {};
+    if (!QueryFullProcessImageNameW(process, 0, buf, &len)) return {};
 
     int utf8_len = WideCharToMultiByte(CP_UTF8, 0, buf, len, nullptr, 0, nullptr, nullptr);
     if (utf8_len <= 0) return {};
@@ -171,6 +173,12 @@ inline std::string query_process_image_path(DWORD pid) {
     std::string result(utf8_len, '\0');
     WideCharToMultiByte(CP_UTF8, 0, buf, len, result.data(), utf8_len, nullptr, nullptr);
     return result;
+}
+
+inline std::string query_process_image_path(DWORD pid) {
+    auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    if (!h) return {};
+    return query_process_image_path(h.get());
 }
 
 // ---------------------------------------------------------------------------

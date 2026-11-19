@@ -5,7 +5,7 @@ import {
 } from './process'
 
 const p = (pid: number, name: string, children: ProcessInfo[] = [], hijacked = false): ProcessInfo =>
-  ({ pid, parent_pid: 0, name, hijacked, children })
+  ({ pid, psn: pid, parent_pid: 0, name, hijacked, children })
 
 const tree = [
   p(1, 'explorer.exe', [
@@ -53,9 +53,9 @@ describe('process tree helpers', () => {
 
   it('caps the visual indent depth and keeps rails consistent', () => {
     // A single chain 100 -> 101 -> ... nested 10 levels deep, all expanded.
-    let chain: ProcessInfo = { pid: 110, parent_pid: 109, name: 'leaf.exe', hijacked: false, children: [] }
+    let chain: ProcessInfo = { pid: 110, psn: 110, parent_pid: 109, name: 'leaf.exe', hijacked: false, children: [] }
     for (let pid = 109; pid >= 100; pid--) {
-      chain = { pid, parent_pid: pid - 1, name: `p${pid}.exe`, hijacked: false, children: [chain] }
+      chain = { pid, psn: pid, parent_pid: pid - 1, name: `p${pid}.exe`, hijacked: false, children: [chain] }
     }
     const rows = flattenTree([chain], () => true)
     expect(rows).toHaveLength(11)

@@ -79,9 +79,9 @@ export const ICON_GC_MS = 10 * 60_000
  * process that becomes readable gets its icon. Entries unused for
  * ICON_GC_MS are removed and their object URLs revoked (createQueryClient).
  */
-export function processIconQuery(name: string, pid = 0) {
+export function processIconQuery(name: string, pid = 0, psn = 0) {
   return queryOptions({
-    queryKey: queryKeys.processIcon(name, pid),
+    queryKey: queryKeys.processIcon(name, pid, psn),
     queryFn: ({ signal }) => fetchProcessIcon(name, pid, signal).catch(() => null),
     staleTime: (q) => (q.state.data ? Infinity : ICON_NEGATIVE_STALE_MS),
     gcTime: ICON_GC_MS,
@@ -192,11 +192,15 @@ export const processTreeQuery = queryOptions({
   gcTime: Infinity,
 })
 
-export function processDetailQuery(pid: number | undefined) {
+/**
+ * cmdline / image_path of one process, keyed by (pid, psn) so a reused PID
+ * never shows the previous process's details.
+ */
+export function processDetailQuery(proc: { pid: number; psn: number } | null | undefined) {
   return queryOptions({
-    queryKey: queryKeys.processDetail(pid ?? -1),
-    queryFn: () => getProcessDetail(pid!),
-    enabled: pid != null,
+    queryKey: queryKeys.processDetail(proc?.pid ?? -1, proc?.psn ?? -1),
+    queryFn: () => getProcessDetail(proc!.pid, proc!.psn),
+    enabled: proc != null,
     // cmdline / image_path do not change while the process lives.
     staleTime: Infinity,
   })

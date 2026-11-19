@@ -32,6 +32,13 @@
   the HTTP worker threads that extract icons. Frontend: "no icon" goes
   stale after a minute, unused icons are dropped after 10 minutes and their
   object URLs revoked; icon responses are `no-store` (PIDs are reused).
+- Every process in the pushed tree (and `/api/processes/:pid`) carries
+  `psn`, its boot-unique sequence number. `GET /api/processes/:pid/detail`
+  takes `?psn=` and answers 404 when the PID now names another process; the
+  image path and command line are read from one handle whose PSN is checked
+  first, so a recycled PID never lends its new owner's details. The UI
+  selects and caches details by (pid, psn): when a PID is reused the old
+  selection, path and command line are dropped instead of carrying over.
 
 ## v0.14.2 (2026-11-18)
 

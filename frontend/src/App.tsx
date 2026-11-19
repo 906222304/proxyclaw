@@ -54,12 +54,25 @@ export default function App() {
   const connected = useSyncExternalStore(subscribeConnected, getConnected)
   const visible = useDocumentVisibility()
   const [tab, setTab] = useState<TabKey>('network')
-  const [selectedPid, setSelectedPid] = useState<number | undefined>(undefined)
+  // The selection is one process, (pid, psn): when the PID is reused the
+  // new process is not silently shown as the selected one.
+  const [selected, setSelected] = useState<{ pid: number; psn: number } | undefined>(undefined)
   const [ruleDialog, setRuleDialog] = useState<RuleDialogState>({ open: false, rule: null, name: '', dir: '' })
 
   const { data: stats } = useQuery(statsQuery)
   const tree = useProcessTree()
-  const { data: detail } = useQuery(processDetailQuery(selectedPid))
+  // A recycled PID (same pid, new psn) drops the selection; an exited one
+  // keeps it so its last connections stay filtered.
+  const selectedPid = useMemo(() => {
+    if (!selected) return undefined
+    const live = findInTree(tree, selected.pid)
+    return live && live.psn !== selected.psn ? undefined : selected.pid
+  }, [tree, selected])
+  const { data: detail } = useQuery(processDetailQuery(selectedPid == null ? undefined : selected))
+  const onSelectPid = (pid: number | undefined) => {
+    const node = pid == null ? null : findInTree(tree, pid)
+    setSelected(node ? { pid: node.pid, psn: node.psn } : undefined)
+  }
 
   // When the window becomes visible again, ask the backend to replay the
   // latest snapshot: mutations pushed while hidden were dropped host-side.
@@ -72,13 +85,13 @@ export default function App() {
   // Dynamic fields (hijacked, hijack_source, name) come from the pushed
   // tree; static fields (cmdline, image_path) from the one-shot detail query.
   const selectedProcess = useMemo<ProcessInfo | null>(() => {
-    if (selectedPid == null) return null
-    const live = findInTree(tree, selectedPid)
-    if (!live) return null
-    return detail && detail.pid === selectedPid
+    if (selected == null) return null
+    const live = findInTree(tree, selected.pid)
+    if (!live || live.psn !== selected.psn) return null
+    return detail && detail.pid === live.pid && detail.psn === live.psn
       ? { ...live, cmdline: detail.cmdline, image_path: detail.image_path }
       : live
-  }, [tree, selectedPid, detail])
+  }, [tree, selected, detail])
 
   const saveRule = useSaveRule()
   const deleteRules = useDeleteRules()
@@ -174,7 +187,7 @@ export default function App() {
         {/* aa-gray on each (transparent) panel: grayscale AA for all page text */}
         <Tabs.Content value="network" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <Split
-            left={<ProcessTree selectedPid={selectedPid} onSelect={setSelectedPid} />}
+            left={<ProcessTree selectedPid={selectedPid} onSelect={onSelectPid} />}
             right={
               <div className="mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4">
                 <NetworkActivities

@@ -33,6 +33,10 @@ inline nlohmann::json process_entry_to_json(const flat_tree& tree,
 
     nlohmann::json j;
     j["pid"]            = e.pid;
+    // Boot-unique process sequence number: (pid, psn) names one process even
+    // after Windows reuses the PID. A counter from boot, so far below 2^53
+    // and exact as a JSON / JS number.
+    j["psn"]            = e.psn;
     j["parent_pid"]     = e.parent_pid;
     j["name"]           = std::string(e.name_u8);
     j["hijacked"]       = e.is_proxied();

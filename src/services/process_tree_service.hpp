@@ -9,6 +9,7 @@
 // CRUD remain HTTP.
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -27,8 +28,13 @@ public:
 
     // /api/processes/:pid
     [[nodiscard]] nlohmann::json find_process(std::uint32_t pid) const;
-    // /api/processes/:pid/detail — adds cmdline + image_path (queried off-strand)
-    [[nodiscard]] nlohmann::json find_process_detail(std::uint32_t pid) const;
+    // /api/processes/:pid/detail[?psn=N] — adds cmdline + image_path
+    // (queried off-strand). With `psn`, answers 404 unless the tree's entry
+    // for `pid` is that process; either way the OS facts are read only from
+    // a handle whose PSN matches the tree entry, so a reused PID never lends
+    // the new process's path / command line to the old entry.
+    [[nodiscard]] nlohmann::json find_process_detail(std::uint32_t pid,
+                                                     std::optional<std::uint64_t> psn = {}) const;
 
     // /api/hijack
     [[nodiscard]] nlohmann::json list_hijacked() const;

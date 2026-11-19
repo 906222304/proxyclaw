@@ -74,8 +74,9 @@ export async function fetchProcessIcon(name: string, pid = 0, signal?: AbortSign
 // Note: bulk tree retrieval (formerly GET /api/processes) is delivered via
 // WebView2 PostMessage into the query cache (api/notify.ts, useProcessTree). /detail endpoints remain for cmdline + image_path fetches.
 
-export function getProcessDetail(pid: number): Promise<ProcessInfo> {
-  return request<ProcessInfo>(`/processes/${pid}/detail`)
+/** 404 when `pid` no longer names the process with this `psn`. */
+export function getProcessDetail(pid: number, psn: number): Promise<ProcessInfo> {
+  return request<ProcessInfo>(`/processes/${pid}/detail?psn=${psn}`)
 }
 
 // -- Hijack --

@@ -170,7 +170,7 @@ describe('processIconQuery', () => {
     expect(url).toContain('name=Chrome.exe')
     expect(url).toContain('pid=42')
     expect(url).not.toContain('path=')
-    expect(queryKeys.processIcon('Chrome.exe', 42)).toEqual(['processIcon', 'chrome.exe', 42])
+    expect(queryKeys.processIcon('Chrome.exe', 42, 7)).toEqual(['processIcon', 'chrome.exe', 42, 7])
   })
 
   it('treats "no icon" as stale after a minute and a found icon as fresh forever', () => {

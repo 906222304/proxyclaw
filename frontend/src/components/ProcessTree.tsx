@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronDown, ChevronRight, Monitor, Zap, ZapOff } from 'lucide-react'
-import { memo, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { hijackProcess, unhijackProcess } from '@/api/client'
 import { activityQuery, autoRulesQuery, isActive, useProcessTree } from '@/api/queries'
 import { ProcessIcon } from '@/components/ProcessIcon'
@@ -85,6 +85,64 @@ export function ProcessTree({ selectedPid, onSelect }: {
   })
   const items = virtualizer.getVirtualItems()
 
+  // Keyboard: the tree container keeps focus and points at the active row
+  // with aria-activedescendant (rows are virtualised and may unmount, so
+  // focus never moves into them). Only the active row's action button is
+  // tabbable, so Tab leaves the tree after at most one stop.
+  const [activePid, setActivePid] = useState<number | undefined>(undefined)
+  const [treeFocused, setTreeFocused] = useState(false)
+  const indexOfPid = (pid: number | undefined) =>
+    pid == null ? -1 : rows.findIndex(r => r.node.pid === pid)
+  let activeIndex = indexOfPid(activePid)
+  if (activeIndex < 0) activeIndex = indexOfPid(selectedPid)
+  if (activeIndex < 0 && rows.length > 0) activeIndex = 0
+  const activeRow = activeIndex >= 0 ? rows[activeIndex] : undefined
+
+  const moveTo = (index: number) => {
+    if (rows.length === 0) return
+    const i = Math.max(0, Math.min(rows.length - 1, index))
+    setActivePid(rows[i]!.node.pid)
+    virtualizer.scrollToIndex(i, { align: 'auto' })
+  }
+
+  // Follow a selection made elsewhere (the "全部进程" button, the detail pane).
+  useEffect(() => { if (selectedPid != null) setActivePid(selectedPid) }, [selectedPid])
+
+  const onTreeKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey) return
+    const row = activeRow
+    const page = Math.max(1, Math.floor((scrollRef.current?.clientHeight ?? ROW_HEIGHT) / ROW_HEIGHT) - 1)
+    switch (e.key) {
+      case 'ArrowDown': moveTo(activeIndex + 1); break
+      case 'ArrowUp': moveTo(activeIndex - 1); break
+      case 'PageDown': moveTo(activeIndex + page); break
+      case 'PageUp': moveTo(activeIndex - page); break
+      case 'Home': moveTo(0); break
+      case 'End': moveTo(rows.length - 1); break
+      case 'ArrowRight':
+        if (!row || !row.hasChildren) return
+        if (!row.expanded) toggle(row.node.pid)
+        else moveTo(activeIndex + 1)
+        break
+      case 'ArrowLeft': {
+        if (!row) return
+        if (row.hasChildren && row.expanded) { toggle(row.node.pid); break }
+        for (let i = activeIndex - 1; i >= 0; i--) {
+          if (rows[i]!.depth < row.depth) { moveTo(i); break }
+        }
+        break
+      }
+      case 'Enter':
+      case ' ':
+        if (!row) return
+        onSelect(row.node.pid)
+        break
+      default:
+        return
+    }
+    e.preventDefault()
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="space-y-1.5 px-3 pt-1 pb-2">
@@ -105,12 +163,29 @@ export function ProcessTree({ selectedPid, onSelect }: {
         <span data-testid="process-count" className="tabular ml-auto text-2xs text-muted-foreground">{total}</span>
       </button>
 
-      <div ref={scrollRef} className="thin-scrollbar min-h-0 flex-1 select-none overflow-y-auto overflow-x-hidden px-2 pb-3">
+      <div
+        ref={scrollRef}
+        role="tree"
+        aria-label="进程树"
+        tabIndex={0}
+        aria-activedescendant={activeRow ? treeItemId(activeRow.node.pid) : undefined}
+        onKeyDown={onTreeKeyDown}
+        onFocus={e => {
+          // Ring only for keyboard focus; a mouse click focuses the tree too.
+          if (e.target !== e.currentTarget) return
+          let keyboard = true
+          try { keyboard = e.currentTarget.matches(':focus-visible') } catch { /* old engines */ }
+          setTreeFocused(keyboard)
+        }}
+        onKeyUp={e => { if (e.target === e.currentTarget && !treeFocused) setTreeFocused(true) }}
+        onBlur={e => { if (e.target === e.currentTarget) setTreeFocused(false) }}
+        className="thin-scrollbar min-h-0 flex-1 select-none overflow-y-auto overflow-x-hidden px-2 pb-3 outline-none"
+      >
         {rows.length === 0 ? (
-          <div className="px-3 py-8 text-center text-2xs text-muted-foreground">没有找到进程</div>
+          <div role="none" className="px-3 py-8 text-center text-2xs text-muted-foreground">没有找到进程</div>
         ) : (
-          <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-            <div style={{ transform: `translateY(${items[0]?.start ?? 0}px)` }}>
+          <div role="none" className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+            <div role="none" style={{ transform: `translateY(${items[0]?.start ?? 0}px)` }}>
               {items.map(item => {
                 const row = rows[item.index]!
                 return (
@@ -118,11 +193,13 @@ export function ProcessTree({ selectedPid, onSelect }: {
                     key={item.key}
                     row={row}
                     selected={selectedPid === row.node.pid}
+                    current={activeRow?.node.pid === row.node.pid}
+                    focusRing={treeFocused && activeRow?.node.pid === row.node.pid}
                     active={activeSelf(row.node.pid)}
                     activeSubtree={activeSubtree}
                     matched={matched.has(row.node.pid)}
                     excluded={!row.node.hijacked && excluded.has(row.node.pid)}
-                    onSelect={onSelect}
+                    onSelect={pid => { setActivePid(pid); onSelect(pid) }}
                     onToggle={toggle}
                     onHack={hack.mutate}
                     onUnhack={unhack.mutate}
@@ -137,14 +214,18 @@ export function ProcessTree({ selectedPid, onSelect }: {
   )
 }
 
+const treeItemId = (pid: number) => `process-tree-item-${pid}`
+
 // Guide lines are drawn only for subtrees with network activity; idle
 // branches stay unlined so the tree reads as a plain list.
 const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/45' : 'bg-transparent')
 const dashClass = (on: boolean) => (on ? 'border-muted-foreground/50' : 'border-transparent')
 
-const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, excluded, onSelect, onToggle, onHack, onUnhack }: {
+const TreeRow = memo(function TreeRow({ row, selected, current, focusRing, active, activeSubtree, matched, excluded, onSelect, onToggle, onHack, onUnhack }: {
   row: FlatRow
   selected: boolean
+  current: boolean        // the keyboard's active row (aria-activedescendant)
+  focusRing: boolean      // current and the tree has focus
   active: boolean
   activeSubtree: Set<number>
   matched: boolean
@@ -174,7 +255,14 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         selected
           ? active ? 'bg-selected' : 'bg-hover'
           : 'hover:bg-field',
+        focusRing && 'ring-1 ring-primary ring-inset',
       )}
+      id={treeItemId(node.pid)}
+      role="treeitem"
+      aria-level={depth + 1}
+      aria-selected={selected}
+      aria-expanded={hasChildren ? expanded : undefined}
+      aria-label={`${node.name} ${node.pid}`}
       style={{ height: ROW_HEIGHT, paddingLeft: level * INDENT }}
       title={(node.cmdline || node.name) + (compressed ? `\n（第 ${depth} 层）` : '')}
       data-depth={depth}
@@ -212,6 +300,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
 
       <span
         className="flex w-3.5 shrink-0 items-center justify-center"
+        aria-hidden
         onClick={e => { e.stopPropagation(); if (hasChildren) onToggle(node.pid) }}
       >
         {hasChildren && (
@@ -244,6 +333,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
               <button
                 type="button"
                 aria-label="启用代理"
+                tabIndex={current ? 0 : -1}
                 onClick={e => { e.stopPropagation(); onHack(node.pid) }}
                 className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-field-hover hover:text-warning group-hover:opacity-100 focus-visible:opacity-100"
               >
@@ -256,6 +346,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
               <button
                 type="button"
                 aria-label="取消代理"
+                tabIndex={current ? 0 : -1}
                 onClick={e => { e.stopPropagation(); onUnhack(node.pid) }}
                 className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-success opacity-0 transition hover:bg-field-hover hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
               >

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
 import { setAutostart, testProxyGroupIpv6, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
-import { autostartQuery, configQuery, dnsStatusQuery } from '@/api/queries'
+import { autostartQuery, configQuery, dnsStatusQuery, statsQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,6 +62,16 @@ export function dnsPatch(enabled: boolean, mode: string, upstream: string) {
   }
 }
 
+const INTERCEPTION_LABEL: Record<string, string> = { windivert: 'WinDivert 驱动', hook: 'Hook 注入' }
+
+/** Status under the interception select: pending restart, or a failed start. */
+export function interceptionStatusText(saved: string, running?: { mode: string; active: boolean }): string {
+  if (!running) return ''
+  if (running.mode !== saved) return `重启 ProxyClaw 后生效（当前：${INTERCEPTION_LABEL[running.mode] ?? running.mode}）`
+  if (!running.active) return '启动失败，流量未被拦截，详见运行日志'
+  return ''
+}
+
 const stringify = (c: Config | undefined) => (c ? JSON.stringify(c, null, 2) : '')
 
 export function ConfigEditor() {
@@ -78,6 +88,9 @@ export function ConfigEditor() {
   const dnsEnabled = !!dns.enabled
   const dnsMode = (dns.mode as string) || 'forwarder'
   const logLevel = (config?.log_level as string | undefined) ?? 'info'
+  const interceptionMode = ((config?.interception as Obj | undefined)?.mode as string | undefined) === 'hook' ? 'hook' : 'windivert'
+  const { data: stats } = useQuery(statsQuery)
+  const interceptionText = interceptionStatusText(interceptionMode, stats?.interception)
   const ipv6Raw = (config?.ipv6 as Obj | undefined)?.mode as string | undefined
   const ipv6Mode = ipv6Raw === 'direct' || ipv6Raw === 'proxy' ? ipv6Raw : 'block'
 
@@ -201,6 +214,27 @@ export function ConfigEditor() {
         <section>
           <SectionTitle>网络</SectionTitle>
           <Card className="divide-y divide-divider">
+            <Row
+              title="拦截方式"
+              description="如何接管被代理进程的连接。重启后生效。"
+              hint="WinDivert 驱动：内核层拦截，覆盖 TCP 与 UDP，进程启动后的第一个连接也能接管。Hook 注入：不加载驱动，把 DLL 注入被代理的进程，在用户态改写 TCP 连接；子进程在启动前注入，已在运行的进程约 1 秒内注入，注入前的连接直连。Hook 模式下 UDP 直连，32 位进程、沙盒进程和只加载微软签名模块的进程不会被注入。"
+            >
+              <div className="flex items-center gap-3">
+                {interceptionText && (
+                  <span data-testid="interception-status" role="status" className="text-xs text-muted-foreground">{interceptionText}</span>
+                )}
+                <Select
+                  value={interceptionMode}
+                  ariaLabel="拦截方式"
+                  onValueChange={m => patch.mutate({ fn: c => { c.interception = { ...((c.interception as Obj | undefined) ?? {}), mode: m } }, ok: '拦截方式已保存，重启后生效', fail: '保存拦截方式失败' })}
+                  className="w-auto"
+                  options={[
+                    { value: 'windivert', label: 'WinDivert 驱动' },
+                    { value: 'hook', label: 'Hook 注入' },
+                  ]}
+                />
+              </div>
+            </Row>
             <Row
               title="DNS 代理"
               description="通过代理转发 DNS 查询。"

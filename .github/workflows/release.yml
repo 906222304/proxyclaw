@@ -79,6 +79,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/build/release-deps/prefix" `
             -DWEBVIEW2_PATH="$PWD/build/release-deps/webview2" `
             -DPROXYCLAW_WINDIVERT_DIR="$PWD/build/release-deps/WinDivert-2.2.2-A/x64" `
+            -DPROXYCLAW_DETOURS_DIR="$PWD/build/release-deps/Detours-1dbd4ea281d73d478aa8d09a8b83fbd265f715f7" `
             -DPROXYCLAW_ENABLE_WEBVIEW2=ON -DBUILD_TESTING=ON `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -118,6 +119,10 @@ jobs:
       - name: Live rule-policy test (WinDivert, elevated runner)
         run: |
           python tests/e2e_rule_policy.py --exe build/Release/proxyclaw.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Live hook-mode test (DLL injection, no driver)
+        run: |
+          python tests/e2e_hook_mode.py --exe build/Release/proxyclaw.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package complete portable application
         shell: pwsh

@@ -13,6 +13,14 @@ ProxyClaw is derived from Clew v0.10.0 by ymonster: <https://github.com/ymonster
 - Usage: `WinDivert.dll` + `WinDivert64.sys` are shipped in the release zip and loaded at runtime.
 - Original license text: [`WinDivert-2.2.2-A/LICENSE`](WinDivert-2.2.2-A/LICENSE)
 
+### Microsoft Detours
+
+- Source: <https://github.com/microsoft/Detours> (commit `1dbd4ea2`)
+- License: MIT, Copyright (c) Microsoft Corporation
+- Usage: compiled into `proxyclaw_hook64.dll`, the DLL that hook interception mode (`interception.mode = "hook"`) loads into proxied processes.
+
+The hook-mode design (inject a DLL, rewrite `connect` to a local relay registered over a named pipe, carry the DLL into child processes) follows ProxyLane by threatexpert (MIT, <https://github.com/threatexpert/proxyLane>). No ProxyLane code is included.
+
 ## Statically linked C++ libraries
 
 All linked at build time via vcpkg. Their licenses are permissive (MIT / BSL-1.0 / BSD) and compatible with MIT.

@@ -4,6 +4,20 @@
 
 ### Added
 
+- Hook interception mode (`interception.mode = "hook"`, Settings → Network →
+  拦截方式, applies after a restart). No WinDivert handle is opened:
+  `proxyclaw_hook64.dll` (Microsoft Detours) is injected into proxied
+  processes and rewrites their TCP `connect` / `WSAConnect` / `ConnectEx` to
+  a loopback relay after asking ProxyClaw over a named pipe, using the same
+  rules, process tree, CIDR/port filters and IPv6 mode as the driver path.
+  `getpeername` still reports the original destination. Running processes
+  are injected by a 1 s sweep (connections before that go direct); a child
+  of an injected process gets the DLL before its first instruction, so its
+  first connection is covered. Not covered in this mode: UDP (direct),
+  32-bit processes, AppContainer / low-integrity processes and those that
+  only load Microsoft-signed modules. `/api/stats` `interception` reports
+  the running mode and hook counters. Design after ProxyLane (MIT).
+
 - DNS proxy starts TCP-only when the proxy refuses UDP ASSOCIATE. Enabling
   `dns` used to fail outright; now the forwarder checks that a SOCKS5 CONNECT
   to the upstream succeeds (within the 3 s TCP timeout) and, if so, sends

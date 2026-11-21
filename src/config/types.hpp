@@ -453,6 +453,20 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Ipv6Config, mode)
 inline bool ipv6_blocks(const Ipv6Config& c) noexcept { return c.mode != "direct"; }
 inline bool ipv6_proxies(const Ipv6Config& c) noexcept { return c.mode == "proxy"; }
 
+// How proxied processes are intercepted. Startup only (restart to switch).
+//   mode  "windivert" (default): the WinDivert driver redirects packets.
+//         "hook": proxyclaw_hook64.dll is injected into proxied processes
+//         and redirects their TCP connects in user mode (no driver; see
+//         hook/hook_mode.hpp for what it does not cover). Any other value
+//         means windivert.
+struct InterceptionConfig {
+    std::string mode = "windivert";
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(InterceptionConfig, mode)
+
+inline bool uses_hook(const InterceptionConfig& c) noexcept { return c.mode == "hook"; }
+
 struct ConfigV2 {
     int version = 2;
     ProxyTarget default_proxy;
@@ -473,8 +487,9 @@ struct ConfigV2 {
     TcpSynParkingConfig tcp_syn_parking;        // SYN parking switch + tuning (startup only)
     UdpFirstPacketConfig udp_first_packet;      // UDP first-packet parking (startup only)
     Ipv6Config ipv6;                            // IPv6 block / proxy / direct (runtime)
+    InterceptionConfig interception;            // windivert / hook (startup only)
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, udp_first_packet, ipv6)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, udp_first_packet, ipv6, interception)
 
 } // namespace clew

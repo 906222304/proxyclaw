@@ -187,6 +187,12 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         if (wd_network_udp_) wd_network_udp_->release(port);
     });
 
+    hook_mode_requested_ = uses_hook(config_.get_v2().interception);
+    if (hook_mode_requested_) {
+        hook_ = std::make_unique<hook::mode>(ioc_, strand_, tree_mgr_, tcp_groups_, ipv6_egress_,
+                                             decision_log_.get(), ipv6_block_, ipv6_proxy_);
+    }
+
     icons_.init();
 
     tree_mgr_.add_listener(&projection_);
@@ -306,6 +312,10 @@ nlohmann::json app::traffic_stats() const {
     }
     // DNS proxy: off / starting / running / stopping / failed (+ reason).
     j["dns"] = dns_mgr_.status().to_json();
+    // The interception actually running; the config value applies on restart.
+    j["interception"] = {{"mode", hook_mode_requested_ ? "hook" : "windivert"},
+                         {"active", hook_mode_requested_ ? hook_mode_active_ : true}};
+    if (hook_) j["interception"]["hook"] = hook_->stats();
     j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", redirect_port_v6_ != 0},
                  {"flows", v6_flows_.size()}};
     // ipv6.mode = proxy: groups found unable to reach IPv6 (blocked, so
@@ -526,6 +536,14 @@ void app::start_traffic_layers() {
         PC_LOG_INFO("Initial auto-rule scan complete");
     });
 
+    if (hook_) {
+        // No driver in this mode: the DLL does the interception.
+        hook_mode_active_ = hook_->start(exe_relative(std::wstring_view{hook::kDllName}));
+        if (!hook_mode_active_)
+            PC_LOG_ERROR("Hook interception failed to start — traffic interception disabled");
+        return;
+    }
+
     if (wd_socket_->open()) {
         wd_socket_->start();
         PC_LOG_INFO("WinDivert SOCKET layer started");
@@ -621,6 +639,9 @@ void app::shutdown() noexcept {
     // DNS first — touches system-wide state visible to the user.
     dns_mgr_.stop();
     step("dns stopped");
+
+    if (hook_) hook_->stop();
+    step("hook mode stopped");
 
     // WinDivert teardown follows the documented order: WinDivertShutdown ->
     // join every thread that uses the handle -> WinDivertClose. Phase 1 stops

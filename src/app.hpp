@@ -39,6 +39,7 @@
 #include "core/windivert_socket.hpp"
 #include "domain/process_tree_manager.hpp"
 #include "domain/strand_bound.hpp"
+#include "hook/hook_mode.hpp"
 #include "projection/config_sse_bridge.hpp"
 #include "projection/process_projection.hpp"
 #include "proxy/acceptor.hpp"
@@ -166,6 +167,12 @@ private:
     std::unique_ptr<windivert_network_udp> wd_network_udp_;
     Socks5UdpManager                       socks5_udp_mgr_;
     std::unique_ptr<UdpRelay>              udp_relay_;
+
+    // interception.mode = "hook" (read once at startup): the WinDivert
+    // layers above are never opened; this injects and relays instead.
+    bool                                   hook_mode_requested_ = false;
+    bool                                   hook_mode_active_    = false;
+    std::unique_ptr<hook::mode>            hook_;
 
     icon_cache icons_;
 

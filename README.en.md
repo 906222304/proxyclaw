@@ -21,6 +21,7 @@
 - **Process trees**: once a rule matches, child processes follow, which suits multi-process apps like Chromium / Electron.
 - **Rules**: match by process name, path or command-line keywords, limited to TCP / UDP, CIDRs and ports; network activity shows the rule and reason behind every connection.
 - **Proxy groups and speed test**: multiple SOCKS5 back ends, staged speed test that shows which step failed.
+- **Two interception modes**: the WinDivert driver (default), or hook injection (no driver; a DLL is injected into proxied processes, TCP only for now). Settings → Network → Interception, applies after a restart.
 - **Optional DNS proxy**, **UDP forwarding**, tray mode, silent autostart, light and dark themes.
 
 ## Quick start

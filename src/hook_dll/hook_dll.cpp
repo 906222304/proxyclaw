@@ -58,7 +58,14 @@ wsaioctl_fn    real_wsaioctl    = nullptr;
 getpeername_fn real_getpeername = nullptr;
 closesocket_fn real_closesocket = nullptr;
 cpiw_fn        real_cpiw        = nullptr;
-LPFN_CONNECTEX volatile real_connectex = nullptr;   // learned from WSAIoctl
+// ConnectEx is not exported: its address comes from WSAIoctl. The function
+// body itself is detoured (not the pointer WSAIoctl hands out), so callers
+// that fetched the pointer before this DLL arrived -- asyncio's _overlapped,
+// .NET and Chromium all cache it at startup -- go through the hook too.
+// real_connectex is then the Detours trampoline.
+LPFN_CONNECTEX real_connectex = nullptr;
+SRWLOCK g_connectex_lock = SRWLOCK_INIT;
+bool g_connectex_hooked = false;   // under g_connectex_lock
 
 bool g_installed = false;
 char g_dll_ansi[MAX_PATH * 2] = {};   // for DetourUpdateProcessWithDll (LPCSTR only)
@@ -254,17 +261,37 @@ int WSAAPI hook_wsaconnect(SOCKET s, const sockaddr* name, int len, LPWSABUF cal
 
 BOOL PASCAL hook_connectex(SOCKET s, const sockaddr* name, int len, PVOID send, DWORD send_len,
                            LPDWORD sent, LPOVERLAPPED ov) {
-    const LPFN_CONNECTEX real = real_connectex;
-    if (!real) { WSASetLastError(WSAEOPNOTSUPP); return FALSE; }
     sockaddr_storage relay; int relay_len = 0;
     // ConnectEx requires a bound socket; never bind on the caller's behalf.
     switch (prepare(s, name, len, false, relay, relay_len)) {
     case route::block:    return FALSE;
     case route::redirect:
-        return real(s, reinterpret_cast<sockaddr*>(&relay), relay_len, send, send_len, sent, ov);
+        return real_connectex(s, reinterpret_cast<sockaddr*>(&relay), relay_len, send, send_len, sent, ov);
     default:
-        return real(s, name, len, send, send_len, sent, ov);
+        return real_connectex(s, name, len, send, send_len, sent, ov);
     }
+}
+
+// Detour the ConnectEx body once. Only the first provider's function is
+// hooked (the Microsoft TCP/IP one in practice, shared by IPv4 and IPv6).
+void hook_connectex_body(LPFN_CONNECTEX provided) {
+    if (!provided || provided == &hook_connectex) return;
+    AcquireSRWLockExclusive(&g_connectex_lock);
+    if (!g_connectex_hooked) {
+        // Attach through real_connectex itself: Detours points it at the
+        // trampoline before it writes the jump into the body, so a thread
+        // entering hook_connectex never sees it unset.
+        real_connectex = provided;
+        if (DetourTransactionBegin() == NO_ERROR) {
+            DetourUpdateThread(GetCurrentThread());
+            if (DetourAttach(reinterpret_cast<PVOID*>(&real_connectex),
+                             reinterpret_cast<PVOID>(&hook_connectex)) == NO_ERROR)
+                g_connectex_hooked = DetourTransactionCommit() == NO_ERROR;
+            else
+                DetourTransactionAbort();
+        }
+    }
+    ReleaseSRWLockExclusive(&g_connectex_lock);
 }
 
 int WSAAPI hook_wsaioctl(SOCKET s, DWORD code, LPVOID in, DWORD in_len, LPVOID out, DWORD out_len,
@@ -273,20 +300,33 @@ int WSAAPI hook_wsaioctl(SOCKET s, DWORD code, LPVOID in, DWORD in_len, LPVOID o
     if (r == 0 && code == SIO_GET_EXTENSION_FUNCTION_POINTER && in && in_len >= sizeof(GUID) &&
         out && out_len >= sizeof(LPFN_CONNECTEX)) {
         static const GUID connectex = WSAID_CONNECTEX;
-        if (std::memcmp(in, &connectex, sizeof(GUID)) == 0) {
-            auto* slot = static_cast<LPFN_CONNECTEX*>(out);
-            const LPFN_CONNECTEX provided = *slot;
-            if (provided && provided != &hook_connectex) {
-                // One provider (the Microsoft TCP/IP one) in practice. A
-                // second, different provider keeps its own function.
-                const auto prev = reinterpret_cast<LPFN_CONNECTEX>(InterlockedCompareExchangePointer(
-                    reinterpret_cast<PVOID volatile*>(&real_connectex),
-                    reinterpret_cast<PVOID>(provided), nullptr));
-                if (!prev || prev == provided) *slot = &hook_connectex;
-            }
-        }
+        if (std::memcmp(in, &connectex, sizeof(GUID)) == 0)
+            hook_connectex_body(*static_cast<LPFN_CONNECTEX*>(out));
     }
     return r;
+}
+
+// Injected into a running process: it may already hold a ConnectEx pointer.
+// The Microsoft provider lives in mswsock.dll, so with mswsock not loaded no
+// one can have one yet and the WSAIoctl hook covers the first fetch. Runs on
+// its own thread: Winsock calls are not allowed under the loader lock.
+DWORD WINAPI prehook_connectex(LPVOID) {
+    if (!GetModuleHandleW(L"mswsock.dll")) return 0;
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 0;
+    for (const int af : {AF_INET, AF_INET6}) {
+        const SOCKET s = WSASocketW(af, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+        if (s == INVALID_SOCKET) continue;
+        GUID guid = WSAID_CONNECTEX;
+        LPFN_CONNECTEX fn = nullptr;
+        DWORD bytes = 0;
+        if (real_wsaioctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid), &fn, sizeof(fn),
+                          &bytes, nullptr, nullptr) == 0)
+            hook_connectex_body(fn);
+        real_closesocket(s);
+    }
+    WSACleanup();
+    return 0;
 }
 
 int WSAAPI hook_getpeername(SOCKET s, sockaddr* name, int* len) {
@@ -392,6 +432,10 @@ void install(HMODULE self) {
     if (real_cpiw)
         DetourAttach(reinterpret_cast<PVOID*>(&real_cpiw), reinterpret_cast<PVOID>(&hook_cpiw));
     g_installed = DetourTransactionCommit() == NO_ERROR;
+    if (g_installed) {
+        if (const HANDLE t = CreateThread(nullptr, 0, &prehook_connectex, nullptr, 0, nullptr))
+            CloseHandle(t);
+    }
 }
 
 } // namespace

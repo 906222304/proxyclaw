@@ -42,7 +42,7 @@
   - 只允许加载微软签名模块的进程
 - `src/hook/hook_flow_table.hpp` + `hook_acceptor.hpp`：本地中继（IPv4 和 IPv6 各一个），通过 `relay_through_proxy` 走 SOCKS5。
 - `src/hook_dll/`：产出 `proxyclaw_hook64.dll`。
-  - 用 Detours hook 这些调用：`connect`、`WSAConnect`、`WSAIoctl`（ConnectEx）、`getpeername`、`closesocket`、`CreateProcessInternalW`。
+  - 用 Detours hook 这些调用：`connect`、`WSAConnect`、ConnectEx 函数体（经 `WSAIoctl` 找到后原地 detour，注入前已缓存的指针也会生效）、`getpeername`、`closesocket`、`CreateProcessInternalW`。
   - ProxyClaw 不在、超时或出错时，连接一律直连（fail-open）。
 - Detours 固定在提交 `1dbd4ea2`（MIT），由 `scripts/prepare_release_deps.py` 下载并校验 SHA256。CMake 通过 `PROXYCLAW_DETOURS_DIR` 指定路径，只在 x64 MSVC 下构建。
 

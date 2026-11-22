@@ -35,6 +35,9 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from e2e_rule_policy import SYSTEM_CURL, Socks5Server, api_get  # noqa: E402
 
+# `import asyncio` loads _overlapped, which fetches the ConnectEx pointer at
+# import -- before the injection the probe then waits for. The ConnectEx step
+# therefore checks that a pointer cached before the DLL arrived is hooked.
 PROBE = r"""
 import asyncio, ctypes, json, socket, subprocess, sys, time
 

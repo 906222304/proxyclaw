@@ -26,6 +26,10 @@ SOURCES = [
 ]
 WINDIVERT_URL = 'https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip'
 WINDIVERT_SHA256 = '63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15'
+# Microsoft Detours (MIT), source only: the hook-mode DLL compiles it in.
+DETOURS_COMMIT = '1dbd4ea281d73d478aa8d09a8b83fbd265f715f7'
+DETOURS_URL = f'https://codeload.github.com/microsoft/Detours/tar.gz/{DETOURS_COMMIT}'
+DETOURS_SHA256 = '38d435d2750b4e3af57f56c77af52bc058123c5e7dd734945b7680ec52e5c91c'
 WEBVIEW_SHA256 = 'ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74'
 
 
@@ -93,6 +97,13 @@ def main():
         print(f'Prepared {name} {version}', flush=True)
     windivert = acquire(cache, 'WinDivert-2.2.2-A.zip', WINDIVERT_URL, WINDIVERT_SHA256)
     extract_zip(windivert, destination)
+    detours = acquire(cache, 'detours.tar.gz', DETOURS_URL, DETOURS_SHA256)
+    with tarfile.open(detours) as bundle:
+        bundle.extractall(destination, filter='data')
+    detours_dir = destination / f'Detours-{DETOURS_COMMIT}'
+    if not (detours_dir / 'src/detours.h').is_file():
+        raise RuntimeError(f'Missing Detours source: {detours_dir}')
+    print('Prepared Detours', DETOURS_COMMIT[:12], flush=True)
     webview = ROOT / 'src/ui/third_party/webview2.nupkg'
     verify(webview, WEBVIEW_SHA256)
     extract_zip(webview, destination / 'webview2')
@@ -101,7 +112,8 @@ def main():
             raise RuntimeError(f'Missing WinDivert runtime/import library: {name}')
     print(json.dumps({'prefix': str(destination / 'prefix'),
                       'webview2': str(destination / 'webview2'),
-                      'windivert': str(destination / 'WinDivert-2.2.2-A/x64')}))
+                      'windivert': str(destination / 'WinDivert-2.2.2-A/x64'),
+                      'detours': str(detours_dir)}))
 
 
 if __name__ == '__main__':

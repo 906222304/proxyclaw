@@ -47,7 +47,7 @@ def main():
     parser.add_argument('--version', default='local')
     args = parser.parse_args()
     references = validate_frontend(args.frontend_dist)
-    required = ['proxyclaw.exe', 'WinDivert.dll', 'WinDivert64.sys']
+    required = ['proxyclaw.exe', 'WinDivert.dll', 'WinDivert64.sys', 'proxyclaw_hook64.dll']
     for name in required:
         if not (args.build_dir / name).is_file():
             parser.error(f'Missing runtime file: {args.build_dir / name}')

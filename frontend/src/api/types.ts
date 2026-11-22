@@ -176,4 +176,6 @@ export interface Stats {
   hijacked_pids: number
   auto_rules_count: number
   dns?: DnsStatus
+  /** Interception actually running (config changes apply after a restart). */
+  interception?: { mode: 'windivert' | 'hook'; active: boolean }
 }

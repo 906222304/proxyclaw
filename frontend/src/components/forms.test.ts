@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AutoRule, ProxyGroup } from '@/api/types'
-import { dnsPatch, dnsStatusText, patchConfig } from './ConfigEditor'
+import { dnsPatch, dnsStatusText, interceptionStatusText, patchConfig } from './ConfigEditor'
 import { filterLog } from './LogViewer'
 import { failedLabel, groupFormSchema, groupFormToPayload, normalizeProxyHost, testTooltip } from './ProxiesTab'
 import { formToPayload, ruleToForm } from './RuleEditorDialog'
@@ -114,5 +114,15 @@ describe('DNS status line', () => {
     expect(dnsStatusText({ state: 'running', tcp_only: true })).toContain('仅经 TCP')
     expect(dnsStatusText({ state: 'failed', error: 'proxy_unreachable' })).toContain('代理不可用')
     expect(dnsStatusText({ state: 'failed', error: 'something_new' })).toBe('启动失败：something_new')
+  })
+})
+
+describe('interception status line', () => {
+  it('says when a saved mode waits for a restart, and when the running one failed', () => {
+    expect(interceptionStatusText('hook', undefined)).toBe('')
+    expect(interceptionStatusText('windivert', { mode: 'windivert', active: true })).toBe('')
+    expect(interceptionStatusText('hook', { mode: 'windivert', active: true })).toBe('重启 ProxyClaw 后生效（当前：WinDivert 驱动）')
+    expect(interceptionStatusText('windivert', { mode: 'hook', active: true })).toContain('Hook 注入')
+    expect(interceptionStatusText('hook', { mode: 'hook', active: false })).toContain('启动失败')
   })
 })

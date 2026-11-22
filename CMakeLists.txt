@@ -126,6 +126,7 @@ set(PROXYCLAW_SOURCES
     src/transport/handlers/rule_handlers.cpp
     src/transport/handlers/shell_handlers.cpp
     src/transport/handlers/stats_handlers.cpp
+    src/hook/hook_mode.cpp
 )
 
 # Embed the ProxyClaw icon via a Win32 resource file.
@@ -228,6 +229,36 @@ add_custom_command(TARGET proxyclaw POST_BUILD
     "$<TARGET_FILE_DIR:proxyclaw>"
 )
 
+# ============================================================
+# Hook-mode DLL (interception.mode = "hook"): Microsoft Detours, built from
+# the pinned source scripts/prepare_release_deps.py restores. Without it the
+# DLL is not built and hook mode reports itself unavailable at startup.
+# ============================================================
+set(PROXYCLAW_DETOURS_DIR "" CACHE PATH "Microsoft Detours source tree (contains src/detours.h)")
+if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND EXISTS "${PROXYCLAW_DETOURS_DIR}/src/detours.h")
+    set(DETOURS_SRC "${PROXYCLAW_DETOURS_DIR}/src")
+    add_library(detours STATIC
+        ${DETOURS_SRC}/detours.cpp ${DETOURS_SRC}/modules.cpp ${DETOURS_SRC}/disasm.cpp
+        ${DETOURS_SRC}/image.cpp ${DETOURS_SRC}/creatwth.cpp ${DETOURS_SRC}/disolx86.cpp
+        ${DETOURS_SRC}/disolx64.cpp ${DETOURS_SRC}/disolia64.cpp ${DETOURS_SRC}/disolarm.cpp
+        ${DETOURS_SRC}/disolarm64.cpp)
+    target_include_directories(detours PUBLIC ${DETOURS_SRC})
+    target_compile_definitions(detours PRIVATE DETOUR_DEBUG=0)
+    # Upstream builds at /W4 /WX; it is third-party code here.
+    target_compile_options(detours PRIVATE /W3 /wd4091)
+
+    add_library(proxyclaw_hook64 SHARED src/hook_dll/hook_dll.cpp src/hook_dll/hook_dll.def)
+    target_include_directories(proxyclaw_hook64 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(proxyclaw_hook64 PRIVATE detours ws2_32)
+    target_compile_options(proxyclaw_hook64 PRIVATE /W4 /EHsc)
+    # Same output directory as proxyclaw.exe (both are top-level targets),
+    # where the host looks for it and package_local.py picks up *.dll.
+    add_dependencies(proxyclaw proxyclaw_hook64)
+    message(STATUS "Hook-mode DLL enabled (Detours at ${PROXYCLAW_DETOURS_DIR})")
+else()
+    message(STATUS "Hook-mode DLL not built: set PROXYCLAW_DETOURS_DIR to a Detours source tree")
+endif()
+
 # A GUI executable alone cannot serve the embedded browser. Allow a pinned
 # prebuilt frontend for offline builds, and keep the build directory runnable.
 set(PROXYCLAW_FRONTEND_DIST "${CMAKE_SOURCE_DIR}/frontend/dist" CACHE PATH
@@ -285,6 +316,9 @@ if(BUILD_TESTING AND WIN32)
         LIBS ws2_32)
     proxyclaw_unit_test(udp_first_packet_tests
         SOURCES tests/test_udp_first_packet.cpp)
+    # Hook mode: flow table + pipe wire format.
+    proxyclaw_unit_test(hook_flow_table_tests
+        SOURCES tests/test_hook_flow_table.cpp)
     # v0.14 #8: icon cache bookkeeping (LRU cap, negative entries + backoff).
     proxyclaw_unit_test(icon_store_tests
         SOURCES tests/test_icon_store.cpp)

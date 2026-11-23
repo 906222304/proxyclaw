@@ -246,6 +246,22 @@ export function rowId(c: NetworkConnection): string {
   return `${c.protocol}-${c.pid}-${c.local_ip}-${c.local_port}-${c.remote_ip}-${c.remote_port}`
 }
 
+/**
+ * React keys for the rows, in order. Several sockets can share one rowId
+ * (mDNS: a process binds 0.0.0.0:5353 more than once with SO_REUSEADDR), and
+ * duplicate keys make React leave stale rows in the virtual list, drawn on
+ * top of each other. Repeats get `#2`, `#3`, ... in order of appearance.
+ */
+export function rowKeys(rows: readonly NetworkConnection[]): string[] {
+  const seen = new Map<string, number>()
+  return rows.map(r => {
+    const id = rowId(r)
+    const n = (seen.get(id) ?? 0) + 1
+    seen.set(id, n)
+    return n === 1 ? id : `${id}#${n}`
+  })
+}
+
 export function stateTone(state: string): 'ok' | 'bound' | 'wait' | 'idle' {
   if (state === 'ESTABLISHED') return 'ok'
   if (state === 'BOUND') return 'bound'

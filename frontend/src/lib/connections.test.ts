@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { toNetworkConnections } from '@/api/client'
 import type { NetworkConnection } from '@/api/types'
-import { columnsFor, filterRows, hitInfo, hitTooltip, nextSort, rowId, sortRows, withHits } from './connections'
+import { columnsFor, filterRows, hitInfo, hitTooltip, nextSort, rowId, rowKeys, sortRows, withHits } from './connections'
 
 function conn(p: Partial<NetworkConnection>): NetworkConnection {
   return {
@@ -64,6 +64,12 @@ describe('quick filter', () => {
 describe('row identity and columns', () => {
   it('keeps dual-stack sockets apart', () => {
     expect(rowId(conn({ local_ip: '0.0.0.0' }))).not.toBe(rowId(conn({ local_ip: '::' })))
+  })
+  it('gives sockets sharing one address unique keys', () => {
+    const a = conn({ protocol: 'UDP', local_ip: '0.0.0.0', local_port: 5353 })
+    const keys = rowKeys([a, conn({ local_ip: '::' }), a, a])
+    expect(new Set(keys).size).toBe(4)
+    expect(keys[0]).toBe(rowId(a))
   })
   it('shows the process column only in the all-processes view', () => {
     expect(columnsFor(true).map(c => c.key)[0]).toBe('process_name')

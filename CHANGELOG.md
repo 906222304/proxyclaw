@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Connection list no longer draws rows on top of each other. Sockets that share
+  one address (a process binding 0.0.0.0:5353 several times for mDNS) had the
+  same React key, so the virtual list left stale rows behind; repeats now get
+  their own key.
+
 ## v0.15.0 (2026-11-22)
 
 ### Added

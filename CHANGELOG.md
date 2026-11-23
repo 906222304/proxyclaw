@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.15.1 (2026-11-23)
+
+### Fixed
+
+- Connection list no longer draws rows on top of each other. Sockets that share
+  one address (a process binding 0.0.0.0:5353 several times for mDNS) had the
+  same React key, so the virtual list left stale rows behind; repeats now get
+  their own key.
+
+### Changed
+
+- The rule editor drops the always-on, disabled 代理整个进程树 switch; rules
+  have covered child processes since v0.9.0.
+
+## v0.15.0 (2026-11-22)
 
 ### Added
 

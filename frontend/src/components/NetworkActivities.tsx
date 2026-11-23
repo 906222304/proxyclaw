@@ -10,7 +10,7 @@ import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
   CONNECTION_STATES, PROXY_STATES,
-  columnsFor, filterRows, hitTooltip, nextSort, remoteOf, rowId, sortRows, stateTone, withHits,
+  columnsFor, filterRows, hitTooltip, nextSort, remoteOf, rowKeys, sortRows, stateTone, withHits,
   type ColumnDef, type ColumnKey, type NetworkConnection, type SortState,
 } from '@/lib/connections'
 import { cn } from '@/lib/utils'
@@ -42,6 +42,7 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
 
   const columns = useMemo(() => columnsFor(selectedPid == null), [selectedPid])
   const view = useMemo(() => sortRows(filterRows(rows, filterText), sort), [rows, filterText, sort])
+  const keys = useMemo(() => rowKeys(view), [view])
   const template = columns.map(c => c.width).join(' ')
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -50,7 +51,7 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 16,
-    getItemKey: i => rowId(view[i]!),
+    getItemKey: i => keys[i] ?? i,
   })
 
   const processName = rows[0]?.process_name ?? '此进程'

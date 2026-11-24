@@ -39,7 +39,7 @@ from e2e_rule_policy import SYSTEM_CURL, Socks5Server, api_get  # noqa: E402
 # import -- before the injection the probe then waits for. The ConnectEx step
 # therefore checks that a pointer cached before the DLL arrived is hooked.
 PROBE = r"""
-import asyncio, ctypes, json, socket, subprocess, sys, time
+import asyncio, ctypes, json, os, socket, subprocess, sys, time, urllib.request
 
 k32 = ctypes.windll.kernel32
 k32.GetModuleHandleW.restype = ctypes.c_void_p
@@ -48,9 +48,34 @@ while time.time() < deadline and not k32.GetModuleHandleW("proxyclaw_hook64.dll"
     time.sleep(0.2)
 out = {"injected": bool(k32.GetModuleHandleW("proxyclaw_hook64.dll"))}
 
-def http(host, port=80):
+def query_api_tcp(local_port, token):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(
+        f"http://127.0.0.1:18080/api/tcp?pid={os.getpid()}",
+        headers={"X-ProxyClaw-Token": token},
+    )
+    with opener.open(req, timeout=5) as resp:
+        rows = json.loads(resp.read())
+    for r in rows:
+        if r.get("local_port") == local_port:
+            return {
+                "remote_ip": r.get("remote_ip"),
+                "remote_port": r.get("remote_port"),
+                "proxy_status": r.get("proxy_status"),
+                "route_reason": r.get("route_reason"),
+                "decision_source": r.get("decision_source"),
+                "rule_id": (r.get("decision") or {}).get("rule_id"),
+            }
+    return None
+
+def http(host, port=80, check_api=False):
     s = socket.create_connection((host, port), timeout=10)
     peer = list(s.getpeername()[:2])
+    if check_api and len(sys.argv) > 2:
+        try:
+            out["api_tcp"] = query_api_tcp(s.getsockname()[1], sys.argv[2])
+        except Exception as e:
+            out["api_tcp"] = {"error": repr(e)}
     s.sendall(b"GET / HTTP/1.0\r\nHost: " + host.encode() + b"\r\n\r\n")
     data = s.recv(16)
     s.close()
@@ -62,7 +87,7 @@ def step(name, fn):
     except Exception as e:
         out[name] = "error: " + repr(e)
 
-step("blocking", lambda: http("1.1.1.1"))
+step("blocking", lambda: http("1.1.1.1", 80, check_api=True))
 
 async def via_proactor():
     r, w = await asyncio.wait_for(asyncio.open_connection("1.0.0.1", 80), 10)
@@ -81,6 +106,24 @@ def excluded():
     return True
 
 step("excluded", excluded)
+
+def bound_nic():
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        u.connect(("1.1.1.1", 80))
+        nic_ip = u.getsockname()[0]
+    finally:
+        u.close()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(10)
+    try:
+        s.bind((nic_ip, 0))
+        s.connect(("1.0.0.1", 443))
+        return [nic_ip, True]
+    finally:
+        s.close()
+
+step("bound_nic", bound_nic)
 
 def child():
     r = subprocess.run([sys.argv[1], "-s", "-k", "-o", "NUL", "-w", "%{http_code}", "--noproxy", "*",
@@ -177,11 +220,17 @@ def main() -> int:
             time.sleep(0.5)
         time.sleep(1)
 
-        inter = api_get("/stats", token).get("interception", {})
+        stats0 = api_get("/stats", token)
+        inter = stats0.get("interception", {})
         check("stats.interception", inter.get("mode") == "hook" and inter.get("active") is True, inter)
+        hook0 = inter.get("hook", {})
+        ipv60 = stats0.get("ipv6", {})
+        check("stats.ipv6.proxy_available matches hook relay_port_v6",
+              ipv60.get("proxy_available") is (hook0.get("relay_port_v6", 0) != 0),
+              {"ipv6": ipv60, "relay_port_v6": hook0.get("relay_port_v6")})
 
         socks.take()
-        res = subprocess.run([str(app), str(script), str(child)], capture_output=True, text=True,
+        res = subprocess.run([str(app), str(script), str(child), token], capture_output=True, text=True,
                              timeout=120)
         time.sleep(0.5)
         seen = set(socks.take())
@@ -194,11 +243,24 @@ def main() -> int:
         check("connect proxied, getpeername original",
               out.get("blocking") == [["1.1.1.1", 80], True] and ("1.1.1.1", 80) in seen,
               out.get("blocking"))
+        api_row = out.get("api_tcp") or {}
+        check("/api/tcp shows original destination and PROXIED",
+              api_row.get("remote_ip") == "1.1.1.1" and api_row.get("remote_port") == 80
+              and api_row.get("proxy_status") == "PROXIED"
+              and api_row.get("decision_source") == "recorded"
+              and api_row.get("rule_id") == RULE["id"],
+              api_row)
         check("ConnectEx proxied, peername original",
               out.get("connectex") == [["1.0.0.1", 80], True] and ("1.0.0.1", 80) in seen,
               out.get("connectex"))
         check("excluded port direct",
               out.get("excluded") is True and ("1.1.1.1", 853) not in seen, out.get("excluded"))
+        bound_out = out.get("bound_nic")
+        check("non-loopback bound socket connects direct",
+              isinstance(bound_out, list) and len(bound_out) == 2 and bound_out[1] is True
+              and not str(bound_out[0]).startswith("127.")
+              and ("1.0.0.1", 443) not in seen,
+              bound_out)
         child_out = out.get("child")
         check("child injected before its first connect",
               isinstance(child_out, list) and child_out[0] == 0 and ("1.1.1.1", 443) in seen,

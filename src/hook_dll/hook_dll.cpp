@@ -159,9 +159,29 @@ bool is_stream_socket(SOCKET s) {
     return ok && type == SOCK_STREAM;
 }
 
+// Connecting a socket bound to a specific non-loopback NIC IP to 127.0.0.1 /
+// ::1 fails on Windows (WSAEADDRNOTAVAIL / WSAEINVAL). Only wildcard or
+// loopback-bound sockets can be redirected to the local relay.
+bool bound_can_reach_loopback(const sockaddr_storage& ss, bool dst_v6) {
+    if (ss.ss_family == AF_INET) {
+        const uint32_t ip = ntohl(reinterpret_cast<const sockaddr_in*>(&ss)->sin_addr.s_addr);
+        return ip == INADDR_ANY || (ip >> 24) == 127;
+    }
+    if (ss.ss_family == AF_INET6) {
+        const auto& a = reinterpret_cast<const sockaddr_in6*>(&ss)->sin6_addr;
+        if (IN6_IS_ADDR_UNSPECIFIED(&a)) return true;
+        if (dst_v6) return IN6_IS_ADDR_LOOPBACK(&a);
+        return IN6_IS_ADDR_V4MAPPED(&a) &&
+               (a.s6_addr[12] == 127 ||
+                (a.s6_addr[12] | a.s6_addr[13] | a.s6_addr[14] | a.s6_addr[15]) == 0);
+    }
+    return false;
+}
+
 // The socket's local port, binding it to the wildcard address first when the
-// application has not bound it (connect would do that implicitly). 0 on error.
-uint16_t local_port(SOCKET s, int family, bool may_bind) {
+// application has not bound it (connect would do that implicitly). 0 on error
+// or when the socket is pinned to a non-loopback interface address.
+uint16_t local_port(SOCKET s, int family, bool dst_v6, bool may_bind) {
     sockaddr_storage ss{};
     int len = sizeof(ss);
     const int saved = WSAGetLastError();
@@ -175,6 +195,7 @@ uint16_t local_port(SOCKET s, int family, bool may_bind) {
         if (getsockname(s, reinterpret_cast<sockaddr*>(&ss), &len) != 0) { WSASetLastError(saved); return 0; }
     }
     WSASetLastError(saved);
+    if (!bound_can_reach_loopback(ss, dst_v6)) return 0;
     if (ss.ss_family == AF_INET)  return ntohs(reinterpret_cast<sockaddr_in*>(&ss)->sin_port);
     if (ss.ss_family == AF_INET6) return ntohs(reinterpret_cast<sockaddr_in6*>(&ss)->sin6_port);
     return 0;
@@ -190,7 +211,7 @@ route prepare(SOCKET s, const sockaddr* name, int len, bool may_bind,
     target t;
     if (!parse_destination(name, len, t) || is_local_destination(t)) return route::pass;
     if (!is_stream_socket(s)) return route::pass;
-    const uint16_t src = local_port(s, name->sa_family, may_bind);
+    const uint16_t src = local_port(s, name->sa_family, t.v6, may_bind);
     if (src == 0) return route::pass;
 
     request req{};
@@ -360,7 +381,10 @@ void carry_into_child(const PROCESS_INFORMATION& pi) {
     reply rep{};
     if (!ask_host(req, rep) || static_cast<verdict>(rep.verdict) != verdict::proxy) return;
     LPCSTR dlls[1] = {g_dll_ansi};
-    DetourUpdateProcessWithDll(pi.hProcess, dlls, 1);
+    if (!DetourUpdateProcessWithDll(pi.hProcess, dlls, 1)) {
+        req.type = static_cast<uint32_t>(msg_type::child_failed);
+        ask_host(req, rep);
+    }
 }
 
 BOOL WINAPI hook_cpiw(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa,

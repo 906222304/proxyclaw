@@ -106,6 +106,11 @@ private:
         if (!ipv6_block_.load()) return "direct";
         return ipv6_proxy_.load() ? "proxy" : "block";
     }
+    bool                                           ipv6_proxy_available() const noexcept {
+        return hook_mode_requested_
+            ? (hook_ && hook_->relay_port_v6() != 0)
+            : (redirect_port_v6_ != 0);
+    }
     void                                           save_window_geometry(int x, int y, int w, int h) noexcept;
     [[nodiscard]] static std::pair<std::string, uint16_t> pick_proxy_endpoint(const ConfigV2& cfg);
     [[nodiscard]] std::unique_ptr<webview_app>     create_gui();
@@ -169,9 +174,9 @@ private:
     std::unique_ptr<UdpRelay>              udp_relay_;
 
     // interception.mode = "hook" (read once at startup): the WinDivert
-    // layers above are never opened; this injects and relays instead.
+    // layers above are never constructed or opened; this injects and relays instead.
     bool                                   hook_mode_requested_ = false;
-    bool                                   hook_mode_active_    = false;
+    std::atomic<bool>                      interception_active_{false};
     std::unique_ptr<hook::mode>            hook_;
 
     icon_cache icons_;

@@ -64,9 +64,13 @@ bool mode::start(const std::filesystem::path& dll) {
     dll_path_ = dll.wstring();
     enable_debug_privilege();
 
-    port_v4_ = acceptor_v4_.start();
-    port_v6_ = acceptor_v6_.start();
-    if (port_v4_ == 0) {
+    const uint16_t p4 = acceptor_v4_.start();
+    const uint16_t p6 = acceptor_v6_.start();
+    port_v4_.store(p4, std::memory_order_relaxed);
+    port_v6_.store(p6, std::memory_order_relaxed);
+    if (p4 == 0) {
+        acceptor_v6_.stop();
+        port_v6_.store(0, std::memory_order_relaxed);
         PC_LOG_ERROR("[HOOK] relay listener failed: hook mode disabled");
         return false;
     }
@@ -76,6 +80,8 @@ bool mode::start(const std::filesystem::path& dll) {
     if (!pipe_->start()) {
         acceptor_v4_.stop();
         acceptor_v6_.stop();
+        port_v4_.store(0, std::memory_order_relaxed);
+        port_v6_.store(0, std::memory_order_relaxed);
         pipe_.reset();
         return false;
     }
@@ -84,7 +90,7 @@ bool mode::start(const std::filesystem::path& dll) {
     injector_ = std::jthread([this](std::stop_token st) { injector_loop(st); });
     asio::post(strand_, [this] { schedule_sweep(); });
     PC_LOG_INFO("[HOOK] interception mode: hook (relay {} / {}, dll {})",
-                port_v4_, port_v6_, dll.string());
+                p4, p6, dll.string());
     return true;
 }
 
@@ -115,9 +121,10 @@ reply mode::on_request(const request& req, DWORD client_pid) {
     asio::post(strand_, [this, req, client_pid, done] {
         try {
             const auto type = static_cast<msg_type>(req.type);
-            if (type == msg_type::connect)    done->set_value(decide_connect(req, client_pid));
-            else if (type == msg_type::child) done->set_value(decide_child(client_pid, req.child_pid));
-            else                              done->set_value(make_reply(verdict::direct));
+            if (type == msg_type::connect)           done->set_value(decide_connect(req, client_pid));
+            else if (type == msg_type::child)        done->set_value(decide_child(client_pid, req.child_pid));
+            else if (type == msg_type::child_failed) done->set_value(on_child_failed(client_pid, req.child_pid));
+            else                                     done->set_value(make_reply(verdict::direct));
         } catch (...) {
             done->set_value(make_reply(verdict::direct));
         }
@@ -165,7 +172,7 @@ reply mode::decide_connect(const request& req, DWORD pid) {
     f.port = req.dst_port;
     f.group_id = entry.group_id;
     f.pid = pid;
-    uint16_t relay = port_v4_;
+    uint16_t relay = relay_port_v4();
 
     if (!v6) {
         f.v4_host = v4_host_order(req.dst);
@@ -177,7 +184,8 @@ reply mode::decide_connect(const request& req, DWORD pid) {
                                                req.dst, req.dst_port);
         if (why != IpExcludeReason::none) return direct(to_decision_reason(why));
         if (!ipv6_block_.load(std::memory_order_relaxed)) return direct(decision_reason::ipv6);
-        const bool proxy_v6 = ipv6_proxy_.load(std::memory_order_relaxed) && port_v6_ != 0;
+        const uint16_t p6 = relay_port_v6();
+        const bool proxy_v6 = ipv6_proxy_.load(std::memory_order_relaxed) && p6 != 0;
         if (!proxy_v6 || egress_.unavailable(entry.group_id)) {
             rec.reason = proxy_v6 ? decision_reason::ipv6_no_egress : decision_reason::ipv6_blocked;
             record(req, pid, rec);
@@ -185,7 +193,7 @@ reply mode::decide_connect(const request& req, DWORD pid) {
             return make_reply(verdict::block, 0, WSAENETUNREACH);
         }
         f.ipv6 = true;
-        relay = port_v6_;
+        relay = p6;
     }
 
     flows_.publish(v6, req.src_port, f);
@@ -213,14 +221,32 @@ reply mode::decide_child(DWORD parent, DWORD child) {
         return make_reply(verdict::direct);
     }
     {
-        // The DLL injects it itself; the sweep must not try a second time
-        // while the child is still suspended.
+        // The DLL injects it itself; stamp it for the next sweep generation so
+        // an in-flight sweep cannot prune it before the child appears in wanted.
         std::lock_guard lock(inj_mu_);
-        inj_done_[{child, tree.at(idx).psn}] = inject_result::ok;
+        tracker_.mark_child({child, tree.at(idx).psn});
     }
     n_child_inject_.fetch_add(1);
     PC_LOG_DEBUG("[HOOK] child PID={} of PID={} gets the DLL", child, parent);
     return make_reply(verdict::proxy);
+}
+
+reply mode::on_child_failed(DWORD parent, DWORD child) {
+    if (child == 0) return make_reply(verdict::direct);
+    const auto& tree = tree_mgr_.tree();
+    const uint32_t idx = tree.find_by_pid(child);
+    bool cleared = false;
+    if (idx != INVALID_IDX) {
+        std::lock_guard lock(inj_mu_);
+        cleared = tracker_.clear_child({child, tree.at(idx).psn});
+    }
+    if (cleared) {
+        n_child_inject_.fetch_sub(1);
+        n_child_skip_.fetch_add(1);
+        PC_LOG_WARN("[HOOK] child PID={} of PID={}: import-table injection failed; will retry on sweep",
+                    child, parent);
+    }
+    return make_reply(verdict::direct);
 }
 
 void mode::record(const request& req, DWORD pid, DecisionRecord& rec) {
@@ -251,8 +277,7 @@ void mode::schedule_sweep() {
     }
     {
         std::lock_guard lock(inj_mu_);
-        inj_wanted_ = std::move(wanted);
-        inj_dirty_ = true;
+        tracker_.publish_wanted(std::move(wanted));
     }
     inj_cv_.notify_one();
     flows_.prune();
@@ -268,25 +293,24 @@ void mode::schedule_sweep() {
 
 void mode::injector_loop(std::stop_token st) {
     while (!st.stop_requested()) {
-        std::vector<key> wanted;
+        inject_tracker::sweep_batch batch;
         {
             std::unique_lock lock(inj_mu_);
-            inj_cv_.wait(lock, st, [this] { return inj_dirty_; });
+            inj_cv_.wait(lock, st, [this] { return tracker_.dirty(); });
             if (st.stop_requested()) return;
-            wanted = inj_wanted_;
-            inj_dirty_ = false;
+            batch = tracker_.take_wanted();
         }
-        std::set<key> live(wanted.begin(), wanted.end());
-        for (const auto& k : wanted) {
+        std::set<key> live(batch.wanted.begin(), batch.wanted.end());
+        for (const auto& k : batch.wanted) {
             if (st.stop_requested()) return;
             {
                 std::lock_guard lock(inj_mu_);
-                if (inj_done_.contains(k)) continue;
+                if (tracker_.is_done(k)) continue;
             }
             const auto r = inject_into(k.first, dll_path_);
             {
                 std::lock_guard lock(inj_mu_);
-                inj_done_[k] = r;
+                tracker_.mark_swept(k, batch.gen);
             }
             switch (r) {
             case inject_result::ok:
@@ -306,20 +330,18 @@ void mode::injector_loop(std::stop_token st) {
                 break;
             }
         }
-        // Forget processes that exited or stopped being proxied.
+        // Forget processes that exited or stopped being proxied (never pruning
+        // children registered after this sweep snapshot was captured).
         std::lock_guard lock(inj_mu_);
-        for (auto it = inj_done_.begin(); it != inj_done_.end();) {
-            if (!live.contains(it->first)) it = inj_done_.erase(it);
-            else ++it;
-        }
+        tracker_.prune(live, batch.gen);
     }
 }
 
 nlohmann::json mode::stats() const {
     const auto f = flows_.snapshot();
     return {
-        {"relay_port", port_v4_},
-        {"relay_port_v6", port_v6_},
+        {"relay_port", relay_port_v4()},
+        {"relay_port_v6", relay_port_v6()},
         {"pipe_requests", pipe_ ? pipe_->requests() : 0},
         {"pipe_rejected", pipe_ ? pipe_->rejected() : 0},
         {"proxied", n_proxy_.load()},

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Hook mode: `/api/tcp` and `/api/connections` now show the original destination
+  and recorded `PROXIED` decision for hook-redirected TCP connections instead of
+  `127.0.0.1:<relay_port>` as `IGNORED` (`global_exclude`).
+- Hook mode: the control pipe server no longer calls synchronous
+  `FlushFileBuffers`, which could hang a worker thread (or shutdown) if a client
+  stalled without reading its reply; it now waits for client EOF with a bounded,
+  cancellable overlapped read.
+- Hook mode: sockets explicitly bound to a non-loopback interface IP now pass
+  through direct instead of failing with `WSAEADDRNOTAVAIL` when redirected to
+  `127.0.0.1` / `::1`.
+- Hook mode: children registered during an in-flight injection sweep are no
+  longer pruned prematurely and re-injected; if import-table injection fails,
+  the DLL notifies the host so the 1 s sweep falls back to `CreateRemoteThread`.
+- Hook mode no longer opens unused WinDivert TCP acceptors, derives
+  `ipv6.proxy_available` / `ipv6.mode = proxy` from its own `[::1]` relay, and
+  `/api/stats` `interception.active` now reflects actual WinDivert startup
+  status too.
+
 ## v0.15.1 (2026-11-23)
 
 ### Fixed

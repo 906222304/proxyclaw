@@ -64,6 +64,28 @@ void set_estimate(nlohmann::json& c, const connection_facts& f) {
 
 } // namespace
 
+void resolve_tcp_decision(connection_row& row, const DecisionLog* decisions,
+                          uint16_t hook_relay_port) {
+    if (!decisions || row.listening) return;
+    constexpr uint32_t kLoopbackV4 = 0x7F000001u;
+    if (hook_relay_port != 0 && row.remote_addr == kLoopbackV4 &&
+        row.remote_port == hook_relay_port) {
+        if (auto rec = decisions->find_tcp_v4_proxied(row.local_port, row.pid)) {
+            row.remote_addr = rec->remote_addr[0];
+            row.remote_ip   = std::format("{}.{}.{}.{}",
+                                          (row.remote_addr >> 24) & 0xFFu,
+                                          (row.remote_addr >> 16) & 0xFFu,
+                                          (row.remote_addr >> 8) & 0xFFu,
+                                          row.remote_addr & 0xFFu);
+            row.remote_port = rec->remote_port;
+            row.record      = *rec;
+            return;
+        }
+    }
+    row.record = decisions->find_tcp_v4(row.local_port, row.remote_addr, row.remote_port);
+    if (row.record && !decision_record_fits(*row.record, row.pid)) row.record.reset();
+}
+
 // A direct decision taken for a process that was proxied at the time (a
 // destination / protocol exclusion, or a proxied decision that came too
 // late) shows as IGNORED, as before. Reasons that do not say whether the

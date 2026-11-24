@@ -1,14 +1,17 @@
-// Hook mode: flow table bookkeeping and the pipe wire format.
+// Hook mode: flow table, inject tracker, and the pipe wire format.
 #include "hook/hook_flow_table.hpp"
+#include "hook/hook_inject_tracker.hpp"
 #include "hook/hook_protocol.hpp"
 
 #include <cstddef>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 
 using namespace std::chrono_literals;
 using clew::hook::flow;
 using clew::hook::flow_table;
+using clew::hook::inject_tracker;
 
 #define CHECK(expr) do { if (!(expr)) throw std::runtime_error(#expr); } while (false)
 
@@ -72,6 +75,53 @@ static void wire_layout() {
     CHECK(offsetof(clew::hook::reply, relay_port) == 8);
 }
 
+static void child_survives_inflight_sweep() {
+    inject_tracker tr;
+    const inject_tracker::key parent{100, 1};
+    const inject_tracker::key child{200, 2};
+
+    // Sweep 1 captures {parent}; while it runs, decide_child() registers child.
+    CHECK(tr.publish_wanted({parent}) == 1);
+    const auto b1 = tr.take_wanted();
+    CHECK(b1.gen == 1);
+    tr.mark_child(child);
+    tr.mark_swept(parent, b1.gen);
+    tr.prune({parent}, b1.gen);
+    CHECK(tr.is_done(parent));
+    CHECK(tr.is_done(child));
+
+    // Sweep 2 sees both: child is already done (not re-injected) and kept.
+    CHECK(tr.publish_wanted({parent, child}) == 2);
+    const auto b2 = tr.take_wanted();
+    CHECK(tr.is_done(child));
+    tr.prune({parent, child}, b2.gen);
+    CHECK(tr.is_done(child));
+
+    // Sweep 3 after child exits: child's generation (2) <= 3, so it is pruned.
+    CHECK(tr.publish_wanted({parent}) == 3);
+    const auto b3 = tr.take_wanted();
+    tr.prune({parent}, b3.gen);
+    CHECK(!tr.is_done(child));
+    CHECK(tr.is_done(parent) && tr.done_count() == 1);
+}
+
+static void child_failed_enables_sweep_fallback() {
+    inject_tracker tr;
+    const inject_tracker::key parent{100, 1};
+    const inject_tracker::key child{200, 2};
+
+    tr.mark_swept(parent, 1);
+    tr.mark_child(child);
+    CHECK(tr.is_done(child));
+    CHECK(tr.clear_child(child));
+    CHECK(!tr.is_done(child));
+    // Idempotent: a second clear_child must not report true again.
+    CHECK(!tr.clear_child(child));
+    // Non-child (sweep-injected) entries cannot be cleared via clear_child.
+    CHECK(!tr.clear_child(parent));
+    CHECK(tr.is_done(parent));
+}
+
 int main() {
     const std::pair<const char*, void(*)()> cases[] = {
         {"a flow is taken once", taken_once},
@@ -79,6 +129,8 @@ int main() {
         {"a newer connect from the same port replaces the older", newer_connect_replaces_older},
         {"stale flows expire", stale_flows_expire},
         {"wire layout is fixed", wire_layout},
+        {"child registered during sweep is not pruned prematurely", child_survives_inflight_sweep},
+        {"child_failed clears only child entries for sweep fallback", child_failed_enables_sweep_fallback},
     };
     int failures = 0;
     for (const auto& [name, test] : cases) {

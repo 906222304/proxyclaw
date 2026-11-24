@@ -53,7 +53,8 @@ bool udp_shown(const udp_endpoint& ep, DWORD filter_pid) {
 }
 
 // Off-strand: OS row -> connection_row, with its decision record.
-connection_row tcp_row(const tcp_connection& conn, const DecisionLog* decisions) {
+connection_row tcp_row(const tcp_connection& conn, const DecisionLog* decisions,
+                       uint16_t hook_relay_port) {
     connection_row r;
     r.pid         = conn.pid;
     r.local_ip    = conn.local_ip;
@@ -63,10 +64,7 @@ connection_row tcp_row(const tcp_connection& conn, const DecisionLog* decisions)
     r.remote_addr = CidrRange::ip_to_uint(conn.remote_ip);
     r.state       = conn.state;
     r.listening   = tcp_listening(conn);
-    if (decisions && !r.listening) {
-        r.record = decisions->find_tcp_v4(r.local_port, r.remote_addr, r.remote_port);
-        if (r.record && !decision_record_fits(*r.record, r.pid)) r.record.reset();
-    }
+    resolve_tcp_decision(r, decisions, hook_relay_port);
     return r;
 }
 
@@ -196,11 +194,11 @@ private:
 };
 
 std::vector<connection_row> tcp_rows(const std::vector<tcp_connection>& conns, DWORD filter_pid,
-                                     const DecisionLog* decisions) {
+                                     const DecisionLog* decisions, uint16_t hook_relay_port) {
     std::vector<connection_row> rows;
     rows.reserve(conns.size());
     for (const auto& conn : conns)
-        if (tcp_shown(conn, filter_pid)) rows.push_back(tcp_row(conn, decisions));
+        if (tcp_shown(conn, filter_pid)) rows.push_back(tcp_row(conn, decisions, hook_relay_port));
     return rows;
 }
 
@@ -246,7 +244,9 @@ static DWORD to_filter(std::optional<std::uint32_t> pid_filter) {
 
 nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_filter) const {
     const DWORD filter_pid = to_filter(pid_filter);
-    const auto rows = tcp_rows(tcp_table::get_connections(filter_pid), filter_pid, decisions_);
+    const uint16_t hook_port = hook_relay_port_.load(std::memory_order_relaxed);
+    const auto rows = tcp_rows(tcp_table::get_connections(filter_pid), filter_pid, decisions_,
+                               hook_port);
     auto facts = exec_.query([&rows](const domain::process_tree_manager& m) {
         return fact_collector(m).collect(rows, /*is_udp=*/false);
     });
@@ -265,10 +265,11 @@ nlohmann::json connection_service::list_udp(std::optional<std::uint32_t> pid_fil
 
 nlohmann::json connection_service::list_all(std::optional<std::uint32_t> pid_filter) const {
     const DWORD filter_pid = to_filter(pid_filter);
+    const uint16_t hook_port = hook_relay_port_.load(std::memory_order_relaxed);
     // Full tables once: the rows honour the filter, active_pids never does.
     const auto all_tcp = tcp_table::get_connections(NO_PID_FILTER);
     const auto all_udp = udp_table::get_endpoints(NO_PID_FILTER);
-    const auto tcp = tcp_rows(all_tcp, filter_pid, decisions_);
+    const auto tcp = tcp_rows(all_tcp, filter_pid, decisions_, hook_port);
     const auto udp = udp_rows(all_udp, filter_pid, udp_tracker_, udp_sessions_, decisions_);
 
     // One strand hop for both transports.

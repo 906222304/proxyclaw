@@ -150,7 +150,7 @@ public:
                                 [&kv](const AutoRule& r) { return r.id == kv.first; });
         });
         for (auto& r : auto_rules_) {
-            r.matched_pids.clear();
+            r.matched_processes.clear();
             // v0.9.0: hack_tree pinned true; field retained on disk for future
             // per-rule single-node mode but never honored at runtime.
             r.hack_tree = true;
@@ -168,7 +168,7 @@ public:
 
     // Where a live entry's proxy state comes from, for the decision record.
     // Same first-match ordering as get_match_info() / route_reason(). Cost:
-    // one matched_pids lookup per rule up to the match, then one map lookup.
+    // one matched_processes lookup per rule up to the match, then one map lookup.
     struct decision_origin {
         decision_source source{decision_source::none};
         uint32_t        policy_id{0};   // 0 = no rule (manual, none)
@@ -177,7 +177,7 @@ public:
         if (!entry.is_proxied()) return {};
         if (entry.has_flag(entry_flags::MANUAL_HIJACK)) return {decision_source::manual, 0};
         for (const auto& rule : auto_rules_) {
-            if (!rule.matched_pids.contains(entry.pid)) continue;
+            if (!rule.matches_process(entry.pid, entry.psn)) continue;
             auto it = policy_ids_.find(rule.id);
             return {entry.has_flag(entry_flags::TREE_INHERITED) ? decision_source::tree
                                                                 : decision_source::rule,
@@ -187,17 +187,17 @@ public:
     }
 
     // Every source that claims this live entry beyond the one that decides
-    // it (ROADMAP v0.14 #4): the enabled rules whose matched_pids hold the
-    // PID, in config order, the first being the winner unless the entry is
-    // manually hijacked. Both apply_auto_rules() and on_process_start()
-    // evaluate every rule, so a shadowed rule still lists the PID. Cost: one
-    // matched_pids lookup per rule; strand only. Empty when there is no
-    // conflict.
+    // it (ROADMAP v0.14 #4): the enabled rules whose matched_processes hold
+    // (pid, psn), in config order, the first being the winner unless the entry
+    // is manually hijacked. Both apply_auto_rules() and on_process_start()
+    // evaluate every rule, so a shadowed rule still lists the process. Cost:
+    // one matched_processes lookup per rule; strand only. Empty when there is
+    // no conflict.
     [[nodiscard]] rule_conflict conflict_of(const process_entry& entry) const {
         if (!entry.alive || !entry.is_proxied()) return {};
         std::vector<std::string> matching;
         for (const auto& rule : auto_rules_) {
-            if (rule.enabled && rule.matched_pids.contains(entry.pid)) matching.push_back(rule.id);
+            if (rule.enabled && rule.matches_process(entry.pid, entry.psn)) matching.push_back(rule.id);
         }
         return make_rule_conflict(entry.has_flag(entry_flags::MANUAL_HIJACK), std::move(matching));
     }
@@ -306,7 +306,7 @@ public:
             }
         }
         for (auto& rule : auto_rules_) {
-            rule.matched_pids.clear();
+            rule.matched_processes.clear();
         }
 
         // Apply each rule
@@ -325,18 +325,20 @@ public:
 
         // Every rule is evaluated, as apply_auto_rules() does, so a rule
         // shadowed by an earlier one still lists the process in its
-        // matched_pids (conflict_of() reads that). The first match in config
-        // order decides the process (mark_proxied keeps it).
+        // matched_processes (conflict_of() reads that). The first match in
+        // config order decides the process (mark_proxied keeps it).
         const AutoRule* first = nullptr;
         bool first_inherited = false;
         for (auto& rule : auto_rules_) {
             auto kind = try_match_one(tree, idx, rule);
             if (!kind.name && !kind.tree) continue;
 
-            rule.matched_pids.insert(entry.pid);
+            rule.matched_processes.insert(ProcessKey{entry.pid, entry.psn});
             mark_proxied(tree, idx, rule, /*inherited=*/kind.tree);
-            // For hack_tree name matches: also expand to all existing descendants.
-            if (kind.name && rule.hack_tree) {
+            // For hack_tree matches (both direct name matches and late-arriving
+            // tree-inherited parents whose waiting orphans were just drained),
+            // expand to all existing descendants.
+            if (rule.hack_tree) {
                 expand_descendants(tree, idx, rule);
             }
             if (!first) { first = &rule; first_inherited = kind.tree; }
@@ -357,13 +359,19 @@ public:
         return std::nullopt;
     }
 
-    // Process exit (or its PID was recycled before the STOP arrived): drop
-    // every piece of per-PID rule state of the old owner.
-    void on_process_exit(DWORD pid) {
+    // Process exit (or PID overwrite before its STOP arrived): drop only the
+    // exact (pid, psn) rule state so a delayed STOP can never clobber a newer
+    // process that recycled the same PID.
+    void on_process_exit(DWORD pid, uint64_t psn) {
+        const ProcessKey key{pid, psn};
         for (auto& rule : auto_rules_) {
-            rule.matched_pids.erase(pid);
+            rule.matched_processes.erase(key);
         }
-        for (auto& [rule_id, by_pid] : exclusions_) by_pid.erase(pid);
+        for (auto& [rule_id, by_pid] : exclusions_) {
+            if (auto it = by_pid.find(pid); it != by_pid.end() && it->second == psn) {
+                by_pid.erase(it);
+            }
+        }
         std::erase_if(exclusions_, [](const auto& kv) { return kv.second.empty(); });
     }
 
@@ -452,7 +460,7 @@ public:
 
         // Auto rule: check protocol field
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.contains(pid)) {
+            if (rule.matches_process(entry.pid, entry.psn)) {
                 if (proto == "tcp") return rule.matches_tcp();
                 if (proto == "udp") return rule.matches_udp();
                 return true;
@@ -481,7 +489,7 @@ public:
             return nullptr;
         }
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.contains(pid)) return &rule.dst_filter;
+            if (rule.matches_process(entry.pid, entry.psn)) return &rule.dst_filter;
         }
         return nullptr;
     }
@@ -506,7 +514,7 @@ public:
         }
 
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.contains(pid)) {
+            if (rule.matches_process(entry.pid, entry.psn)) {
                 auto it = policy_ids_.find(rule.id);
                 return it == policy_ids_.end() ? GLOBAL_ONLY_POLICY : it->second;
             }
@@ -560,7 +568,7 @@ public:
             if (entry.alive && entry.is_proxied() &&
                 !entry.has_flag(entry_flags::MANUAL_HIJACK)) {
                 for (const auto& rule : auto_rules_) {
-                    if (!rule.matched_pids.contains(pid)) continue;
+                    if (!rule.matches_process(entry.pid, entry.psn)) continue;
                     if (!(is_udp ? rule.matches_udp() : rule.matches_tcp())) {
                         return IpExcludeReason::protocol;
                     }
@@ -587,7 +595,7 @@ public:
             if (entry.alive && entry.is_proxied() &&
                 !entry.has_flag(entry_flags::MANUAL_HIJACK)) {
                 for (const auto& rule : auto_rules_) {
-                    if (!rule.matched_pids.contains(pid)) continue;
+                    if (!rule.matches_process(entry.pid, entry.psn)) continue;
                     if (!(is_udp ? rule.matches_udp() : rule.matches_tcp())) {
                         return IpExcludeReason::protocol;
                     }
@@ -617,9 +625,9 @@ public:
             return result;
         }
 
-        // Find which auto rule matched this PID
+        // Find which auto rule matched this process
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.contains(pid)) {
+            if (rule.matches_process(entry.pid, entry.psn)) {
                 result.rule_type = "auto";
                 result.rule_id = rule.id;
                 return result;
@@ -705,7 +713,8 @@ private:
 
     // Per-entry match decision against a single rule. Pure (no side effects).
     // - name: entry passes process_name + cmdline + image_path filters
-    // - tree: entry inherits via parent already in matched_pids (hack_tree only)
+    // - tree: entry inherits via (parent_pid, parent_psn) already in
+    //   matched_processes (hack_tree only)
     // Both false → no match. Empty process_name never name-matches; cmdline /
     // image_path are filters on top of the name match (matches the documented
     // semantics in README).
@@ -716,7 +725,7 @@ private:
         if (!rule.enabled) return {};
         if (!entry.alive) return {};
         if (is_excluded(rule.id, entry)) return {};
-        if (rule.matched_pids.contains(entry.pid)) return {};
+        if (rule.matches_process(entry.pid, entry.psn)) return {};
 
         const bool name_match =
             !rule.process_name.empty()
@@ -726,24 +735,37 @@ private:
 
         const bool tree_match =
             !name_match && rule.hack_tree && entry.parent_pid != 0
-            && rule.matched_pids.contains(entry.parent_pid);
+            && entry.parent_psn != INVALID_PSN
+            && entry.parent_psn != ROOT_PSN_SENTINEL
+            && rule.matches_process(entry.parent_pid, entry.parent_psn);
 
         return {name_match, tree_match};
     }
 
-    // If parent has MANUAL_HIJACK, propagate group_id + flag to child.
-    // Returns parent_pid on success, 0 if no inheritance happened.
+    // If parent (exact pid+psn) has MANUAL_HIJACK, propagate group_id + flag
+    // to child and any already-attached orphan descendants. Returns parent_pid
+    // on success, 0 if no inheritance happened.
     DWORD try_inherit_manual(flat_tree& tree, uint32_t idx) {
         const auto& entry = tree.at(idx);
-        if (entry.parent_pid == 0) return 0;
-        uint32_t parent_idx = tree.find_by_pid(entry.parent_pid);
+        if (entry.parent_pid == 0 ||
+            entry.parent_psn == INVALID_PSN ||
+            entry.parent_psn == ROOT_PSN_SENTINEL) {
+            return 0;
+        }
+        uint32_t parent_idx = tree.find_by_pid_psn(entry.parent_pid, entry.parent_psn);
         if (parent_idx == INVALID_IDX) return 0;
         const auto& parent = tree.at(parent_idx);
         if (!parent.alive || !parent.has_flag(entry_flags::MANUAL_HIJACK)) return 0;
 
         auto& child = tree.at(idx);
-        child.group_id = parent.group_id;
+        const uint32_t group_id = parent.group_id;
+        child.group_id = group_id;
         child.set_flag(entry_flags::MANUAL_HIJACK);
+        tree.visit_descendants(idx, [&tree, group_id](uint32_t ci, const process_entry&) {
+            auto& c = tree.at(ci);
+            c.group_id = group_id;
+            c.set_flag(entry_flags::MANUAL_HIJACK);
+        });
         return entry.parent_pid;
     }
 
@@ -752,38 +774,44 @@ private:
     // from roots whose parent is NOT itself name-matched, so each name-matched
     // chain has exactly one expansion root.
     void apply_single_rule(flat_tree& tree, AutoRule& rule) {
-        std::unordered_set<DWORD> name_matched;
+        std::unordered_set<ProcessKey, ProcessKeyHash> name_matched;
+        std::vector<uint32_t> name_matched_indices;
 
         for (uint32_t i = 0; i < tree.entries().size(); i++) {
             // Bulk apply only cares about direct name matches; hack_tree
             // expansion is handled in phase 2 from name_matched roots.
             if (!try_match_one(tree, i, rule).name) continue;
 
-            const DWORD pid = tree.entries()[i].pid;
+            const auto& entry = tree.entries()[i];
+            const ProcessKey key{entry.pid, entry.psn};
             if (rule.hack_tree) {
-                name_matched.insert(pid);
+                if (name_matched.insert(key).second) {
+                    name_matched_indices.push_back(i);
+                }
             } else {
-                rule.matched_pids.insert(pid);
+                rule.matched_processes.insert(key);
                 mark_proxied(tree, i, rule, /*inherited=*/false);
             }
         }
 
         if (rule.hack_tree) {
-            for (DWORD pid : name_matched) {
-                uint32_t idx = tree.find_by_pid(pid);
-                if (idx == INVALID_IDX) continue;
+            for (uint32_t idx : name_matched_indices) {
                 const auto& entry = tree.at(idx);
-
-                rule.matched_pids.insert(pid);
+                rule.matched_processes.insert(ProcessKey{entry.pid, entry.psn});
                 mark_proxied(tree, idx, rule, /*inherited=*/false);
-                if (!name_matched.contains(entry.parent_pid)) {
+                const bool parent_matched =
+                    entry.parent_pid != 0 &&
+                    entry.parent_psn != INVALID_PSN &&
+                    entry.parent_psn != ROOT_PSN_SENTINEL &&
+                    name_matched.contains(ProcessKey{entry.parent_pid, entry.parent_psn});
+                if (!parent_matched) {
                     expand_descendants(tree, idx, rule);
                 }
             }
         }
 
-        if (!rule.matched_pids.empty()) {
-            PC_LOG_INFO("[RULE] '{}': {} processes matched", rule.name, rule.matched_pids.size());
+        if (!rule.matched_processes.empty()) {
+            PC_LOG_INFO("[RULE] '{}': {} processes matched", rule.name, rule.matched_processes.size());
         }
     }
 
@@ -791,8 +819,9 @@ private:
     void expand_descendants(flat_tree& tree, uint32_t idx, AutoRule& rule) {
         tree.visit_descendants(idx, [this, &tree, &rule](uint32_t child_idx, const process_entry& child) {
             if (is_excluded(rule.id, child)) return;
-            if (rule.matched_pids.contains(child.pid)) return;
-            rule.matched_pids.insert(child.pid);
+            const ProcessKey key{child.pid, child.psn};
+            if (rule.matched_processes.contains(key)) return;
+            rule.matched_processes.insert(key);
             mark_proxied(tree, child_idx, rule, /*inherited=*/true);
         });
     }
@@ -801,21 +830,22 @@ private:
     // `inherited`: matched through a rule-matched ancestor (hack_tree), not
     // by its own name. Labels the decision record's source only.
     //
-    // Callers insert the PID into rule.matched_pids first. The rule that
-    // decides the entry is the first one in config order whose matched_pids
-    // holds the PID: that is what origin_of(), route_reason(), the policy id
-    // and conflict_of() report, so its proxy group and kind of match are the
-    // ones stored. A later (shadowed) rule leaves the entry alone. Before
-    // v0.14 #4 a bulk apply let the LAST matching rule's group win while the
-    // first rule's destination filter applied.
+    // Callers insert (pid, psn) into rule.matched_processes first. The rule
+    // that decides the entry is the first one in config order whose
+    // matched_processes holds (pid, psn): that is what origin_of(),
+    // route_reason(), the policy id and conflict_of() report, so its proxy
+    // group and kind of match are the ones stored. A later (shadowed) rule
+    // leaves the entry alone. Before v0.14 #4 a bulk apply let the LAST
+    // matching rule's group win while the first rule's destination filter
+    // applied.
     void mark_proxied(flat_tree& tree, uint32_t idx, const AutoRule& rule, bool inherited) {
         auto& entry = tree.at(idx);
         // Don't overwrite manual hijack
         if (entry.has_flag(entry_flags::MANUAL_HIJACK)) return;
         if (entry.has_flag(entry_flags::AUTO_MATCHED)) {
             for (const auto& r : auto_rules_) {
-                if (&r == &rule) break;                                // rule precedes every other claimant
-                if (r.matched_pids.contains(entry.pid)) return;       // an earlier rule decides it
+                if (&r == &rule) break;                                         // rule precedes every other claimant
+                if (r.matches_process(entry.pid, entry.psn)) return;            // an earlier rule decides it
             }
         }
         if (inherited) entry.set_flag(entry_flags::TREE_INHERITED);

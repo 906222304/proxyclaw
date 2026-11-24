@@ -543,11 +543,16 @@ TEST(rule_on_process_exit) {
     engine.set_auto_rules({make_rule("py_rule", "python.exe")});
     engine.apply_auto_rules(tree);
 
-    // Process exit should clean up matched_pids
-    engine.on_process_exit(300);
-    // Verify rule's internal state is cleaned
-    ASSERT_TRUE(engine.auto_rules()[0].matched_pids.find(300) ==
-                engine.auto_rules()[0].matched_pids.end());
+    const uint64_t py_psn = tree.at(tree.find_by_pid(300)).psn;
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(300, py_psn));
+
+    // Stale/wrong PSN exit must not clear the live match.
+    engine.on_process_exit(300, py_psn + 999);
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(300, py_psn));
+
+    // Exact (pid, psn) exit cleans up matched_processes.
+    engine.on_process_exit(300, py_psn);
+    ASSERT_FALSE(engine.auto_rules()[0].matches_process(300, py_psn));
 }
 
 // ============================================================
@@ -619,50 +624,61 @@ TEST(bug_reparent_stale_parent_pid_after_compact) {
     ASSERT_FALSE(tree.at(tree.find_by_pid(300)).is_proxied());
 }
 
-// Bug 2: on_process_start tree inheritance uses parent_pid (can be stale/recycled)
-// A new process whose parent_pid was once in matched_pids gets incorrectly inherited.
+// Bug 2 (fixed in v0.15 #4): on_process_start tree inheritance now checks
+// (parent_pid, parent_psn), so even if ETW STOP for a dead matched parent is
+// lost and its PID is recycled before cleanup, the recycled process and its
+// children never inherit the dead parent's rule.
 TEST(bug_tree_inherit_stale_matched_pid) {
-    // Same scenario as before — the rule engine still uses parent_pid for
-    // tree inheritance lookups. The PSN refactor doesn't fix this codepath
-    // (the matched_pids set is keyed by PID), so behavior unchanged here.
-    //
     // Tree:
     //   System(4)
     //   ├── spotify.exe(100)
-    //   │   └── chrome.exe(101)
+    //   │   └── chrome.exe(101, psn_old)
     //   └── explorer.exe(50)
     flat_tree tree;
     FILETIME ft = {};
     add_test_entry(tree, 4,   0,   ft, L"System");
     add_test_entry(tree, 50,  4,   ft, L"explorer.exe");
     add_test_entry(tree, 100, 4,   ft, L"spotify.exe");
-    add_test_entry(tree, 101, 100, ft, L"chrome.exe");
+    uint32_t old_idx = add_test_entry(tree, 101, 100, ft, L"chrome.exe");
+    const uint64_t old_psn = tree.at(old_idx).psn;
 
     rule_engine_v3 engine;
     engine.set_auto_rules({make_rule("spotify", "spotify.exe", true, 1)});
     engine.apply_auto_rules(tree);
 
-    ASSERT_TRUE(tree.at(tree.find_by_pid(101)).is_proxied());
-    ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) > 0);
+    ASSERT_TRUE(tree.at(old_idx).is_proxied());
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(101, old_psn));
 
-    tombstone_by_pid(tree, 101);
-    engine.on_process_exit(101);
-    ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) == 0);
-
-    // PID 101 recycled with explorer parent — should NOT match spotify rule.
+    // PID 101 exits, its STOP is LOST (no on_process_exit called!), and
+    // Windows recycles PID 101 for notepad.exe under explorer.exe.
     uint32_t new_idx = add_test_entry(tree, 101, 50, ft, L"notepad.exe");
-    auto match = engine.on_process_start(tree, new_idx);
-    ASSERT_FALSE(match.has_value());
+    const uint64_t new_psn = tree.at(new_idx).psn;
+    ASSERT_TRUE(new_psn != old_psn);
+    ASSERT_FALSE(engine.on_process_start(tree, new_idx).has_value());
+    ASSERT_FALSE(tree.at(new_idx).is_proxied());
 
-    // Edge case: re-add chrome(101) under spotify, PID 999 child claims 101.
+    // notepad(101, new_psn) spawns child(999): even though (101, old_psn) is
+    // still sitting in matched_processes, parent_psn == new_psn != old_psn,
+    // so child(999) MUST NOT inherit the spotify rule.
+    uint32_t unrelated_child = add_test_entry(tree, 999, 101, ft, L"notepad-helper.exe");
+    ASSERT_FALSE(engine.on_process_start(tree, unrelated_child).has_value());
+    ASSERT_FALSE(tree.at(unrelated_child).is_proxied());
+
+    // Now clean up old_psn and re-add a real chrome(101) under spotify(100):
+    // its child DOES inherit via (101, chrome2_psn).
+    engine.on_process_exit(101, old_psn);
+    ASSERT_FALSE(engine.auto_rules()[0].matches_process(101, old_psn));
+
     tombstone_by_pid(tree, 101);
-    add_test_entry(tree, 101, 100, ft, L"chrome.exe");
-    engine.apply_auto_rules(tree);
-    ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) > 0);
+    uint32_t chrome2_idx = add_test_entry(tree, 101, 100, ft, L"chrome.exe");
+    const uint64_t chrome2_psn = tree.at(chrome2_idx).psn;
+    ASSERT_TRUE(engine.on_process_start(tree, chrome2_idx).has_value());
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(101, chrome2_psn));
 
-    uint32_t child_idx = add_test_entry(tree, 999, 101, ft, L"gpu-process.exe");
+    uint32_t child_idx = add_test_entry(tree, 998, 101, ft, L"gpu-process.exe");
     auto match2 = engine.on_process_start(tree, child_idx);
-    ASSERT_TRUE(match2.has_value());  // Tree-inherited from chrome(101)
+    ASSERT_TRUE(match2.has_value());  // Tree-inherited from chrome(101, chrome2_psn)
+    ASSERT_TRUE(tree.at(child_idx).is_proxied());
 }
 
 // ============================================================
@@ -923,12 +939,10 @@ TEST(syn_parker_config_is_clamped) {
     ASSERT_EQ(high.pool_size(), clew::syn_parker::MAX_POOL);
 }
 
-// A PID recycled before its ETW STOP arrives: the rule engine still holds the
-// old owner in matched_pids, and try_match_one skips PIDs it already holds.
-// The manager therefore calls on_process_exit(pid) before inserting the new
-// owner (process_tree_manager::handle_start_or_rundown). This pins the
-// engine behaviour that sequence relies on.
-TEST(rule_engine_recycled_pid_needs_exit_before_rematch) {
+// v0.15 #4: rule match state is keyed by (pid, psn), so a PID recycled before
+// its predecessor's ETW STOP arrives matches immediately under its new PSN,
+// and a delayed on_process_exit(pid, old_psn) cannot erase the new owner.
+TEST(rule_engine_recycled_pid_rematches_without_exit) {
     clew::flat_tree tree;
     clew::rule_engine_v3 engine;
     clew::AutoRule rule;
@@ -938,20 +952,87 @@ TEST(rule_engine_recycled_pid_needs_exit_before_rematch) {
 
     FILETIME ft{};
     uint32_t old_idx = add_test_entry(tree, 5000, 1, ft, L"curl.exe");   // PSN n
+    const uint64_t old_psn = tree.at(old_idx).psn;
     ASSERT_TRUE(engine.on_process_start(tree, old_idx).has_value());
     ASSERT_EQ(tree.at(old_idx).group_id, 3u);
 
-    // Same PID, new PSN (add_test_entry allocates a fresh one), no
-    // on_process_exit in between: the engine skips it.
+    // Same PID, new PSN, NO on_process_exit in between: matches right away.
     uint32_t new_idx = add_test_entry(tree, 5000, 1, ft, L"curl.exe");   // PSN n+1
+    const uint64_t new_psn = tree.at(new_idx).psn;
     ASSERT_TRUE(new_idx != old_idx);
-    ASSERT_FALSE(engine.on_process_start(tree, new_idx).has_value());
-    ASSERT_EQ(tree.at(new_idx).group_id, clew::NO_PROXY);
-
-    // With the exit hook first (what the manager does), the new owner matches.
-    engine.on_process_exit(5000);
+    ASSERT_TRUE(new_psn != old_psn);
     ASSERT_TRUE(engine.on_process_start(tree, new_idx).has_value());
     ASSERT_EQ(tree.at(new_idx).group_id, 3u);
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(5000, new_psn));
+
+    // Delayed STOP for old_psn drops only (5000, old_psn), leaving new_psn intact.
+    engine.on_process_exit(5000, old_psn);
+    ASSERT_FALSE(engine.auto_rules()[0].matches_process(5000, old_psn));
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(5000, new_psn));
+    ASSERT_TRUE(engine.get_match_info(tree, 5000).has_value());
+}
+
+// Manual hijack inheritance also checks (parent_pid, parent_psn): a child of a
+// dead/unmatched parent whose PID was later recycled into a manually hijacked
+// process must not inherit the manual hijack.
+TEST(manual_hijack_inherit_checks_parent_psn) {
+    clew::flat_tree tree;
+    clew::rule_engine_v3 engine;
+    FILETIME ft{};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    uint32_t p_old = add_test_entry(tree, 600, 4, ft, L"shell.exe");
+    const uint64_t old_psn = tree.at(p_old).psn;
+    tombstone_by_pid(tree, 600);
+
+    // PID 600 recycled and manually hijacked under a new PSN.
+    uint32_t p_new = add_test_entry(tree, 600, 4, ft, L"proxied.exe");
+    ASSERT_TRUE(tree.at(p_new).psn != old_psn);
+    engine.manual_hijack_tree(tree, 600, 2);
+    ASSERT_TRUE(tree.at(p_new).is_proxied());
+
+    // A child whose parent_psn is old_psn (not p_new's PSN) must NOT inherit.
+    uint32_t stale_child = tree.add_entry(601, 600, 999999, old_psn, ft, L"orphan.exe");
+    tree.mark_root(stale_child);
+    ASSERT_FALSE(engine.on_process_start(tree, stale_child).has_value());
+    ASSERT_FALSE(tree.at(stale_child).is_proxied());
+
+    // A real child of p_new DOES inherit.
+    uint32_t real_child = add_test_entry(tree, 602, 600, ft, L"worker.exe");
+    ASSERT_TRUE(engine.on_process_start(tree, real_child).has_value());
+    ASSERT_TRUE(tree.at(real_child).is_proxied());
+    ASSERT_EQ(tree.at(real_child).group_id, 2u);
+}
+
+// When an orphan child arrives before its intermediate parent and is attached
+// to that parent right before on_process_start(parent), the child inherits the
+// rule even when the parent itself matched by tree inheritance (not by name).
+TEST(orphan_inherits_from_late_tree_inherited_parent) {
+    clew::flat_tree tree;
+    clew::rule_engine_v3 engine;
+    engine.set_auto_rules({make_rule("root_rule", "root.exe", true, 4)});
+    FILETIME ft{};
+
+    uint32_t root_idx = tree.add_entry(700, 0, 7000, ROOT_PSN_SENTINEL, ft, L"root.exe");
+    tree.mark_root(root_idx);
+    ASSERT_TRUE(engine.on_process_start(tree, root_idx).has_value());
+
+    // Grandchild arrives before intermediate parent (pid=701, psn=7001).
+    uint32_t grand_idx = tree.add_entry(702, 701, 7002, 7001, ft, L"leaf.exe");
+    tree.mark_root(grand_idx);
+    ASSERT_FALSE(engine.on_process_start(tree, grand_idx).has_value());
+
+    // Intermediate parent arrives, attaches to root, drains orphan grandchild,
+    // then on_process_start runs for parent (tree-inherited from root).
+    uint32_t mid_idx = tree.add_entry(701, 700, 7001, 7000, ft, L"mid.exe");
+    tree.attach_child(root_idx, mid_idx);
+    tree.attach_child(mid_idx, grand_idx);
+    ASSERT_TRUE(engine.on_process_start(tree, mid_idx).has_value());
+
+    ASSERT_TRUE(tree.at(mid_idx).is_proxied());
+    ASSERT_EQ(tree.at(mid_idx).group_id, 4u);
+    ASSERT_TRUE(tree.at(grand_idx).is_proxied());
+    ASSERT_EQ(tree.at(grand_idx).group_id, 4u);
+    ASSERT_TRUE(engine.auto_rules()[0].matches_process(702, 7002));
 }
 
 TEST(tcp_syn_parking_config_defaults_and_roundtrip) {

@@ -21,6 +21,14 @@
   IOCP / `clew` comments and links across `src/` and `docs/TROUBLESHOOTING*.md`,
   and refreshed `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/HANDOFF.md`
   to match the v0.15.2 architecture and split CI workflow.
+- Rule engine (v0.15 #4): keyed rule match state (`AutoRule::matched_processes`)
+  and tree inheritance (both auto-rule and manual-hijack) by `(pid, psn)` and
+  passed exact `(pid, psn)` on process start overwrite / stop, eliminating
+  stale-PID rule inheritance when a PID is recycled before its ETW STOP lands;
+  `/api/auto-rules` now filters `matched_pids` by live `(pid, psn)`.
+- UI: replaced the process-tree row quick action button (`⚡`) with quick rule
+  creation, opening the rule editor dialog pre-filled with the selected
+  process's name and working directory.
 
 ## v0.15.2 (2026-11-24)
 

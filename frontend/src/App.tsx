@@ -1,5 +1,5 @@
 import * as Tabs from '@radix-ui/react-tabs'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Minus, Moon, Square, Sun, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Toaster } from 'sonner'
@@ -49,6 +49,7 @@ function useMaximized(): boolean {
 interface RuleDialogState { open: boolean; rule: AutoRule | null; name: string; dir: string }
 
 export default function App() {
+  const qc = useQueryClient()
   const dark = useIsDark()
   const maximized = useMaximized()
   const connected = useSyncExternalStore(subscribeConnected, getConnected)
@@ -99,9 +100,25 @@ export default function App() {
   const openRuleDialog = (rule: AutoRule | null, name = '', dir = '') =>
     setRuleDialog({ open: true, rule, name, dir })
 
+  const openRuleForProcess = async (proc: ProcessInfo) => {
+    setSelected({ pid: proc.pid, psn: proc.psn })
+    let imagePath = proc.image_path ?? ''
+    let cmdline = proc.cmdline ?? ''
+    if (!imagePath && !cmdline) {
+      try {
+        const d = await qc.fetchQuery(processDetailQuery({ pid: proc.pid, psn: proc.psn }))
+        imagePath = d.image_path ?? ''
+        cmdline = d.cmdline ?? ''
+      } catch {
+        // Protected or exited process: still open dialog with process name pre-filled.
+      }
+    }
+    openRuleDialog(null, proc.name, dirOf(imagePath || exeFromCmdline(cmdline)))
+  }
+
   const onCreateRuleFromProcess = () => {
     if (!selectedProcess) return
-    openRuleDialog(null, selectedProcess.name, dirOf(exeFromCmdline(selectedProcess.cmdline ?? '')))
+    void openRuleForProcess(selectedProcess)
   }
 
   const onSave = (payload: RulePayload) => {
@@ -187,7 +204,13 @@ export default function App() {
         {/* aa-gray on each (transparent) panel: grayscale AA for all page text */}
         <Tabs.Content value="network" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <Split
-            left={<ProcessTree selectedPid={selectedPid} onSelect={onSelectPid} />}
+            left={
+              <ProcessTree
+                selectedPid={selectedPid}
+                onSelect={onSelectPid}
+                onQuickCreateRule={proc => void openRuleForProcess(proc)}
+              />
+            }
             right={
               <div className="mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4">
                 <NetworkActivities

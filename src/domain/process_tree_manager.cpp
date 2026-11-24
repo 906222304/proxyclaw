@@ -315,14 +315,10 @@ void process_tree_manager::handle_start_or_rundown(const etw_process_event& evt,
 
     // 2. add_entry handles PID-reuse internally: if pid exists with a
     //    different PSN, it tombstones the old before installing new.
-    //    The rule engine must forget the old owner first: it keys match
-    //    state by PID, and try_match_one skips a PID it already holds, so
-    //    the recycled PID would otherwise inherit "already matched" without
-    //    ever being marked proxied (seen under a 1000-process storm: 14 of
-    //    200 fresh curls). ETW STOP does the same via handle_stop; here the
-    //    STOP simply has not arrived yet.
-    if (tree_.find_by_pid(evt.pid) != INVALID_IDX) {
-        rules_.on_process_exit(evt.pid);
+    //    Drop the old (pid, psn) from rule match / exclusion state right
+    //    away so stale entries do not accumulate if the old STOP is lost.
+    if (const uint32_t old_idx = tree_.find_by_pid(evt.pid); old_idx != INVALID_IDX) {
+        rules_.on_process_exit(evt.pid, tree_.at(old_idx).psn);
     }
     uint32_t new_idx = tree_.add_entry(evt.pid, evt.parent_pid,
                                        evt.psn, evt.parent_psn,
@@ -354,6 +350,10 @@ void process_tree_manager::handle_start_or_rundown(const etw_process_event& evt,
 }
 
 void process_tree_manager::handle_stop(const etw_process_event& evt) {
+    // Drop any rule state tied to this exact (pid, psn). Safe even if the PID
+    // was already recycled to a newer PSN: only the matching pair is removed.
+    rules_.on_process_exit(evt.pid, evt.psn);
+
     // PSN verification: stale STOPs (after PID was recycled) silently
     // ignored — find_by_pid_psn returns INVALID_IDX when psn doesn't match.
     uint32_t idx = tree_.find_by_pid_psn(evt.pid, evt.psn);
@@ -361,7 +361,6 @@ void process_tree_manager::handle_stop(const etw_process_event& evt) {
 
     bool ok = tree_.tombstone(evt.pid, evt.psn);
     if (ok) {
-        rules_.on_process_exit(evt.pid);
         notify_tree_changed("etw_stop", push_urgency::batched);
     }
 }

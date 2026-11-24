@@ -2,8 +2,9 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronDown, ChevronRight, Monitor, Zap, ZapOff } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
-import { hijackProcess, unhijackProcess } from '@/api/client'
+import { unhijackProcess } from '@/api/client'
 import { activityQuery, autoRulesQuery, isActive, useProcessTree } from '@/api/queries'
+import type { ProcessInfo } from '@/api/types'
 import { ProcessIcon } from '@/components/ProcessIcon'
 import { Segmented } from '@/components/ui/misc'
 import { ExcludedDot, HijackDot } from '@/components/ProcessContextHeader'
@@ -30,9 +31,10 @@ const FILTERS: { value: ProcessFilter; label: string }[] = [
   { value: 'direct', label: '直连' },
 ]
 
-export function ProcessTree({ selectedPid, onSelect }: {
+export function ProcessTree({ selectedPid, onSelect, onQuickCreateRule }: {
   selectedPid: number | undefined
   onSelect: (pid: number | undefined) => void
+  onQuickCreateRule: (node: ProcessInfo) => void
 }) {
   const processes = useProcessTree()
   const { data: activity } = useQuery(activityQuery)
@@ -66,12 +68,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
     setExpandedPids(prev => new Map(prev).set(pid, !(prev.get(pid) ?? searching)))
   }
 
-  // v0.9.0+: Hack and Unhack are always tree-mode. The backend pushes a
-  // fresh snapshot after the change, which lands in the query cache.
-  const hack = useMutation({
-    mutationFn: (pid: number) => hijackProcess(pid),
-    onError: e => pushError(e, '启用代理失败'),
-  })
+  // Keep unhack available for processes that were manually hijacked (e.g. via API).
   const unhack = useMutation({
     mutationFn: (pid: number) => unhijackProcess(pid, true),
     onError: e => pushError(e, '取消代理失败'),
@@ -126,7 +123,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
                     excluded={!row.node.hijacked && excluded.has(row.node.pid)}
                     onSelect={onSelect}
                     onToggle={toggle}
-                    onHack={hack.mutate}
+                    onQuickCreateRule={onQuickCreateRule}
                     onUnhack={unhack.mutate}
                   />
                 )
@@ -144,7 +141,7 @@ export function ProcessTree({ selectedPid, onSelect }: {
 const lineClass = (on: boolean) => (on ? 'bg-muted-foreground/45' : 'bg-transparent')
 const dashClass = (on: boolean) => (on ? 'border-muted-foreground/50' : 'border-transparent')
 
-const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, excluded, onSelect, onToggle, onHack, onUnhack }: {
+const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, matched, excluded, onSelect, onToggle, onQuickCreateRule, onUnhack }: {
   row: FlatRow
   selected: boolean
   active: boolean
@@ -153,7 +150,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   excluded: boolean
   onSelect: (pid: number) => void
   onToggle: (pid: number) => void
-  onHack: (pid: number) => void
+  onQuickCreateRule: (node: ProcessInfo) => void
   onUnhack: (pid: number) => void
 }) {
   const { node, depth, hasChildren, expanded, nextSibling } = row
@@ -163,7 +160,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
   const manual = kind === 'manual'
   const auto = kind === 'auto'
   const idle = !selected && !active
-  const showHack = !node.hijacked && !auto
+  const showQuickRule = !manual
   const subtreeOn = activeSubtree.has(node.pid)
   // Idle text is muted (not faded); the icon greys only when the whole
   // subtree is idle.
@@ -238,16 +235,16 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
           ? <HijackDot source={node.hijack_source} />
           : <span className="size-1.5 shrink-0 rounded-full bg-success" title="已代理" />)}
         {excluded && <ExcludedDot />}
-        {/* The hover-only hack button sits on top of the PID (which fades out)
+        {/* The hover-only action button sits on top of the PID (which fades out)
             instead of taking width, so hovering never squeezes the name. */}
         <span className="relative ml-auto flex shrink-0 items-center pl-1.5">
-          {showHack && (
-            <Tooltip content="启用代理">
+          {showQuickRule && (
+            <Tooltip content="快速创建规则">
               <button
                 type="button"
-                aria-label="启用代理"
-                onClick={e => { e.stopPropagation(); onHack(node.pid) }}
-                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-field-hover hover:text-warning group-hover:opacity-100 focus-visible:opacity-100"
+                aria-label="快速创建规则"
+                onClick={e => { e.stopPropagation(); onQuickCreateRule(node) }}
+                className="peer absolute top-1/2 right-0 z-10 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-field-hover hover:text-warning group-hover:opacity-100 focus-visible:opacity-100"
               >
                 <Zap className="size-3.5" />
               </button>
@@ -259,7 +256,7 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
                 type="button"
                 aria-label="取消代理"
                 onClick={e => { e.stopPropagation(); onUnhack(node.pid) }}
-                className="peer absolute top-1/2 right-0 flex size-6 -translate-y-1/2 items-center justify-center rounded text-success opacity-0 transition hover:bg-field-hover hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                className="peer absolute top-1/2 right-0 z-10 flex size-6 -translate-y-1/2 items-center justify-center rounded text-success opacity-0 transition hover:bg-field-hover hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
               >
                 <ZapOff className="size-3.5" />
               </button>
@@ -269,9 +266,9 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
               digits this PID happens to have (a 5-digit PID used to truncate
               names that fit with a 4-digit one). */}
           <span className={cn(
-            'tabular min-w-[5ch] text-right text-2xs transition',
+            'pointer-events-none tabular min-w-[5ch] text-right text-2xs transition',
             selected ? 'text-primary' : 'text-faint',
-            (showHack || manual) && 'group-hover:opacity-0 peer-focus-visible:opacity-0',
+            (showQuickRule || manual) && 'group-hover:opacity-0 peer-focus-visible:opacity-0',
           )}>
             {node.pid}
           </span>

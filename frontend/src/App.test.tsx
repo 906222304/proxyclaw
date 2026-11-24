@@ -18,6 +18,7 @@ const routes: Record<string, unknown> = {
   '/api/proxy-groups': [{ id: 0, name: '默认', host: '127.0.0.1', port: 7890, type: 'socks5', test_url: 'https://www.google.com' }],
   '/api/config': { ui: { close_to_tray: true }, log_level: 'info', dns: { enabled: false } },
   '/api/autostart': { enabled: false, start_minimized: false },
+  '/api/processes/1/detail': { pid: 1, psn: 1, parent_pid: 0, name: 'explorer.exe', hijacked: false, cmdline: 'C:\\Windows\\explorer.exe', image_path: 'C:\\Windows\\explorer.exe' },
   '/api/processes/10/detail': { pid: 10, psn: 100, parent_pid: 1, name: 'app.exe', hijacked: true, cmdline: '"C:\\App\\app.exe" --flag', image_path: 'C:\\App\\app.exe' },
 }
 
@@ -128,5 +129,29 @@ describe('App', () => {
         expect(text()).not.toContain('进程匹配')
       }
     }
+  })
+
+  it('opens RuleEditorDialog pre-filled for the clicked process from ProcessTree quick-rule button', async () => {
+    const qc = createQueryClient()
+    root = createRoot(host)
+    act(() => root.render(<QueryClientProvider client={qc}><App /></QueryClientProvider>))
+    act(() => applyPush(qc, {
+      event: 'process_update',
+      data: [{ pid: 1, psn: 1, parent_pid: 0, name: 'explorer.exe', hijacked: false, children: [] }],
+    }))
+    await flush()
+
+    const quickBtn = host.querySelector('button[aria-label="快速创建规则"]')!
+    expect(quickBtn).toBeTruthy()
+    click(quickBtn)
+    await flush()
+
+    expect(document.body.textContent ?? '').toContain('自动规则编辑器')
+    const inputs = [...document.querySelectorAll('input')].map(i => i.value)
+    expect(inputs).toContain('explorer.exe 的规则')
+    expect(inputs).toContain('explorer.exe')
+    expect(inputs).toContain('C:\\Windows\\')
+    const save = [...document.querySelectorAll('button')].find(b => b.textContent === '保存规则')!
+    expect(save.disabled).toBe(false)
   })
 })

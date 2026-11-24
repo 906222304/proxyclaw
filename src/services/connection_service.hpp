@@ -15,6 +15,7 @@
 // UdpSessionTable / DecisionLog lookups and all JSON building run on the
 // calling HTTP thread (projection/connection_rows.hpp).
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 
@@ -38,6 +39,11 @@ public:
     connection_service(const connection_service&)            = delete;
     connection_service& operator=(const connection_service&) = delete;
 
+    // Hook mode's IPv4 loopback relay port (0 when WinDivert is active).
+    void set_hook_relay_port(uint16_t port) noexcept {
+        hook_relay_port_.store(port, std::memory_order_relaxed);
+    }
+
     // GET /api/tcp?pid=X — TCP table with hijack status.
     [[nodiscard]] nlohmann::json list_tcp(std::optional<std::uint32_t> pid_filter) const;
 
@@ -60,6 +66,7 @@ private:
     UdpPortTracker*        udp_tracker_;
     const UdpSessionTable* udp_sessions_;
     const DecisionLog*     decisions_;
+    std::atomic<uint16_t>  hook_relay_port_{0};
 };
 
 } // namespace clew

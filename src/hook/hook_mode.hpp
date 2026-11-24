@@ -70,6 +70,8 @@ public:
     bool start(const std::filesystem::path& dll);
     void stop();
 
+    uint16_t relay_port_v4() const noexcept { return port_v4_; }
+
     nlohmann::json stats() const;
 
 private:

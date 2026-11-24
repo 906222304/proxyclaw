@@ -23,7 +23,9 @@
 
 #include <atomic>
 #include <functional>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "core/log.hpp"
@@ -34,8 +36,12 @@ namespace clew::hook {
 class pipe_server {
 public:
     using handler = std::function<reply(const request&, DWORD client_pid)>;
+    static constexpr DWORD kDefaultIoTimeoutMs = 1000;
 
-    explicit pipe_server(handler h) : handler_(std::move(h)) {}
+    explicit pipe_server(handler h, std::wstring pipe_name = kPipeName,
+                         DWORD io_timeout_ms = kDefaultIoTimeoutMs)
+        : handler_(std::move(h)), pipe_name_(std::move(pipe_name)),
+          io_timeout_ms_(io_timeout_ms) {}
     ~pipe_server() { stop(); }
 
     pipe_server(const pipe_server&) = delete;
@@ -85,7 +91,7 @@ public:
 private:
     HANDLE create_instance(bool first) {
         SECURITY_ATTRIBUTES sa{sizeof(sa), sd_, FALSE};
-        return CreateNamedPipeW(kPipeName,
+        return CreateNamedPipeW(pipe_name_.c_str(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES, sizeof(reply), sizeof(request), 0, &sa);
@@ -128,7 +134,7 @@ private:
         DWORD bytes = 0;
         ResetEvent(ov.hEvent);
         bool ok = ReadFile(pipe, &req, sizeof(req), &bytes, &ov) != FALSE;
-        if (!ok && GetLastError() == ERROR_IO_PENDING) ok = wait_io(pipe, ov, 1000, bytes);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) ok = wait_io(pipe, ov, io_timeout_ms_, bytes);
         if (!ok || bytes != sizeof(req) || req.magic != kMagic || req.version != kVersion) {
             rejected_.fetch_add(1);
             return;
@@ -149,10 +155,19 @@ private:
         rep.magic = kMagic;
         ResetEvent(ov.hEvent);
         ok = WriteFile(pipe, &rep, sizeof(rep), &bytes, &ov) != FALSE;
-        if (!ok && GetLastError() == ERROR_IO_PENDING) ok = wait_io(pipe, ov, 1000, bytes);
-        // DisconnectNamedPipe discards unread data: wait until the client has
-        // read the reply (CallNamedPipeW reads at once, or closes on failure).
-        if (ok) FlushFileBuffers(pipe);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) ok = wait_io(pipe, ov, io_timeout_ms_, bytes);
+        // DisconnectNamedPipe discards unread reply bytes, while synchronous
+        // FlushFileBuffers would block forever on a stalled client (and hang
+        // stop()). Wait for the client to close its end (CallNamedPipeW does
+        // so right after reading the reply) via a bounded, cancellable
+        // overlapped read instead.
+        if (ok && running_) {
+            char eof = 0;
+            ResetEvent(ov.hEvent);
+            if (!ReadFile(pipe, &eof, 1, &bytes, &ov) && GetLastError() == ERROR_IO_PENDING) {
+                wait_io(pipe, ov, io_timeout_ms_, bytes);
+            }
+        }
     }
 
     void cleanup() {
@@ -161,6 +176,8 @@ private:
     }
 
     handler handler_;
+    std::wstring pipe_name_;
+    DWORD io_timeout_ms_;
     HANDLE stop_event_{nullptr};
     PSECURITY_DESCRIPTOR sd_{nullptr};
     std::atomic<bool> running_{false};

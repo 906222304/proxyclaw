@@ -539,7 +539,9 @@ void app::start_traffic_layers() {
     if (hook_) {
         // No driver in this mode: the DLL does the interception.
         hook_mode_active_ = hook_->start(exe_relative(std::wstring_view{hook::kDllName}));
-        if (!hook_mode_active_)
+        if (hook_mode_active_)
+            connection_svc_.set_hook_relay_port(hook_->relay_port_v4());
+        else
             PC_LOG_ERROR("Hook interception failed to start — traffic interception disabled");
         return;
     }

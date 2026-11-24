@@ -310,6 +310,80 @@ void test_conflict_and_estimate() {
     check(!c.contains("estimate") && c.contains("conflict"), "udp recorded keys");
 }
 
+void test_resolve_tcp_decision_hook_mode() {
+    DecisionLog log(64);
+    auto rec = record(decision_verdict::proxied, decision_reason::none, 42);
+    rec.local_port     = 50000;
+    rec.remote_addr[0] = 0x01010101;   // 1.1.1.1
+    rec.remote_port    = 80;
+    log.record(rec);
+
+    // Hook mode: OS table sees 127.0.0.1:<relay_port>, resolve_tcp_decision
+    // matches (local_port, pid) and restores the real destination.
+    connection_row hook_row;
+    hook_row.pid         = 42;
+    hook_row.local_ip    = "127.0.0.1";
+    hook_row.local_port  = 50000;
+    hook_row.remote_ip   = "127.0.0.1";
+    hook_row.remote_port = 55123;
+    hook_row.remote_addr = 0x7F000001u;
+    hook_row.state       = "ESTABLISHED";
+    resolve_tcp_decision(hook_row, &log, /*hook_relay_port=*/55123);
+    check(hook_row.record.has_value(), "hook row matched recorded decision");
+    check(hook_row.remote_ip == "1.1.1.1" && hook_row.remote_port == 80 &&
+          hook_row.remote_addr == 0x01010101,
+          "hook row restored original remote endpoint: " + hook_row.remote_ip + ":" +
+              std::to_string(hook_row.remote_port));
+    auto f = alive(true);
+    f.rule_id = "rule-1";
+    const json j = tcp_row_to_json(hook_row, f);
+    check(j["proxy_status"] == "PROXIED" && j["decision_source"] == "recorded" &&
+          j["dest"] == "1.1.1.1:80" && j["decision"]["rule_id"] == "rule-1",
+          "hook row JSON reports PROXIED and real destination: " + j.dump());
+
+    // Different PID on the same local port must not inherit PID 42's record.
+    connection_row other_pid = hook_row;
+    other_pid.pid         = 99;
+    other_pid.remote_ip   = "127.0.0.1";
+    other_pid.remote_port = 55123;
+    other_pid.remote_addr = 0x7F000001u;
+    other_pid.record.reset();
+    resolve_tcp_decision(other_pid, &log, /*hook_relay_port=*/55123);
+    check(!other_pid.record.has_value() && other_pid.remote_ip == "127.0.0.1",
+          "hook row with mismatched PID stays unmatched");
+
+    // Non-relay loopback port (e.g. local HTTP API) is NOT rewritten.
+    connection_row local_api = hook_row;
+    local_api.pid         = 42;
+    local_api.remote_ip   = "127.0.0.1";
+    local_api.remote_port = 18080;
+    local_api.remote_addr = 0x7F000001u;
+    local_api.record.reset();
+    resolve_tcp_decision(local_api, &log, /*hook_relay_port=*/55123);
+    check(!local_api.record.has_value() && local_api.remote_port == 18080,
+          "non-relay loopback port is not rewritten");
+
+    // WinDivert mode (hook_relay_port == 0) matches exact 4-tuple only.
+    connection_row wd_row = tcp_row(42);
+    wd_row.local_port  = 50000;
+    wd_row.remote_ip   = "1.1.1.1";
+    wd_row.remote_port = 80;
+    wd_row.remote_addr = 0x01010101;
+    resolve_tcp_decision(wd_row, &log, /*hook_relay_port=*/0);
+    check(wd_row.record.has_value() && wd_row.record->verdict == decision_verdict::proxied,
+          "windivert exact tuple match works");
+
+    // Listening socket is never matched.
+    connection_row listener = hook_row;
+    listener.remote_ip   = "127.0.0.1";
+    listener.remote_port = 55123;
+    listener.remote_addr = 0x7F000001u;
+    listener.listening   = true;
+    listener.record.reset();
+    resolve_tcp_decision(listener, &log, /*hook_relay_port=*/55123);
+    check(!listener.record.has_value(), "listening socket ignored");
+}
+
 } // namespace
 
 int main() {
@@ -321,6 +395,7 @@ int main() {
     test_udp();
     test_record_fits_and_rows();
     test_conflict_and_estimate();
+    test_resolve_tcp_decision_hook_mode();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

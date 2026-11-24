@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Hook mode: `/api/tcp` and `/api/connections` now show the original destination
+  and recorded `PROXIED` decision for hook-redirected TCP connections instead of
+  `127.0.0.1:<relay_port>` as `IGNORED` (`global_exclude`).
+- Hook mode: the control pipe server no longer calls synchronous
+  `FlushFileBuffers`, which could hang a worker thread (or shutdown) if a client
+  stalled without reading its reply; it now waits for client EOF with a bounded,
+  cancellable overlapped read.
+
 ## v0.15.1 (2026-11-23)
 
 ### Fixed

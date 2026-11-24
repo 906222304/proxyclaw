@@ -316,9 +316,13 @@ if(BUILD_TESTING AND WIN32)
         LIBS ws2_32)
     proxyclaw_unit_test(udp_first_packet_tests
         SOURCES tests/test_udp_first_packet.cpp)
-    # Hook mode: flow table + pipe wire format.
+    # Hook mode: flow table + pipe wire format + control pipe server.
     proxyclaw_unit_test(hook_flow_table_tests
         SOURCES tests/test_hook_flow_table.cpp)
+    proxyclaw_unit_test(hook_pipe_server_tests
+        SOURCES tests/test_hook_pipe_server.cpp
+        FAKES ${CMAKE_SOURCE_DIR}/tests/network_fakes
+        LIBS advapi32)
     # v0.14 #8: icon cache bookkeeping (LRU cap, negative entries + backoff).
     proxyclaw_unit_test(icon_store_tests
         SOURCES tests/test_icon_store.cpp)

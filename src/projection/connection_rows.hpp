@@ -75,6 +75,13 @@ struct connection_facts {
     return d.pid == 0 || d.pid == pid;
 }
 
+// Match an OS TCP row against DecisionLog. In hook mode the OS table sees the
+// loopback relay (127.0.0.1:<hook_relay_port>) while the recorded decision
+// holds the original destination: match by (local_port, pid) and restore the
+// original remote IP/port so the UI shows the real peer and PROXIED verdict.
+void resolve_tcp_decision(connection_row& row, const DecisionLog* decisions,
+                          uint16_t hook_relay_port = 0);
+
 // `conflict` object of a row: {"manual", "winner", "shadowed_rule_ids"}.
 // Emitted only when there is a conflict (the key is absent otherwise).
 [[nodiscard]] nlohmann::json conflict_to_json(const rule_conflict& c);

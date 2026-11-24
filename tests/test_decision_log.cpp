@@ -204,6 +204,34 @@ void concurrent_writers_and_readers() {
               << " reader_hits=" << hits.load() << "\n";
 }
 
+void find_tcp_v4_proxied_lookup() {
+    DecisionLog log(64);
+    // Older proxied record for PID 10, then a direct record and an IPv6 record
+    // on the same port, then a proxied record for PID 20.
+    log.record(tcp(51000, 0x01010101, 80, 10, decision_verdict::proxied));
+    log.record(tcp(51000, 0x08080808, 853, 10, decision_verdict::direct,
+                   decision_reason::rule_exclude_port));
+    DecisionRecord v6 = tcp(51000, 0x02020202, 443, 10, decision_verdict::proxied);
+    v6.flags |= decision_flags::IPV6;
+    log.record(v6);
+    log.record(tcp(51000, 0x09090909, 443, 20, decision_verdict::proxied));
+
+    auto p10 = log.find_tcp_v4_proxied(51000, 10);
+    check(p10 && p10->remote_addr[0] == 0x01010101 && p10->remote_port == 80 && p10->pid == 10,
+          "find_tcp_v4_proxied skips direct, IPv6, and other-PID records");
+    auto p20 = log.find_tcp_v4_proxied(51000, 20);
+    check(p20 && p20->remote_addr[0] == 0x09090909 && p20->remote_port == 443 && p20->pid == 20,
+          "find_tcp_v4_proxied matches requested PID");
+    check(!log.find_tcp_v4_proxied(51000, 99).has_value(), "unmatched PID returns nullopt");
+    check(!log.find_tcp_v4_proxied(51000, 0).has_value(), "PID 0 never matches");
+
+    // Newer proxied IPv4 record for PID 10 wins over older one.
+    log.record(tcp(51000, 0x01000001, 443, 10, decision_verdict::proxied));
+    auto p10_new = log.find_tcp_v4_proxied(51000, 10);
+    check(p10_new && p10_new->remote_addr[0] == 0x01000001 && p10_new->remote_port == 443,
+          "newest proxied IPv4 record for (port, pid) wins");
+}
+
 } // namespace
 
 int main() {
@@ -213,6 +241,7 @@ int main() {
     chain_stops_at_evicted();
     udp_and_ipv6();
     names();
+    find_tcp_v4_proxied_lookup();
     concurrent_writers_and_readers();
     if (failures) {
         std::cerr << failures << " decision_log check(s) failed\n";

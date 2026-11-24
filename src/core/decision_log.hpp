@@ -240,6 +240,17 @@ public:
         });
     }
 
+    // Newest proxied IPv4 TCP decision for (local_port, pid). Used in hook mode
+    // where the OS TCP table sees the loopback relay endpoint instead of the
+    // real destination recorded at connect() time.
+    std::optional<DecisionRecord> find_tcp_v4_proxied(uint16_t local_port, uint32_t pid) const {
+        if (pid == 0) return std::nullopt;
+        return find(decision_proto::tcp, local_port, [&](const DecisionRecord& r) {
+            return !(r.flags & decision_flags::IPV6) &&
+                   r.verdict == decision_verdict::proxied && r.pid == pid;
+        });
+    }
+
     struct stats {
         uint64_t written;
         uint64_t dropped;

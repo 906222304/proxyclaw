@@ -34,7 +34,9 @@ export default function JsonEditor({ value, onChange, onSave, dark }: {
   const theme = useRef(new Compartment())
   // Latest callbacks without recreating the editor.
   const cb = useRef({ onChange, onSave })
-  cb.current = { onChange, onSave }
+  useEffect(() => {
+    cb.current = { onChange, onSave }
+  })
 
   useEffect(() => {
     const state = EditorState.create({
@@ -73,6 +75,7 @@ export default function JsonEditor({ value, onChange, onSave, dark }: {
       view.current = null
     }
     // The editor is created once; value/dark updates are dispatched below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { revealFile } from '@/api/client'
 import { logQuery } from '@/api/queries'
 import { Button } from '@/components/ui/button'
@@ -32,8 +32,6 @@ export function LogViewer() {
   const filtered = useMemo(() => filterLog(snapshot?.text ?? '', query, level), [snapshot, query, level])
   const updatedAt = log.dataUpdatedAt ? new Date(log.dataUpdatedAt).toLocaleTimeString('zh-CN') : ''
 
-  useEffect(() => { setActionMessage('') }, [open, automatic])
-
   // Keep the view pinned to the newest lines unless the user scrolled up.
   useLayoutEffect(() => {
     const el = pane.current
@@ -65,10 +63,10 @@ export function LogViewer() {
 
   return (
     <>
-      <Button size="sm" onClick={() => setOpen(true)}>查看日志</Button>
+      <Button size="sm" onClick={() => { setActionMessage(''); setOpen(true) }}>查看日志</Button>
       <Dialog
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={v => { setActionMessage(''); setOpen(v) }}
         title="运行日志"
         description="查看最近的连接与错误记录，自动刷新间隔为 3 秒。"
         className="h-[80vh] max-w-5xl"
@@ -84,7 +82,7 @@ export function LogViewer() {
               options={[{ value: 'all', label: '全部日志' }, { value: 'problems', label: '警告和错误' }]}
             />
             <label className="flex items-center gap-2 whitespace-nowrap text-xs">
-              <Switch checked={automatic} onCheckedChange={setAutomatic} aria-label="自动刷新" />自动刷新
+              <Switch checked={automatic} onCheckedChange={v => { setActionMessage(''); setAutomatic(v) }} aria-label="自动刷新" />自动刷新
             </label>
             <Button size="sm" disabled={log.isFetching} onClick={() => void log.refetch()}>刷新</Button>
             <Button size="sm" disabled={!filtered} onClick={copy}>复制日志</Button>

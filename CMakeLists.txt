@@ -51,6 +51,10 @@ endif()
 # MSVC-specific settings
 if(MSVC)
     add_compile_options(/utf-8)
+    # Strip CMake's default /W3 so project targets compile at /W4 without
+    # D9025 override warnings; third-party targets (detours) set their own.
+    string(REGEX REPLACE "/W[0-4]" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    set(PROXYCLAW_MSVC_WARNINGS /W4 /external:anglebrackets /external:W0)
 endif()
 
 # Option to enable WebView2 GUI support
@@ -82,6 +86,8 @@ find_package(asio CONFIG REQUIRED)
 include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
+)
+include_directories(SYSTEM
     ${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/include
 )
 
@@ -157,7 +163,7 @@ if(MSVC)
     # Release keeps a PDB (not packaged) so a crash dump from CI or a user
     # resolves to source lines. /OPT:REF /OPT:ICF restore the defaults /DEBUG
     # turns off, so the exe stays the same size.
-    target_compile_options(proxyclaw PRIVATE /bigobj $<$<CONFIG:Release>:/Zi>)
+    target_compile_options(proxyclaw PRIVATE ${PROXYCLAW_MSVC_WARNINGS} /bigobj $<$<CONFIG:Release>:/Zi>)
     target_link_options(proxyclaw PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
 
     # Parallel compilation: the Visual Studio generator parallelizes across
@@ -185,7 +191,7 @@ if(PROXYCLAW_ENABLE_WEBVIEW2)
 
     if(EXISTS "${WEBVIEW2_PATH}/build/native/include/WebView2.h")
         message(STATUS "Found WebView2 SDK at ${WEBVIEW2_PATH}")
-        include_directories("${WEBVIEW2_PATH}/build/native/include")
+        include_directories(SYSTEM "${WEBVIEW2_PATH}/build/native/include")
 
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             set(WEBVIEW2_ARCH "x64")
@@ -242,7 +248,7 @@ if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND EXISTS "${PROXYCLAW_DETOUR
         ${DETOURS_SRC}/image.cpp ${DETOURS_SRC}/creatwth.cpp ${DETOURS_SRC}/disolx86.cpp
         ${DETOURS_SRC}/disolx64.cpp ${DETOURS_SRC}/disolia64.cpp ${DETOURS_SRC}/disolarm.cpp
         ${DETOURS_SRC}/disolarm64.cpp)
-    target_include_directories(detours PUBLIC ${DETOURS_SRC})
+    target_include_directories(detours SYSTEM PUBLIC ${DETOURS_SRC})
     target_compile_definitions(detours PRIVATE DETOUR_DEBUG=0)
     # Upstream builds at /W4 /WX; it is third-party code here.
     target_compile_options(detours PRIVATE /W3 /wd4091)
@@ -250,7 +256,7 @@ if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND EXISTS "${PROXYCLAW_DETOUR
     add_library(proxyclaw_hook64 SHARED src/hook_dll/hook_dll.cpp src/hook_dll/hook_dll.def)
     target_include_directories(proxyclaw_hook64 PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(proxyclaw_hook64 PRIVATE detours ws2_32)
-    target_compile_options(proxyclaw_hook64 PRIVATE /W4 /EHsc)
+    target_compile_options(proxyclaw_hook64 PRIVATE ${PROXYCLAW_MSVC_WARNINGS} /EHsc)
     # Same output directory as proxyclaw.exe (both are top-level targets),
     # where the host looks for it and package_local.py picks up *.dll.
     add_dependencies(proxyclaw proxyclaw_hook64)
@@ -278,6 +284,9 @@ include(CTest)
 if(BUILD_TESTING AND WIN32)
     add_executable(tcp_redirect_tests tests/test_tcp_redirect.cpp)
     target_link_libraries(tcp_redirect_tests PRIVATE WinDivert ws2_32)
+    if(MSVC)
+        target_compile_options(tcp_redirect_tests PRIVATE ${PROXYCLAW_MSVC_WARNINGS})
+    endif()
     add_custom_command(TARGET tcp_redirect_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${PROXYCLAW_WINDIVERT_DIR}/WinDivert.dll" "$<TARGET_FILE_DIR:tcp_redirect_tests>"
@@ -295,7 +304,7 @@ if(BUILD_TESTING AND WIN32)
         endif()
         target_link_libraries(${name} PRIVATE ${T_LIBS})
         if(MSVC)
-            target_compile_options(${name} PRIVATE /EHsc)
+            target_compile_options(${name} PRIVATE ${PROXYCLAW_MSVC_WARNINGS} /EHsc)
         endif()
         add_test(NAME ${name} COMMAND ${name}
                  WORKING_DIRECTORY "$<TARGET_FILE_DIR:${name}>")
@@ -348,7 +357,7 @@ if(BUILD_TESTING AND WIN32)
         target_include_directories(${harness} BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/tests/network_fakes)
         target_link_libraries(${harness} PRIVATE asio::asio ws2_32 mswsock)
         if(MSVC)
-            target_compile_options(${harness} PRIVATE /EHsc)
+            target_compile_options(${harness} PRIVATE ${PROXYCLAW_MSVC_WARNINGS} /EHsc)
         endif()
     endforeach()
     proxyclaw_unit_test(dns_wire_tests

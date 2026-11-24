@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
-import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useState } from 'react'
 import { setAutostart, testProxyGroupIpv6, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
 import { autostartQuery, configQuery, dnsStatusQuery, statsQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
@@ -103,8 +103,9 @@ export function ConfigEditor() {
     : `不可用：${v6Probe.data.error ?? '未知错误'}${v6Probe.data.failed_stage === 'remote' || v6Probe.data.failed_stage === 'first_byte' ? '。已暂时阻断该代理的 IPv6，应用回落 IPv4' : ''}`
 
   // Draft for the upstream text box; committed on change (blur / Enter).
-  const [upstreamDraft, setUpstreamDraft] = useState('')
-  useEffect(() => { setUpstreamDraft((dns.upstream_host as string) || '') }, [dns.upstream_host])
+  const savedUpstream = (dns.upstream_host as string) || ''
+  const [upstreamDraft, setUpstreamDraft] = useState<string | null>(null)
+  const upstreamValue = upstreamDraft ?? savedUpstream
 
   /** Fetch the latest config, apply `patch`, PUT it, refresh the cache. */
   const patch = useMutation({
@@ -147,7 +148,7 @@ export function ConfigEditor() {
   const taskUnsafe = autostart.enabled && autostart.task_trusted === false
   const canEnableAutostart = autostart.enabled || !locationUnsafe
 
-  const saveDns = (enabled = dnsEnabled, mode = dnsMode, upstream = upstreamDraft) =>
+  const saveDns = (enabled = dnsEnabled, mode = dnsMode, upstream = upstreamValue) =>
     patch.mutate({ fn: dnsPatch(enabled, mode, upstream), ok: 'DNS 设置已保存', fail: '保存 DNS 设置失败' }, {
       // The backend applies DNS in the background; pick up "starting" now.
       onSuccess: () => { void qc.invalidateQueries({ queryKey: queryKeys.dnsStatus }) },
@@ -269,9 +270,14 @@ export function ConfigEditor() {
                   <label htmlFor={`${ids}-up`} className="w-20 shrink-0 text-2xs text-muted-foreground">上游服务器</label>
                   <Input
                     id={`${ids}-up`}
-                    value={upstreamDraft}
+                    value={upstreamValue}
                     onChange={e => setUpstreamDraft(e.target.value)}
-                    onBlur={() => { if (upstreamDraft !== ((dns.upstream_host as string) || '')) saveDns() }}
+                    onBlur={() => {
+                      if (upstreamDraft !== null) {
+                        if (upstreamDraft !== savedUpstream) saveDns(dnsEnabled, dnsMode, upstreamDraft)
+                        setUpstreamDraft(null)
+                      }
+                    }}
                     onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                     placeholder="DNS 服务器地址"
                     className="tabular w-44"
@@ -351,19 +357,14 @@ function RawConfig({ config }: { config: Config | undefined }) {
   const qc = useQueryClient()
   const dark = useIsDark()
   const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
+  // null means no local edits: follow server-side changes (e.g. a toggle above
+  // rewrote the file). Non-null preserves the user's unsaved edits.
+  const [draft, setDraft] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const baseline = stringify(config)
-  const lastBaseline = useRef(baseline)
-  const dirty = open && text !== baseline
-
-  // While there are no local edits, follow server-side changes (e.g. a
-  // toggle above rewrote the file). With local edits, keep the user's work.
-  useEffect(() => {
-    if (open && text === lastBaseline.current) setText(baseline)
-    lastBaseline.current = baseline
-  }, [baseline])
+  const text = draft ?? baseline
+  const dirty = open && draft !== null && draft !== baseline
 
   useEffect(() => {
     if (!message?.ok) return
@@ -373,12 +374,10 @@ function RawConfig({ config }: { config: Config | undefined }) {
 
   const openEditor = async () => {
     setLoadError(null)
+    setDraft(null)
     setOpen(true)
     try {
-      const fresh = await qc.fetchQuery({ ...configQuery, staleTime: 0 })
-      const s = stringify(fresh)
-      lastBaseline.current = s
-      setText(s)
+      await qc.fetchQuery({ ...configQuery, staleTime: 0 })
     } catch (e) {
       setLoadError(errorText(e) || '读取配置失败，请重试')
     }
@@ -396,10 +395,8 @@ function RawConfig({ config }: { config: Config | undefined }) {
       return parsed
     },
     onSuccess: (parsed) => {
-      const s = stringify(parsed)
-      lastBaseline.current = s
       qc.setQueryData(queryKeys.config, parsed)
-      setText(s)
+      setDraft(null)
       setMessage({ ok: true, text: '配置已保存并重新加载' })
       void qc.invalidateQueries({ queryKey: queryKeys.config })
     },
@@ -409,6 +406,7 @@ function RawConfig({ config }: { config: Config | undefined }) {
   const close = () => {
     if (dirty && !confirm('有尚未保存的修改，确定放弃吗？')) return
     setOpen(false)
+    setDraft(null)
     setMessage(null)
   }
   const doSave = () => { if (!save.isPending) save.mutate(text) }
@@ -449,7 +447,7 @@ function RawConfig({ config }: { config: Config | undefined }) {
       ) : (
         <Card className="h-120 overflow-hidden">
           <Suspense fallback={<p role="status" className="p-4 text-sm text-muted-foreground">正在加载配置编辑器…</p>}>
-            <JsonEditor value={text} onChange={setText} onSave={doSave} dark={dark} />
+            <JsonEditor value={text} onChange={v => setDraft(v === baseline ? null : v)} onSave={doSave} dark={dark} />
           </Suspense>
         </Card>
       )}

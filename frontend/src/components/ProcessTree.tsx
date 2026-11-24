@@ -53,11 +53,13 @@ export function ProcessTree({ selectedPid, onSelect }: {
   const total = useMemo(() => countProcesses(processes), [processes])
   const visible = useMemo(() => filterTree(processes, query, filter), [processes, query, filter])
   const matched = useMemo(() => matchedPids(processes, query, filter), [processes, query, filter])
-  const activeSubtree = useMemo(() => subtreeActive(processes, activeSelf), [processes, activity])
-  const isExpanded = (pid: number) => expandedPids.get(pid) ?? searching
+  const activeSubtree = useMemo(() => {
+    const t = Date.now()
+    return subtreeActive(processes, pid => isActive(activity, pid, t))
+  }, [processes, activity])
   const rows = useMemo(
-    () => flattenTree(visible, isExpanded),
-      [visible, expandedPids, searching],
+    () => flattenTree(visible, pid => expandedPids.get(pid) ?? searching),
+    [visible, expandedPids, searching],
   )
 
   const toggle = (pid: number) => {

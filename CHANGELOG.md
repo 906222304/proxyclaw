@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- CI workflow (`.github/workflows/release.yml`) is split into three jobs:
+  `build` (layering, ESLint, `tsc --noEmit`, Vitest, `/W4` native build, CTest,
+  loopback harnesses, portable packaging) → `e2e` (elevated WinDivert/hook
+  e2e, WebView2 screenshots, shutdown stress, API e2e, stress smoke) →
+  `publish` (tag-only GitHub Release). Transient e2e flakes can be re-run
+  without rebuilding and no longer block the packaged release artifact.
+- Project C++ targets now compile with MSVC `/W4` (`/external:anglebrackets
+  /external:W0` keeps third-party headers quiet).
+- Frontend adds ESLint (`npm run lint`) and standalone `tsc --noEmit`
+  (`npm run typecheck`), wired into CI and `scripts/verify.py`, fixing React 19
+  hook lint issues in `ConfigEditor`, `JsonEditor`, `LogViewer`, `ProxiesTab`,
+  and `ProcessTree`.
+
 ## v0.15.2 (2026-11-24)
 
 ### Fixed

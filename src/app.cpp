@@ -120,77 +120,80 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     sync_groups();
     dns_mgr_.recover_crash_state();
 
-    redirect_port_ = acceptor_.start();
-    PC_LOG_INFO("Acceptor listening on port {}", redirect_port_);
-    redirect_port_v6_ = acceptor_v6_.start();
-
-    // SYN parking (kill switch: tcp_syn_parking.enabled). Off means no pool,
-    // no injector thread, and both TCP layers fall back to the pre-parking
-    // code paths — it must bypass the new code entirely, because it is the
-    // one thing left when the new code is what broke.
-    {
-        const auto& sp = config_.get_v2().tcp_syn_parking;
-        if (sp.enabled) {
-            parker_ = std::make_unique<syn_parker>(*port_tracker_, sp.watchdog_ms,
-                                                   static_cast<uint32_t>(std::max(0, sp.pool_size)));
-            parker_->set_decision_log(decision_log_.get());
-            PC_LOG_INFO("[SYN-PARK] enabled: watchdog={}ms pool={}",
-                        parker_->watchdog_ms(), parker_->pool_size());
-        } else {
-            PC_LOG_WARN("[SYN-PARK] disabled by config (tcp_syn_parking.enabled=false): "
-                        "a process's first connection may escape interception");
-        }
-    }
-
-    // Both SOCKET layers run on the same strand as the tree manager, so the
-    // fallback resolve is a plain in-line call — no marshalling needed.
-    auto resolve_unknown_pid = [this](DWORD pid) { return tree_mgr_.resolve_pid_now(pid); };
-
-    wd_socket_      = std::make_unique<windivert_socket>(ioc_, strand_, tree_mgr_.tree(),
-                                                         tree_mgr_.rules(), *port_tracker_,
-                                                         resolve_unknown_pid, parker_.get(),
-                                                         decision_log_.get());
-    wd_network_     = std::make_unique<windivert_network>(*port_tracker_, redirect_port_,
-                                                          parker_.get());
-    ipv6_block_.store(ipv6_blocks(config_.get_v2().ipv6));
-    ipv6_proxy_.store(ipv6_proxies(config_.get_v2().ipv6) && redirect_port_v6_ != 0);
-    wd_network_v6_  = std::make_unique<windivert_network_v6>(v6_flows_, redirect_port_v6_);
-    wd_socket_->set_ipv6(&ipv6_block_, &ipv6_proxy_,
-                         [this](uint16_t port, v6_verdict v, const v6_flow* flow) {
-        // Publish (or forget) the flow before the verdict releases parked SYNs.
-        if (v == v6_verdict::proxy && flow) v6_flows_.publish(port, *flow);
-        else if (v != v6_verdict::none)     v6_flows_.erase(port);
-        if (wd_network_v6_) wd_network_v6_->on_decided(port, v);
-    });
-    wd_socket_->set_ipv6_egress(&ipv6_egress_);
-    PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
-    wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
-                                                              tree_mgr_.rules(), *udp_port_tracker_,
-                                                              resolve_unknown_pid);
-    wd_socket_udp_->set_decision_log(decision_log_.get());
-    wd_socket_udp_->set_ipv6_block(&ipv6_block_);
-    wd_socket_udp_->set_ipv6_proxy(&ipv6_proxy_);
-    {
-        const auto& up = config_.get_v2().udp_first_packet;
-        const auto park_ms = up.enabled ? std::clamp(up.watchdog_ms, 5, 50) : 0;
-        if (!up.enabled)
-            PC_LOG_WARN("[WD-NET-UDP] first-packet parking disabled by config "
-                        "(udp_first_packet.enabled=false)");
-        wd_network_udp_ = std::make_unique<windivert_network_udp>(
-            *udp_port_tracker_, udp_session_table_, policy_pub_, std::chrono::milliseconds{park_ms});
-        wd_network_udp_->set_decision_log(decision_log_.get());
-        wd_network_udp_->set_ipv6_block(&ipv6_block_);
-        wd_network_udp_->set_ipv6_proxy(&ipv6_proxy_);
-        wd_network_udp_->set_ipv6_egress(&ipv6_egress_);
-    }
-    wd_socket_udp_->set_decision_listener([this](uint16_t port) {
-        if (wd_network_udp_) wd_network_udp_->release(port);
-    });
-
     hook_mode_requested_ = uses_hook(config_.get_v2().interception);
+    ipv6_block_.store(ipv6_blocks(config_.get_v2().ipv6));
     if (hook_mode_requested_) {
+        // Hook mode uses its own loopback relays; leave WinDivert acceptors
+        // and driver layers unstarted. ipv6_proxy_ is enabled once hook::mode
+        // binds its [::1] relay in start_traffic_layers().
         hook_ = std::make_unique<hook::mode>(ioc_, strand_, tree_mgr_, tcp_groups_, ipv6_egress_,
                                              decision_log_.get(), ipv6_block_, ipv6_proxy_);
+    } else {
+        redirect_port_ = acceptor_.start();
+        PC_LOG_INFO("Acceptor listening on port {}", redirect_port_);
+        redirect_port_v6_ = acceptor_v6_.start();
+
+        // SYN parking (kill switch: tcp_syn_parking.enabled). Off means no pool,
+        // no injector thread, and both TCP layers fall back to the pre-parking
+        // code paths — it must bypass the new code entirely, because it is the
+        // one thing left when the new code is what broke.
+        {
+            const auto& sp = config_.get_v2().tcp_syn_parking;
+            if (sp.enabled) {
+                parker_ = std::make_unique<syn_parker>(*port_tracker_, sp.watchdog_ms,
+                                                       static_cast<uint32_t>(std::max(0, sp.pool_size)));
+                parker_->set_decision_log(decision_log_.get());
+                PC_LOG_INFO("[SYN-PARK] enabled: watchdog={}ms pool={}",
+                            parker_->watchdog_ms(), parker_->pool_size());
+            } else {
+                PC_LOG_WARN("[SYN-PARK] disabled by config (tcp_syn_parking.enabled=false): "
+                            "a process's first connection may escape interception");
+            }
+        }
+
+        // Both SOCKET layers run on the same strand as the tree manager, so the
+        // fallback resolve is a plain in-line call — no marshalling needed.
+        auto resolve_unknown_pid = [this](DWORD pid) { return tree_mgr_.resolve_pid_now(pid); };
+
+        wd_socket_      = std::make_unique<windivert_socket>(ioc_, strand_, tree_mgr_.tree(),
+                                                             tree_mgr_.rules(), *port_tracker_,
+                                                             resolve_unknown_pid, parker_.get(),
+                                                             decision_log_.get());
+        wd_network_     = std::make_unique<windivert_network>(*port_tracker_, redirect_port_,
+                                                              parker_.get());
+        ipv6_proxy_.store(ipv6_proxies(config_.get_v2().ipv6) && redirect_port_v6_ != 0);
+        wd_network_v6_  = std::make_unique<windivert_network_v6>(v6_flows_, redirect_port_v6_);
+        wd_socket_->set_ipv6(&ipv6_block_, &ipv6_proxy_,
+                             [this](uint16_t port, v6_verdict v, const v6_flow* flow) {
+            // Publish (or forget) the flow before the verdict releases parked SYNs.
+            if (v == v6_verdict::proxy && flow) v6_flows_.publish(port, *flow);
+            else if (v != v6_verdict::none)     v6_flows_.erase(port);
+            if (wd_network_v6_) wd_network_v6_->on_decided(port, v);
+        });
+        wd_socket_->set_ipv6_egress(&ipv6_egress_);
+        PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
+        wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
+                                                                  tree_mgr_.rules(), *udp_port_tracker_,
+                                                                  resolve_unknown_pid);
+        wd_socket_udp_->set_decision_log(decision_log_.get());
+        wd_socket_udp_->set_ipv6_block(&ipv6_block_);
+        wd_socket_udp_->set_ipv6_proxy(&ipv6_proxy_);
+        {
+            const auto& up = config_.get_v2().udp_first_packet;
+            const auto park_ms = up.enabled ? std::clamp(up.watchdog_ms, 5, 50) : 0;
+            if (!up.enabled)
+                PC_LOG_WARN("[WD-NET-UDP] first-packet parking disabled by config "
+                            "(udp_first_packet.enabled=false)");
+            wd_network_udp_ = std::make_unique<windivert_network_udp>(
+                *udp_port_tracker_, udp_session_table_, policy_pub_, std::chrono::milliseconds{park_ms});
+            wd_network_udp_->set_decision_log(decision_log_.get());
+            wd_network_udp_->set_ipv6_block(&ipv6_block_);
+            wd_network_udp_->set_ipv6_proxy(&ipv6_proxy_);
+            wd_network_udp_->set_ipv6_egress(&ipv6_egress_);
+        }
+        wd_socket_udp_->set_decision_listener([this](uint16_t port) {
+            if (wd_network_udp_) wd_network_udp_->release(port);
+        });
     }
 
     icons_.init();
@@ -314,9 +317,9 @@ nlohmann::json app::traffic_stats() const {
     j["dns"] = dns_mgr_.status().to_json();
     // The interception actually running; the config value applies on restart.
     j["interception"] = {{"mode", hook_mode_requested_ ? "hook" : "windivert"},
-                         {"active", hook_mode_requested_ ? hook_mode_active_ : true}};
+                         {"active", interception_active_.load(std::memory_order_relaxed)}};
     if (hook_) j["interception"]["hook"] = hook_->stats();
-    j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", redirect_port_v6_ != 0},
+    j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", ipv6_proxy_available()},
                  {"flows", v6_flows_.size()}};
     // ipv6.mode = proxy: groups found unable to reach IPv6 (blocked, so
     // applications fall back to IPv4) and why.
@@ -397,7 +400,7 @@ void app::wire_observers() {
             set_log_level(cfg.log_level);
             {
                 const bool was_block = ipv6_block_.exchange(ipv6_blocks(cfg.ipv6));
-                const bool was_proxy = ipv6_proxy_.exchange(ipv6_proxies(cfg.ipv6) && redirect_port_v6_ != 0);
+                const bool was_proxy = ipv6_proxy_.exchange(ipv6_proxies(cfg.ipv6) && ipv6_proxy_available());
                 if (was_block != ipv6_block_.load() || was_proxy != ipv6_proxy_.load())
                     PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
             }
@@ -538,22 +541,28 @@ void app::start_traffic_layers() {
 
     if (hook_) {
         // No driver in this mode: the DLL does the interception.
-        hook_mode_active_ = hook_->start(exe_relative(std::wstring_view{hook::kDllName}));
-        if (hook_mode_active_)
+        const bool active = hook_->start(exe_relative(std::wstring_view{hook::kDllName}));
+        interception_active_.store(active, std::memory_order_relaxed);
+        if (active) {
             connection_svc_.set_hook_relay_port(hook_->relay_port_v4());
-        else
+            ipv6_proxy_.store(ipv6_proxies(cfg_store_.get().ipv6) && hook_->relay_port_v6() != 0);
+            PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
+        } else {
             PC_LOG_ERROR("Hook interception failed to start — traffic interception disabled");
+        }
         return;
     }
 
-    if (wd_socket_->open()) {
+    const bool socket_ok = wd_socket_->open();
+    if (socket_ok) {
         wd_socket_->start();
         PC_LOG_INFO("WinDivert SOCKET layer started");
     } else {
         PC_LOG_ERROR("WinDivert SOCKET layer failed — traffic interception disabled");
     }
 
-    if (wd_network_->open()) {
+    const bool network_ok = wd_network_->open();
+    if (network_ok) {
         // The injector sends through the NETWORK handle; it must be running
         // before the workers can park anything.
         if (parker_) parker_->start(wd_network_->handle(), redirect_port_);
@@ -562,6 +571,7 @@ void app::start_traffic_layers() {
     } else {
         PC_LOG_ERROR("WinDivert NETWORK layer failed — traffic interception disabled");
     }
+    interception_active_.store(socket_ok && network_ok, std::memory_order_relaxed);
 
     if (wd_network_v6_->open()) {
         wd_network_v6_->start();
@@ -672,9 +682,11 @@ void app::shutdown() noexcept {
     step("syn parker stopped");
     PC_LOG_INFO("WinDivert layers stopped");
 
-    acceptor_.stop();
-    acceptor_v6_.stop();
-    step("acceptors stopped");
+    if (!hook_mode_requested_) {
+        acceptor_.stop();
+        acceptor_v6_.stop();
+        step("acceptors stopped");
+    }
     api_server_.stop();
     step("api server stopped");
 

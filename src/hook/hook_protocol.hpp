@@ -23,8 +23,9 @@ inline constexpr wchar_t  kPipeName[] = L"\\\\.\\pipe\\proxyclaw-hook-v1";
 inline constexpr wchar_t  kDllName[]  = L"proxyclaw_hook64.dll";
 
 enum class msg_type : uint32_t {
-    connect = 1,   // a TCP connect() / WSAConnect / ConnectEx is about to run
-    child   = 2,   // a suspended child was just created: inject it?
+    connect      = 1,   // a TCP connect() / WSAConnect / ConnectEx is about to run
+    child        = 2,   // a suspended child was just created: inject it?
+    child_failed = 3,   // import-table edit failed: let the sweep retry after resume
 };
 
 enum class verdict : uint32_t {

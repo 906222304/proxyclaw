@@ -45,6 +45,7 @@
 #include "domain/process_tree_manager.hpp"
 #include "hook/hook_acceptor.hpp"
 #include "hook/hook_flow_table.hpp"
+#include "hook/hook_inject_tracker.hpp"
 #include "hook/hook_injector.hpp"
 #include "hook/hook_pipe_server.hpp"
 #include "hook/hook_protocol.hpp"
@@ -70,16 +71,18 @@ public:
     bool start(const std::filesystem::path& dll);
     void stop();
 
-    uint16_t relay_port_v4() const noexcept { return port_v4_; }
+    uint16_t relay_port_v4() const noexcept { return port_v4_.load(std::memory_order_relaxed); }
+    uint16_t relay_port_v6() const noexcept { return port_v6_.load(std::memory_order_relaxed); }
 
     nlohmann::json stats() const;
 
 private:
-    using key = std::pair<DWORD, uint64_t>;   // (pid, psn)
+    using key = inject_tracker::key;   // (pid, psn)
 
     reply on_request(const request& req, DWORD client_pid);   // pipe threads
     reply decide_connect(const request& req, DWORD pid);      // strand
     reply decide_child(DWORD parent, DWORD child);            // strand
+    reply on_child_failed(DWORD parent, DWORD child);         // strand
     void  record(const request& req, DWORD pid, DecisionRecord& rec);
 
     void schedule_sweep();                                    // strand
@@ -99,8 +102,8 @@ private:
     flow_table flows_;
     acceptor acceptor_v4_;
     acceptor acceptor_v6_;
-    uint16_t port_v4_{0};
-    uint16_t port_v6_{0};
+    std::atomic<uint16_t> port_v4_{0};
+    std::atomic<uint16_t> port_v6_{0};
     std::unique_ptr<pipe_server> pipe_;
     asio::steady_timer sweep_timer_;
     std::atomic<bool> running_{false};
@@ -108,9 +111,7 @@ private:
     // Injector thread: the strand hands it the live proxied set each sweep.
     std::mutex inj_mu_;
     std::condition_variable_any inj_cv_;
-    std::vector<key> inj_wanted_;
-    bool inj_dirty_{false};
-    std::map<key, inject_result> inj_done_;   // injector-owned except mark_injected
+    inject_tracker tracker_;
     std::jthread injector_;
 
     std::atomic<uint64_t> n_proxy_{0}, n_direct_{0}, n_block_{0}, n_child_inject_{0},

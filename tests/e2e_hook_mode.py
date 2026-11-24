@@ -107,6 +107,24 @@ def excluded():
 
 step("excluded", excluded)
 
+def bound_nic():
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        u.connect(("1.1.1.1", 80))
+        nic_ip = u.getsockname()[0]
+    finally:
+        u.close()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(10)
+    try:
+        s.bind((nic_ip, 0))
+        s.connect(("1.0.0.1", 443))
+        return [nic_ip, True]
+    finally:
+        s.close()
+
+step("bound_nic", bound_nic)
+
 def child():
     r = subprocess.run([sys.argv[1], "-s", "-k", "-o", "NUL", "-w", "%{http_code}", "--noproxy", "*",
                         "--connect-timeout", "10", "-m", "20", "https://1.1.1.1/"],
@@ -202,8 +220,14 @@ def main() -> int:
             time.sleep(0.5)
         time.sleep(1)
 
-        inter = api_get("/stats", token).get("interception", {})
+        stats0 = api_get("/stats", token)
+        inter = stats0.get("interception", {})
         check("stats.interception", inter.get("mode") == "hook" and inter.get("active") is True, inter)
+        hook0 = inter.get("hook", {})
+        ipv60 = stats0.get("ipv6", {})
+        check("stats.ipv6.proxy_available matches hook relay_port_v6",
+              ipv60.get("proxy_available") is (hook0.get("relay_port_v6", 0) != 0),
+              {"ipv6": ipv60, "relay_port_v6": hook0.get("relay_port_v6")})
 
         socks.take()
         res = subprocess.run([str(app), str(script), str(child), token], capture_output=True, text=True,
@@ -231,6 +255,12 @@ def main() -> int:
               out.get("connectex"))
         check("excluded port direct",
               out.get("excluded") is True and ("1.1.1.1", 853) not in seen, out.get("excluded"))
+        bound_out = out.get("bound_nic")
+        check("non-loopback bound socket connects direct",
+              isinstance(bound_out, list) and len(bound_out) == 2 and bound_out[1] is True
+              and not str(bound_out[0]).startswith("127.")
+              and ("1.0.0.1", 443) not in seen,
+              bound_out)
         child_out = out.get("child")
         check("child injected before its first connect",
               isinstance(child_out, list) and child_out[0] == 0 and ("1.1.1.1", 443) in seen,

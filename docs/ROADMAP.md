@@ -13,7 +13,6 @@
 | # | 项目 | 内容 |
 | --- | --- | --- |
 | 10 | 进程树键盘与 ARIA | `role="tree"/"treeitem"`、`aria-expanded`、`aria-selected`、方向键与 roving tabindex。 |
-| 11 | CI 拆分 + /W4 + ESLint | 构建 / 单元测试 → e2e → 发布（仅标签）；项目源文件 `/W4`；ESLint 与 `tsc --noEmit` 独立步骤。偶发失败的 e2e 不再阻塞发布产物。 |
 | 12 | 文档清理 | 修正过时的注释与文档（批处理 RecvEx/SendEx、“Stage 4”、`config_sse_bridge` 命名、ARCHITECTURE 中的排除与 TCP:53 说明、README 的 IPv6 代理地址说法）。 |
 
 **验收**

@@ -43,6 +43,8 @@ def main() -> None:
     if not (ROOT / "build").is_dir():
         sys.exit("FAIL: build/ missing. Run 'python scripts/prepare_release_deps.py' and 'cmake --preset windows' first.")
 
+    run("frontend lint", 120, ["npm", "run", "lint"], ROOT / "frontend")
+    run("frontend typecheck", 120, ["npm", "run", "typecheck"], ROOT / "frontend")
     run("frontend unit tests", 180, ["npm", "test"], ROOT / "frontend")
     run("frontend build", 240, ["npm", "run", "build"], ROOT / "frontend")
     run("native build", 900, ["cmake", "--build", "build", "--config", "Release"])

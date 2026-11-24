@@ -154,7 +154,7 @@ export function ProxiesTab({ onEditRule }: { onEditRule?: (rule: AutoRule) => vo
       </div>
 
       <GroupEditor editing={editing} onClose={() => setEditing(null)} onSaved={refresh} />
-      <MigrateDialog conflict={conflict} groups={groups} onClose={() => setConflict(null)} onDone={refresh} />
+      <MigrateDialog key={conflict?.group.id ?? 'closed'} conflict={conflict} groups={groups} onClose={() => setConflict(null)} onDone={refresh} />
     </div>
   )
 }
@@ -332,7 +332,6 @@ function MigrateDialog({ conflict, groups, onClose, onDone }: {
 }) {
   const id = useId()
   const [target, setTarget] = useState('0')
-  useEffect(() => { if (conflict) setTarget('0') }, [conflict])
 
   const migrate = useMutation({
     mutationFn: () => migrateProxyGroup(conflict!.group.id, Number.parseInt(target, 10)),

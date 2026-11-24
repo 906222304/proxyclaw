@@ -2,7 +2,7 @@
 
 // api_context — dependency-injection aggregate passed to the transport
 // layer. Each HTTP handler dispatches into ctx.<service>.method(...).
-// Populated in main.cpp after all service + bridge objects are constructed.
+// Populated in clew::app after all service + bridge objects are constructed.
 
 namespace clew {
 
@@ -19,7 +19,7 @@ class stats_service;
 //
 // SSE was retired when the backend->frontend push channel switched to
 // WebView2 PostMessage; handlers no longer reach a broadcast hub. State
-// holders (process_projection / config_sse_bridge) push directly via the
+// holders (process_projection / config_push_bridge) push directly via the
 // frontend_push_sink they hold.
 struct api_context {
     config_service&       config;

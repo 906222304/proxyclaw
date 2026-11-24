@@ -16,6 +16,11 @@
   (`npm run typecheck`), wired into CI and `scripts/verify.py`, fixing React 19
   hook lint issues in `ConfigEditor`, `JsonEditor`, `LogViewer`, `ProxiesTab`,
   and `ProcessTree`.
+- Docs & internal cleanup (v0.14 #12): renamed `config_sse_bridge` →
+  `config_push_bridge`, removed stale `Stage 4` / `Batch RecvEx` / `Monaco` /
+  IOCP / `clew` comments and links across `src/` and `docs/TROUBLESHOOTING*.md`,
+  and refreshed `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/HANDOFF.md`
+  to match the v0.15.2 architecture and split CI workflow.
 
 ## v0.15.2 (2026-11-24)
 

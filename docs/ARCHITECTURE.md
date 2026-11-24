@@ -6,7 +6,7 @@ Contributor-facing technical overview. For the end-user intro see [README.md](..
 
 - **Language**: C++23 (concepts, C++20 coroutines for relay, `using enum`, fold expressions)
 - **Build**: CMake + pinned dependencies (`scripts/prepare_release_deps.py`)
-- **Core deps**: WinDivert (kernel traffic intercept), WebView2 (embedded browser UI)
+- **Core deps**: WinDivert (kernel traffic intercept), Microsoft Detours (optional user-mode hook DLL), WebView2 (embedded browser UI)
 - **Backend libs** (pinned, checksum-verified): `quill` (logging), `nlohmann-json`, `cpp-httplib`, `asio` (standalone)
 - **Frontend**: React 19 + TypeScript + Vite 7 + Tailwind CSS 4; TanStack Query (all server state: polling via `refetchInterval`, push writes into the cache), TanStack Virtual (process tree + network table), Radix primitives, CodeMirror 6 (JSON-only, lazy-loaded)
 - **IPC**: HTTP API for CRUD + WebView2 in-process PostMessage for backend → frontend push (replaces the previous SSE channel)
@@ -26,6 +26,7 @@ src/
   common/                        - cross-layer utilities
     api_context.hpp                  - DI aggregate of service refs passed to handlers
     api_exception.{hpp,cpp}          - api_error enum + api_exception (throwable across layers)
+    bounded_backoff_cache.hpp        - LRU + exponential failure backoff store (icons)
     json_patch.hpp                   - apply_patch + field_binding template (whitelisted PATCH)
     process_tree_json.hpp            - shared process-tree → JSON serialization
     winsock_session.hpp              - RAII WSAStartup / WSACleanup
@@ -52,13 +53,12 @@ src/
                                        + pushes through frontend_push_sink with a
                                        100 ms strand-timer coalesce window for
                                        push_urgency::batched events
-    config_sse_bridge.{hpp,cpp}      - config_store observer → push auto_rule_changed
-                                       (file name retained for git history; the sink
-                                       is now PostMessage, not SSE)
+    connection_rows.{hpp,cpp}        - off-strand row/decision resolution and JSON builder
+    config_push_bridge.{hpp,cpp}     - config_store observer → push auto_rule_changed
 
   transport/                     - HTTP API server + push channel interface
     http_api_server.{hpp,cpp}        - cpp-httplib server + 8-worker thread pool
-    middleware.{hpp,cpp}             - CORS / OPTIONS / cache headers (post-routing)
+    middleware.{hpp,cpp}             - Host/Origin/token auth + no-store headers
     route_def.hpp                    - {method, pattern, handler} descriptor + http_method enum
     route_registry.{hpp,cpp}         - dispatcher: 3-tier exception catch + per-request log
     response_utils.{hpp,cpp}         - json body helpers (parse_json_body / write_json)
@@ -76,20 +76,32 @@ src/
     syn_parker.hpp                   - SYN parking: bounded packet pool + injector thread (release / watchdog sweep)
     windivert_socket.hpp             - TCP SOCKET SNIFF: CONNECT -> one published decision (proxied/direct), CLOSE -> slot cleanup
     windivert_network.hpp            - TCP NETWORK reflection: parks undecided SYNs, reflects proxied flows
-    dns_forwarder.hpp                - UDP DNS listener, forwards via SOCKS5 UDP ASSOCIATE
-    dns_manager.hpp                  - dns_forwarder lifecycle + system DNS state
+    windivert_network_v6.hpp         - IPv6 TCP gate + reflection (ipv6.mode = block / proxy)
+    dns_forwarder.hpp                - UDP DNS listener, forwards via SOCKS5 UDP ASSOCIATE with DNS-over-TCP fallback
+    dns_manager.hpp                  - dns_forwarder background lifecycle + system DNS state
     system_dns.hpp                   - Win32 SetInterfaceDnsSettings + dns_state.json persist
+
+  hook/                          - optional user-mode hook interception host (interception.mode = "hook")
+    hook_protocol.hpp                - 40 B request / 16 B reply named-pipe wire format
+    hook_pipe_server.hpp             - overlapped control pipe server (\\.\pipe\proxyclaw-hook-v1)
+    hook_mode.{hpp,cpp}              - strand decision handler + 1 s injection sweep
+    hook_inject_tracker.hpp          - generation-tagged (pid, psn) injection tracker
+    hook_injector.hpp                - CreateRemoteThread + LoadLibraryW injector + eligibility checks
+    hook_flow_table.hpp              - pending (family, src_port) -> destination flows
+    hook_acceptor.hpp                - local IPv4/IPv6 relay listeners
+
+  hook_dll/                      - injected x64 DLL (proxyclaw_hook64.dll, Microsoft Detours)
+    hook_dll.cpp / hook_dll.def      - hooks connect/WSAConnect/ConnectEx/getpeername/closesocket/CreateProcessInternalW
 
   process/                       - process discovery + tree
     flat_tree.hpp                    - vector<process_entry> + LC-RS indices, O(1) PID lookup
     etw_consumer.hpp                 - ETW real-time ProcessStart / ProcessStop consumer
-    ntquery_snapshot.hpp             - Initial full process snapshot via NtQuerySystemInformation
     tcp_table.hpp / udp_table.hpp    - OS connection table queries
 
   rules/                         - auto-rule matching + traffic filtering
     rule_engine_v3.hpp               - flat_tree flag-based engine, no mutex
     rule_conflict.hpp                - std-only: winner + shadowed rule ids for one process (v0.14 #4)
-    traffic_filter.hpp               - CIDR / port destination filter
+    traffic_filter.hpp               - CIDR / port destination filter (IPv4 + IPv6)
     policy_table.hpp                 - immutable dst-exclude table, published on
                                        config change; UDP workers read it lock-free
 
@@ -97,6 +109,7 @@ src/
     acceptor.hpp                     - Asio TCP acceptor, spawns relay coroutines
     relay.hpp                        - C++20 coroutine bidirectional pipe + SOCKS5 handshake
     socks5_async.hpp                 - Async SOCKS5 handshake coroutine
+    ipv6_egress.hpp                  - per-group IPv6 egress failure tracking (5 min IPv4 fallback)
 
   udp/                           - UDP relay (mirrors TCP, per-app-port sessions)
     windivert_socket_udp.hpp / windivert_network_udp.hpp
@@ -117,12 +130,14 @@ tests/
   proxy_health_harness.cpp,
   dns_forwarder_harness.cpp          - loopback integration hosts, driven by run_proxy_health_tests.py
                                        and run_dns_network_tests.py in CI
-  e2e_rule_policy.py                 - real-WinDivert rule / UDP / speed-test e2e (CI, admin)
+  e2e_rule_policy.py                 - real-WinDivert rule / IPv6 / UDP / speed-test e2e (CI, admin)
+  e2e_hook_mode.py                   - real hook-mode DLL injection e2e (CI, admin)
   e2e_api_test.py                    - management API e2e against the packaged exe (CI, admin):
                                        stats/tables, icon 200/204/400, rule + group CRUD, exit routing
                                        of fresh probe processes, hijack/batch notify, config observers,
                                        DNS proxy round trip. --exe launches proxyclaw with a recording
                                        SOCKS5 server; without it, attaches to a running instance
+  shutdown_stress.py                 - 24-round close-while-proxying stress test (CI, admin)
   api_token.py                       - shared PROXYCLAW_API_TOKEN for the Python harnesses
   stress_backend.py                  - backend stress + measurement; --ci is the bounded CI smoke
                                        (ETW churn, hijack cycling, concurrent GETs, proxyclaw RSS /
@@ -130,18 +145,13 @@ tests/
                                        Summary uploaded as the `stress-summary` artifact
   stress_etw.py                      - ETW process-churn driver (no admin), spawned by stress_backend
   ui_webview2_screenshots.py         - packaged app in a real WebView2 window, screenshots over CDP (CI)
-  test_components.cpp                - component suite (rule engine, tree, port tracker, SYN parker,
-                                       policy table, SOCKS5 UDP, system DNS state); CTest components_tests
-  test_icon_resolution.cpp           - real Shell icon extraction + 64x64 PNG, negative cache, pid lookup; CTest icon_resolution_tests
-  test_icon_store.cpp                - bounded_backoff_cache: LRU cap, negative entries + backoff; CTest icon_store_tests
-  test_window_dpi.cpp                - native window PerMonitorV2 / DPI change / icons, asInvoker
-                                       manifest; CTest window_dpi_tests (WebView2 builds only)
   network_fakes/ dns_fakes/ projection_fakes/ - header fakes for the unit tests
 scripts/
-  verify.py                          - one-shot: frontend tests/build + cpp build + ctest + layering
-                                       grep guards + real-WinDivert e2e (admin)
+  verify.py                          - one-shot: frontend lint/typecheck/tests/build + cpp build + ctest +
+                                       layering checks + real-WinDivert e2e (admin)
 assets/
-  clew.svg / clew.ico / clew.rc      - Embedded Windows icon
+  proxyclaw.png / proxyclaw.ico /
+  proxyclaw.rc / proxyclaw.manifest  - Embedded Windows icon and UAC/DPI manifest
 ```
 
 ## Key Architectural Decisions
@@ -155,13 +165,13 @@ assets/
 ### Process tree: ETW + NtQuery snapshot + Flat Tree
 
 - Real-time ETW `ProcessStart` / `ProcessStop` instead of polling
-- `ntquery_snapshot` provides the initial full tree; ETW maintains it incrementally
+- `NtQuerySystemInformation` provides the initial full tree; ETW maintains it incrementally
 - `process_tree_manager` orchestrates: ETW + NtQuery + Flat Tree + Rule Engine
 
 ### Flat Tree with LC-RS (Left-Child Right-Sibling)
 
 - `flat_tree.hpp`: `std::vector<process_entry>` + `std::unordered_map<DWORD, uint32_t>` side map
-- Each entry stores `{pid, parent_pid, create_time, name_u8[780], parent_index, first_child_index, next_sibling_index, flags, group_id, cmdline_cache}`
+- Each entry stores `{pid, parent_pid, psn, create_time, name_u8[780], parent_index, first_child_index, next_sibling_index, flags, group_id, cmdline_cache}`
 - O(1) lookup by PID via side map, O(subtree) traversal via LC-RS indices
 - `flags` field stores hijack state directly on the entry (no separate map)
 - `group_id` field stores proxy group assignment (read by SOCKET layer in hot path)
@@ -174,9 +184,9 @@ Replaces the earlier SSE / `EventSource` channel. Push events flow:
 1. A domain mutation (ETW process start/stop, manual hijack, rule reload) calls
    `process_tree_manager::notify_tree_changed(urgency)` on the strand.
 2. `process_projection::on_tree_changed` rebuilds the atomic snapshot and
-   pushes immediately (default build). The `push_urgency` hint distinguishes
-   user actions (`immediate`) from background ETW (`batched`); see "Coalescing"
-   below for the optional compile-time switch.
+   pushes immediately for `push_urgency::immediate` (user actions), or coalesces
+   background ETW (`push_urgency::batched`) inside a 100 ms strand timer (default ON;
+   see "Coalescing" below).
 3. Projection calls `frontend_push_sink::push("process_update", json)`.
 4. `webview_app::push` allocates a `push_payload` and posts a custom
    `WM_PUSH_TO_FRONTEND` to the UI thread, so cross-thread marshalling is
@@ -184,8 +194,8 @@ Replaces the earlier SSE / `EventSource` channel. Push events flow:
 5. The UI-thread WndProc takes ownership, builds `{event, data}`, and calls
    `ICoreWebView2::PostWebMessageAsJson`.
 6. Frontend's `notify.ts` listens on `chrome.webview` `message` events and
-   writes the TanStack Query cache (`setQueryData` for `process_update`,
-   `invalidateQueries` for `auto_rule_changed`); components read it through
+   writes the TanStack Query cache (`setQueryData` for `process_update` and
+   `dns_status`, `invalidateQueries` for `auto_rule_changed`); components read it through
    `useQuery`.
 7. Initial sync: when the frontend mounts (or when visibility transitions
    from hidden back to visible) it posts `{type: 'ready'}` back through
@@ -356,7 +366,8 @@ Counters (`GET /api/stats` → `tcp_syn_parking`, and a `[SYN-PARK]` INFO line e
 `core/decision_log.hpp`. Every verdict the data path reaches is written once,
 at decision time, as a 64-byte POD `DecisionRecord`: pid + psn, verdict
 (`proxied` / `direct`), reason (`none`, `self`, `unknown-pid`, `not-proxied`,
-the route reasons below, `late`, `watchdog`, `pool_exhausted`, `ipv6`, `ipv6_blocked`),
+the route reasons below, `late`, `watchdog`, `pool_exhausted`, `ipv6`,
+`ipv6_blocked`, `ipv6_no_egress`),
 source (`rule` / `tree` / `manual`), the rule's runtime policy id, proxy
 group, `rule_engine_v3::config_version()` and a wall-clock timestamp.
 
@@ -398,9 +409,10 @@ group, `rule_engine_v3::config_version()` and a wall-clock timestamp.
   plus the fallback for the few unrecorded proxied rows, and the CONNECT
   decisions queued behind it wait less.
 - **One UI poll**: `GET /api/connections[?pid=X]` returns `{tcp, udp,
-  active_pids}` (one table read per transport, one strand hop). The 2 s
-  connection query feeds the network table and merges `active_pids` into
-  the process tree's activity map; the tree has no poll of its own.
+  active_pids, config_version}` (one table read per transport, one strand
+  hop). The 2 s connection query feeds the network table and merges
+  `active_pids` into the process tree's activity map; the tree has no poll of
+  its own.
 - **config_version** is a strand-owned counter in `rule_engine_v3`, bumped on
   every rule / exclude-CIDR reload (any config change except window geometry
   goes through `set_auto_rules`) and every manual hijack change; also in
@@ -410,8 +422,9 @@ group, `rule_engine_v3::config_version()` and a wall-clock timestamp.
   hijack was involved or the process is proxied now).
 - **Hit rule and conflicts (v0.14 #4)**: the network table's 代理 · 规则 cell
   reads the record (`source` + `rule_id`, or the reason for `late` /
-  `watchdog` / `pool_exhausted` / `ipv6`), resolving rule ids to names via
-  `/api/auto-rules`. Recomputed rows of a proxied process carry `estimate
+  `watchdog` / `pool_exhausted` / `ipv6` / `ipv6_blocked` / `ipv6_no_egress`),
+  resolving rule ids to names via `/api/auto-rules`. Recomputed rows of a
+  proxied process carry `estimate
   {source, rule_id}` from `rule_engine_v3::origin_of` under the current
   rules. Rows of a proxied process that more than one enabled rule claims
   carry `conflict {manual, winner, shadowed_rule_ids}` from
@@ -591,27 +604,30 @@ POST   /api/proxy-groups/:id/test  - Measure latency to test_url
 POST   /api/proxy-groups/:id/test-ipv6 - IPv6 egress check (marks/clears the group in ipv6_egress)
 GET    /api/config                 - Get full config JSON
 PUT    /api/config                 - Save full config JSON (proxy_groups validated as above)
-GET    /api/stats                  - Counts (hijacked_pids, auto_rules_count, tree_ready, process_count, config_version, ipv6_unmanaged {tcp, udp}, ipv6_blocked {tcp, udp}, ipv6 {mode, syn_blocked, syn_allowed, syn_parked, syn_watchdog}, decisions {written, dropped, capacity}, tcp_syn_parking)
+GET    /api/stats                  - Counts (hijacked_pids, auto_rules_count, tree_ready, process_count, config_version, ipv6_unmanaged {tcp, udp}, ipv6_blocked {tcp, udp}, ipv6_proxied {tcp, udp}, ipv6 {mode, proxy_available, flows, egress, syn_blocked, syn_allowed, syn_parked, syn_watchdog}, dns, interception {mode, active, ...}, decisions {written, dropped, capacity}, tcp_syn_parking)
 GET    /api/env                    - Environment info
 POST   /api/shell/browse-exe       - Open file dialog for .exe
 POST   /api/shell/reveal           - Reveal file in Explorer
 ```
 
-The engine is always-on while `proxyclaw.exe` runs — there is no start/stop control plane. WinDivert layers + acceptor + UDP relay + DNS manager are initialized at startup and torn down on shutdown.
+The engine is always-on while `proxyclaw.exe` runs — there is no start/stop control plane. In WinDivert mode, the WinDivert layers + TCP acceptors + UDP relay + DNS manager are initialized at startup and torn down on shutdown; in Hook mode (`interception.mode = "hook"`), the named-pipe server, loopback TCP relays, and injector sweep run instead (no WinDivert handles or unused WinDivert acceptors are opened).
 
-**Shutdown order (v0.13.1).** `app::shutdown()` follows WinDivert's documented
+**Shutdown order (v0.13.1+).** `app::shutdown()` follows WinDivert's documented
 `WinDivertShutdown` → join → `WinDivertClose` order instead of closing handles
 under blocked workers: (1) flush the debounced window-geometry save, restore
-DNS; (2) phase 1 per layer — NETWORK layers `WinDivertShutdown(RECV)` and join
-their workers (they drain the queue, re-injecting as usual, and exit on
-`ERROR_NO_DATA`; the handle stays open for sends), SOCKET layers
-`WinDivertShutdown(BOTH)` and join the fallback thread (the IOCP receive
-completes with an error and is not re-armed); the SYN parker drains through the
-still-open NETWORK handle after the TCP workers are gone; (3) acceptor + HTTP
-API stop, io_context workers joined; (4) only then `WinDivertClose` on all four
-handles, when no strand handler, UDP relay injection or IOCP completion can
-still use them. Unexpected `WinDivertRecv` errors back off 1 ms instead of
-spinning.
+DNS, stop Hook mode (`hook_->stop()`) if active; (2) phase 1 per WinDivert
+layer — NETWORK layers (`wd_network_`, `wd_network_v6_`, `wd_network_udp_`)
+call `WinDivertShutdown(RECV)` and join their workers (they drain the queue,
+re-injecting as usual, and exit on `ERROR_NO_DATA`; the handle stays open for
+sends), SOCKET layers (`wd_socket_`, `wd_socket_udp_`) call
+`WinDivertShutdown(BOTH)` and join their dedicated receive threads (SOCKET
+handles are never associated with Asio's IOCP — see PR #4); the SYN parker
+drains through the still-open NETWORK handle after the TCP workers are gone;
+(3) TCP acceptors (in WinDivert mode) + HTTP API stop, `io_context` workers
+joined; (4) only then `WinDivertClose` on all five handles (`wd_network_udp_`,
+`wd_socket_udp_`, `wd_socket_`, `wd_network_`, `wd_network_v6_`), when no
+strand handler or UDP relay injection can still use them. Unexpected
+`WinDivertRecv` errors back off 1 ms instead of spinning.
 
 **Runtime state written from more than one thread (v0.13.1).**
 - Proxy groups for the TCP relay live in `proxy/proxy_group_table.hpp`: the
@@ -640,6 +656,7 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
   100 ms coalesce window
 - `auto_rule_changed` — `{action: string}`; tells the frontend to refetch
   rules-related state
+- `dns_status` — current DNS proxy status payload when DNS state changes
 
 ## Config Schema (`proxyclaw.json`)
 
@@ -684,26 +701,30 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
     "listen_host": "127.0.0.2",
     "listen_port": 53
   },
-  "tcp_syn_parking": { "enabled": true, "watchdog_ms": 20, "pool_size": 256 }
+  "tcp_syn_parking": { "enabled": true, "watchdog_ms": 20, "pool_size": 256 },
+  "udp_first_packet": { "enabled": true, "watchdog_ms": 20 },
+  "ipv6": { "mode": "block" },
+  "interception": { "mode": "windivert" }
 }
 ```
 
-`tcp_syn_parking` is read at startup only. `enabled: false` is the kill switch (see "TCP SYN parking"); `watchdog_ms` is clamped to 5–50 and `pool_size` to 32–4096.
+- `default_exclude_cidrs` (and per-rule `dst_filter` CIDRs) accept both IPv4 and IPv6 CIDRs.
+- `tcp_syn_parking` and `udp_first_packet` are read at startup only (`enabled: false` is the kill switch; `watchdog_ms` is clamped to 5–50 and `pool_size` to 32–4096).
+- `ipv6.mode` (`"block"` | `"proxy"` | `"direct"`, default `"block"`) is read at runtime.
+- `interception.mode` (`"windivert"` | `"hook"`, default `"windivert"`) is read at startup only (restart to switch).
 
 ## Build
 
 - **Configure**: `python scripts/prepare_release_deps.py`, then `cmake --preset windows` (VS 2022) or `cmake --preset windows-vs2026` (uses `CMakePresets.json`)
 - **Build Release**: `cmake --build build --config Release`
 - **Build Debug**: `cmake --build build --config Debug`
-- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (api_auth, dns_wire, dns_manager, ui_config, config_migration, log_tail, projection, concurrency, path_trust, tcp_redirect, runtime_state)
+- **Unit tests**: `ctest --test-dir build -C Release --output-on-failure` (24 native CTest targets covering auth, DNS, config, logging, projection, rules, concurrency, TCP/UDP redirect, IPv6, hook protocol, and runtime state — see `CMakeLists.txt`)
 - **Run** (admin required): `.\build\Release\proxyclaw.exe`
 - **Frontend dev**: `cd frontend && npm run dev`, then start proxyclaw.exe with `PROXYCLAW_DEV_URL=http://localhost:5173` and `--dev-hooks` (release builds ignore the variable otherwise; the window enters through `/api/session`, proxied by Vite)
+- **Frontend lint & typecheck**: `cd frontend && npm run lint && npm run typecheck` (ESLint + `tsc --noEmit`)
 - **Frontend unit tests**: `cd frontend && npm test` (Vitest)
 - **Frontend build**: `cd frontend && npm run build`
-- **Opt-in: refresh-coalesce window** (perf experimentation only, default OFF):
-  `cmake -DPROXYCLAW_PROJECTION_COALESCE=ON build` then rebuild. Enables a 100 ms
-  refresh-coalesce timer for `batched` urgency events (see "Coalescing" in
-  Key Architectural Decisions).
+- **Refresh-coalesce toggle** (default ON since v0.10): pass `-DPROXYCLAW_PROJECTION_COALESCE=OFF` to disable the 100 ms coalesce timer when benchmarking (see "Coalescing" in Key Architectural Decisions).
 
 ### Resource path resolution (v0.9.0)
 
@@ -722,39 +743,25 @@ The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a sy
 ## Build notes
 
 - WinDivert + `SetInterfaceDnsSettings` both require administrator privileges. The UAC manifest is embedded via linker `/MANIFESTUAC:level='requireAdministrator'` (see `CMakeLists.txt`) — double-click triggers UAC prompt automatically.
-- ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
+- ~35 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `proxyclaw.exe` before rebuilding (MSVC LNK1104 error otherwise).
-- `python scripts/verify.py` runs the frontend unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), and the real-WinDivert e2e suites (`tests/e2e_rule_policy.py`, `tests/e2e_api_test.py`), each stage with its own timeout. The e2e stage needs an administrator shell; `--no-e2e` skips it. `--stress` adds the bounded stress smoke (`tests/stress_backend.py --ci`).
+- `python scripts/verify.py` runs the frontend lint, typecheck, unit tests and build, the native build, `ctest`, the layering checks (`scripts/check_layering.py`, also run in CI), and the real-WinDivert e2e suites (`tests/e2e_rule_policy.py`, `tests/e2e_api_test.py`), each stage with its own timeout. The e2e stage needs an administrator shell; `--no-e2e` skips it. `--stress` adds the bounded stress smoke (`tests/stress_backend.py --ci`).
 
 ### E2E testing in CI
 
-`.github/workflows/release.yml` runs, on every push and PR to `main`:
+`.github/workflows/release.yml` runs on every push and PR to `main` (split into `build` → `e2e` → `publish` jobs so fast unit/lint/build feedback arrives independently and release publishing is not blocked by transient e2e flakes):
 
-- `ctest` — all native unit tests;
-- `tests/run_proxy_health_tests.py` and `tests/run_dns_network_tests.py` — the
-  loopback harnesses (SOCKS5 relay, UDP cleanup, DNS forwarder);
-- `tests/e2e_rule_policy.py` — launches the built `proxyclaw.exe` with the real
-  WinDivert driver and judges rules, UDP per-packet addressing and the staged
-  speed test by what actually leaves the machine;
-- `tests/ui_webview2_screenshots.py` — opens the packaged app in a real
-  WebView2 window over CDP, fails on any console / page error, and uploads the
-  `ui-screenshots` artifact used by the README;
-- `tests/e2e_api_test.py --exe <packaged proxyclaw.exe>` — the management API
-  suite. It starts the packaged app with a throwaway config whose default group
-  is a recording SOCKS5 server, so "went via the proxy" is judged by that
-  server seeing the CONNECT rather than by a second exit IP. Also scans
-  `proxyclaw.log` for the batch-notify and DELETE-latency invariants, and
-  toggles the DNS proxy (system DNS is restored afterwards);
-- `tests/stress_backend.py --ci --duration 45` — a bounded smoke on the packaged
-  app: `stress_etw.py` process churn (target 40, 1–3 s lifetimes), hijack /
-  unhijack every 0.5 s and 4 threads of concurrent GETs, with proxyclaw.exe
-  working set / private bytes / handles sampled each second. It fails only on
-  request errors, a proxyclaw crash or a dead API afterwards; latency and memory
-  are reported, not gated (a shared runner is too noisy for thresholds). The
-  JSON summary and console output are uploaded as the `stress-summary` artifact.
+- **Build & unit job**:
+  - `scripts/check_layering.py`, frontend `npm run lint` / `npm run typecheck` / `npm test` / `npm run build`, native Release build (`proxyclaw.exe` + `proxyclaw_hook64.dll`), `ctest` (all native unit tests);
+  - `tests/run_proxy_health_tests.py` and `tests/run_dns_network_tests.py` — the loopback harnesses (SOCKS5 relay, UDP cleanup, DNS forwarder);
+- **E2E job** (consumes the packaged portable zip):
+  - `tests/e2e_rule_policy.py` — launches the built `proxyclaw.exe` with the real WinDivert driver and judges rules, UDP per-packet addressing, IPv6 block/proxy, and the staged speed test by what actually leaves the machine;
+  - `tests/e2e_hook_mode.py` — launches the built `proxyclaw.exe` in Hook mode (`interception.mode = "hook"`), verifies Detours injection, TCP redirect via SOCKS5, IPv6 handling, and `/api/tcp` original-destination display;
+  - `tests/ui_webview2_screenshots.py` — opens the packaged app in a real WebView2 window over CDP, fails on any console / page error, and uploads the `ui-screenshots` artifact used by the README;
+  - `tests/shutdown_stress.py` — repeatedly starts and shuts down the packaged app to guard against shutdown hangs and handle races;
+  - `tests/e2e_api_test.py --exe <packaged proxyclaw.exe>` — the management API suite. It starts the packaged app with a throwaway config whose default group is a recording SOCKS5 server, so "went via the proxy" is judged by that server seeing the CONNECT rather than by a second exit IP. Also scans `proxyclaw.log` for the batch-notify and DELETE-latency invariants, and toggles the DNS proxy (system DNS is restored afterwards);
+  - `tests/stress_backend.py --ci --duration 45` — a bounded smoke on the packaged app: `stress_etw.py` process churn (target 40, 1–3 s lifetimes), hijack / unhijack every 0.5 s and 4 threads of concurrent GETs, with `proxyclaw.exe` working set / private bytes / handles sampled each second. It fails only on request errors, a proxyclaw crash or a dead API afterwards; latency and memory are reported, not gated (a shared runner is too noisy for thresholds). The JSON summary and console output are uploaded as the `stress-summary` artifact.
 
-The Playwright push tests and HTTP log-scan helpers that predate the React
-frontend remain local-only history; the longer stress scenarios
-(`--scenario steady`, `--visibility-cycle`) are local tools.
+The Playwright push tests and HTTP log-scan helpers that predate the React frontend remain local-only history; the longer stress scenarios (`--scenario steady`, `--visibility-cycle`) are local tools.
 

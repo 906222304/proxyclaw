@@ -2,7 +2,7 @@
 
 // Thin wrapper around clew::config_manager. Provides the only config access
 // point for HTTP handlers, application services, and cross-cutting observers
-// (rule_engine sync, SSE bridge, auth_middleware, DNS manager, ...).
+// (rule_engine sync, push bridge, auth_middleware, DNS manager, ...).
 //
 // See docs/ARCHITECTURE.md H2 + H5.
 //
@@ -46,7 +46,7 @@ public:
     // Returns a full ConfigV2 copy. Acquires the mutex briefly.
     [[nodiscard]] ConfigV2 get() const;
 
-    // Raw JSON representation, for Monaco editor.
+    // Raw JSON representation, for JSON editor.
     [[nodiscard]] std::string raw_json() const;
 
     // Replace the entire config from a raw JSON string. Validates + persists.

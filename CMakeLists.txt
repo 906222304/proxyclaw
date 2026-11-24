@@ -96,10 +96,7 @@ link_directories(
     ${PROXYCLAW_WINDIVERT_DIR}
 )
 
-# Source files. Historically header-only, but the three-layer refactor
-# (see docs/ARCHITECTURE.md) progressively introduces hpp/cpp-split
-# translation units. The legacy http_api_server.cpp remains until Stage 4
-# retires it in favour of src/transport/*.
+# Source files (four-layer architecture; see docs/ARCHITECTURE.md).
 set(PROXYCLAW_SOURCES
     src/main.cpp
     src/app.cpp
@@ -118,7 +115,7 @@ set(PROXYCLAW_SOURCES
     src/services/stats_service.cpp
     src/projection/process_projection.cpp
     src/projection/connection_rows.cpp
-    src/projection/config_sse_bridge.cpp
+    src/projection/config_push_bridge.cpp
     src/transport/response_utils.cpp
     src/transport/middleware.cpp
     src/transport/route_registry.cpp

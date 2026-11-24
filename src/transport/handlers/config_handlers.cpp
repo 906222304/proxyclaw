@@ -1,4 +1,4 @@
-// /api/config raw-JSON GET/PUT, used by the Monaco editor.
+// /api/config raw-JSON GET/PUT, used by the JSON editor.
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>

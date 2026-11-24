@@ -1,12 +1,10 @@
 #pragma once
 
-// Three-layer HTTP API server (replaces the legacy src/api/http_api_server
-// after Stage 4 wires it in). Owns the httplib::Server + listen thread,
-// installs middleware, and registers every route module on construction.
+// HTTP API server. Owns the httplib::Server + listen thread, installs
+// middleware, and registers every route module on construction.
 //
 // Constructor arguments deliberately model the dependency graph: ctx holds
-// every service, mw is pulled in for per-route auth checks, static_dir is
-// the frontend/dist mount point.
+// every service, static_dir is the frontend/dist mount point.
 
 #include <atomic>
 #include <string>

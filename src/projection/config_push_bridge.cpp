@@ -1,4 +1,4 @@
-#include "projection/config_sse_bridge.hpp"
+#include "projection/config_push_bridge.hpp"
 
 #include <string>
 #include <string_view>
@@ -34,7 +34,7 @@ std::string_view tag_to_action(config_change tag) noexcept {
 
 } // namespace
 
-config_sse_bridge::config_sse_bridge(config_store& cfg) {
+config_push_bridge::config_push_bridge(config_store& cfg) {
     cfg.subscribe([this](const ConfigV2&, config_change tag) {
         // Window geometry is saved after every move/resize; the frontend does
         // not show it, so do not make it refetch rules for that.

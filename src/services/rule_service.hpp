@@ -8,7 +8,7 @@
 // tree_change_receiver and thus SSE.
 //
 // list_rules reads via strand_bound_manager to see runtime state fields
-// (matched_pids, per-process exclusions) that are maintained in-strand.
+// (matched_processes, per-process exclusions) that are maintained in-strand.
 
 #include <cstdint>
 #include <string_view>

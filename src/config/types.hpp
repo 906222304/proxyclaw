@@ -305,6 +305,29 @@ struct TrafficFilter {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TrafficFilter, include_cidrs, exclude_cidrs, include_ports, exclude_ports)
 
 // ============================================================
+// Process identity key: (pid, psn)
+// ============================================================
+
+struct ProcessKey {
+    DWORD pid = 0;
+    uint64_t psn = 0;
+
+    bool operator==(const ProcessKey&) const = default;
+};
+
+struct ProcessKeyHash {
+    size_t operator()(const ProcessKey& k) const noexcept {
+        uint64_t h = k.psn ^ (static_cast<uint64_t>(k.pid) * 0x9E3779B97F4A7C15ULL);
+        h ^= h >> 30;
+        h *= 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 27;
+        h *= 0x94D049BB133111EBULL;
+        h ^= h >> 31;
+        return static_cast<size_t>(h);
+    }
+};
+
+// ============================================================
 // Auto Rule
 // ============================================================
 
@@ -330,11 +353,14 @@ struct AutoRule {
     // Runtime helpers
     bool matches_tcp() const { return protocol == "tcp" || protocol == "both"; }
     bool matches_udp() const { return protocol == "udp" || protocol == "both"; }
+    bool matches_process(DWORD pid, uint64_t psn) const {
+        return matched_processes.contains(ProcessKey{pid, psn});
+    }
 
-    // Runtime state (not serialized). Per-process exclusions are not here:
-    // they are runtime state owned by rule_engine_v3, keyed by (pid, psn),
-    // so a config copy can never carry or resurrect them.
-    std::unordered_set<DWORD> matched_pids;
+    // Runtime state (not serialized), keyed by (pid, psn) so a recycled PID
+    // never inherits or shadows a dead predecessor's match state. Per-process
+    // exclusions remain engine-owned in rule_engine_v3::exclusions_.
+    std::unordered_set<ProcessKey, ProcessKeyHash> matched_processes;
 };
 
 inline void to_json(nlohmann::json& j, const AutoRule& r) {

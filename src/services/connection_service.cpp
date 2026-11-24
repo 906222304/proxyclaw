@@ -154,7 +154,7 @@ public:
     uint64_t config_version() const { return rules_.config_version(); }
 
 private:
-    // v0.14 #4: one rule scan (a matched_pids lookup per rule) per distinct
+    // v0.14 #4: one rule scan (a matched_processes lookup per rule) per distinct
     // proxied PID, shared by all of its rows; null when there is no conflict.
     std::shared_ptr<const rule_conflict> conflict(const process_entry& entry) {
         auto [it, fresh] = conflicts_.try_emplace(entry.pid);

@@ -162,6 +162,7 @@ TEST(exclusion_survives_config_reload_and_is_never_read_from_config) {
 TEST(exclusion_ignored_after_pid_reuse_with_lost_stop) {
     flat_tree t;
     add(t, 200, 0, L"chrome.exe");
+    const uint64_t old_psn = psn_of(t, 200);
     rule_engine_v3 e;
     e.set_auto_rules({rule("c", "chrome.exe")});
     CHECK(e.exclude_pid(t, "rule_c", 200) == rule_engine_v3::exclude_result::ok);
@@ -172,13 +173,21 @@ TEST(exclusion_ignored_after_pid_reuse_with_lost_stop) {
     // a new chrome.exe: add_entry tombstones the stale entry. No
     // on_process_exit call, so only the PSN check can tell them apart.
     add(t, 200, 0, L"chrome.exe");
+    const uint64_t new_psn = psn_of(t, 200);
+    CHECK(new_psn != old_psn);
     e.apply_auto_rules(t);
     CHECK(proxied(t, 200));
     CHECK(e.excluded_pids(t, "rule_c").empty());
 
-    // ETW-driven exit clears the stored pair as well.
-    e.on_process_exit(200);
+    // ETW-driven exit for the old PSN clears the stored pair as well.
+    e.on_process_exit(200, old_psn);
     CHECK(e.exclusion_count() == 0);
+
+    // Excluding the new owner is unaffected by a delayed STOP for old_psn.
+    CHECK(e.exclude_pid(t, "rule_c", 200) == rule_engine_v3::exclude_result::ok);
+    e.on_process_exit(200, old_psn);
+    CHECK(e.exclusion_count() == 1);
+    CHECK(e.excluded_pids(t, "rule_c") == std::vector<DWORD>{200});
 }
 
 TEST(exclusion_dropped_on_process_exit) {
@@ -189,8 +198,9 @@ TEST(exclusion_dropped_on_process_exit) {
     e.set_auto_rules({rule("c", "chrome.exe")});
     CHECK(e.exclude_pid(t, "rule_c", 200) == rule_engine_v3::exclude_result::ok);
     CHECK(e.exclude_pid(t, "rule_c", 300) == rule_engine_v3::exclude_result::ok);
-    t.tombstone(200, psn_of(t, 200));
-    e.on_process_exit(200);
+    const uint64_t psn200 = psn_of(t, 200);
+    t.tombstone(200, psn200);
+    e.on_process_exit(200, psn200);
     CHECK(e.exclusion_count() == 1);
     CHECK(e.excluded_pids(t, "rule_c") == std::vector<DWORD>{300});
 }

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <format>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -26,31 +28,40 @@ namespace {
 nlohmann::json rule_entry_to_json(const AutoRule& rule, const flat_tree& tree,
                                   const rule_engine_v3& engine) {
     nlohmann::json rj = rule;
-    // Exclusions are engine-owned runtime state keyed by (pid, psn); only
-    // live, PSN-validated ones are listed, so a dead or recycled PID never
-    // shows up as excluded.
+    // Match and exclusion state are both keyed by (pid, psn); only live,
+    // PSN-validated processes are listed so dead or recycled PIDs never leak
+    // into /api/auto-rules.
     const auto excluded = engine.excluded_pids(tree, rule.id);
     const auto is_excluded = [&excluded](DWORD pid) {
         return std::binary_search(excluded.begin(), excluded.end(), pid);
     };
-    rj["matched_count"]  = rule.matched_pids.size();
-    rj["excluded_count"] = excluded.size();
-    nlohmann::json pids  = nlohmann::json::array();
-    for (DWORD pid : rule.matched_pids) {
+    nlohmann::json pids = nlohmann::json::array();
+    std::unordered_set<DWORD> listed_pids;
+    std::size_t live_matched = 0;
+    for (const auto& pk : rule.matched_processes) {
+        const uint32_t idx = tree.find_by_pid_psn(pk.pid, pk.psn);
+        if (idx == INVALID_IDX || !tree.at(idx).alive) continue;
+        ++live_matched;
+        listed_pids.insert(pk.pid);
         nlohmann::json p;
-        p["pid"]      = pid;
-        uint32_t idx  = tree.find_by_pid(pid);
-        p["name"]     = (idx != INVALID_IDX) ? std::string(tree.at(idx).name_u8) : "unknown";
-        p["excluded"] = is_excluded(pid);
+        p["pid"]      = pk.pid;
+        p["psn"]      = pk.psn;
+        p["name"]     = std::string(tree.at(idx).name_u8);
+        p["excluded"] = is_excluded(pk.pid);
         pids.push_back(std::move(p));
     }
-    // The engine drops an excluded PID from matched_pids, so list excluded
-    // processes here too (excluded=true): the UI needs them to offer 恢复代理.
+    rj["matched_count"]  = live_matched;
+    rj["excluded_count"] = excluded.size();
+    // The engine drops an excluded process from matched_processes, so list
+    // excluded processes here too (excluded=true): the UI needs them to offer 恢复代理.
     for (DWORD pid : excluded) {
-        if (rule.matched_pids.contains(pid)) continue;
+        if (listed_pids.contains(pid)) continue;
+        const uint32_t idx = tree.find_by_pid(pid);
+        if (idx == INVALID_IDX || !tree.at(idx).alive) continue;
         nlohmann::json p;
         p["pid"]      = pid;
-        p["name"]     = std::string(tree.at(tree.find_by_pid(pid)).name_u8);
+        p["psn"]      = tree.at(idx).psn;
+        p["name"]     = std::string(tree.at(idx).name_u8);
         p["excluded"] = true;
         pids.push_back(std::move(p));
     }

@@ -1,7 +1,7 @@
 #pragma once
 
 // Push notification interface used by state holders (process_projection,
-// config_sse_bridge) to send events to the frontend. The implementation
+// config_push_bridge) to send events to the frontend. The implementation
 // (webview_app) marshals the call onto the UI thread and forwards via
 // WebView2's PostWebMessageAsJson.
 //

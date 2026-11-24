@@ -45,7 +45,7 @@ Ordered by how often users actually hit the issue, most common first.
 ```mermaid
 flowchart TD
     A[Extract fails: WinDivert64.sys is in use] --> B{Is proxyclaw.exe in Task Manager?}
-    B -->|Yes| C[Quit clew: tray menu Exit<br/>or End Task in Task Manager]
+    B -->|Yes| C[Quit ProxyClaw: tray menu Exit<br/>or End Task in Task Manager]
     C --> D[Retry extraction]
     D --> E{Success?}
     E -->|Yes| F[Done]
@@ -104,7 +104,7 @@ The most useful information to include:
 4. The last 200 lines of `proxyclaw.log` (set log_level to `debug` and reproduce once before grabbing the log)
 5. Whether the issue is reliably reproducible
 
-[File an issue on GitHub](https://github.com/ymonster/clew-proxy/issues/new).
+[File an issue on GitHub](https://github.com/906222304/proxyclaw/issues/new).
 
 ## 7. "Start after Windows login" cannot be turned on
 

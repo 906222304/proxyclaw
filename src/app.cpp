@@ -658,8 +658,8 @@ void app::shutdown() noexcept {
     // WinDivert teardown follows the documented order: WinDivertShutdown ->
     // join every thread that uses the handle -> WinDivertClose. Phase 1 stops
     // receiving and joins the dedicated threads; the handles are closed only
-    // after the io_context workers (strand handlers, UDP relay injection,
-    // IOCP receive completions) are joined below.
+    // after the io_context workers (strand handlers, UDP relay injection) are
+    // joined below.
     socks5_udp_mgr_.stop();
     step("socks5 udp sessions stopped");
     if (wd_network_udp_) wd_network_udp_->set_sink(nullptr);

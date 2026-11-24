@@ -1,27 +1,10 @@
 # ProxyClaw 路线图
 
-> **English summary.** v0.14 makes every decision explainable from one source of truth: all C++ unit tests in CTest first, then a per-connection decision record captured at CONNECT time, connection JSON built off the strand (activity poll merged in), a hit-rule column with the reason and conflict hints, blocking IPv6 for proxied processes so they fall back to IPv4, DNS TCP-only startup and asynchronous enable, an icon cache keyed by full path with backoff and a cap, `psn` in the pushed process tree, keyboard / ARIA for the process tree, a split CI with /W4 and ESLint, and a docs sweep. v0.15: child-process-tree exceptions, an engine state view with config import / export, editable presets, rule match state keyed by (pid, psn), and end-to-end IPv6 last (may slip). Later: a performance baseline first (decision latency, missed proxies, RSS vs process count), then resource caps, RecvEx/SendEx batching only if the baseline shows a need, a process info cache, nightly soak tests, service mode (with a Program Files installer and WebView2 profile protection as an interim step) and build tidy-up. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols; the `http` upstream type is dropped and SOCKS5 username / password stays unsupported (rejected with 400) until implemented.
+> **English summary.** v0.14 makes every decision explainable from one source of truth: CTest coverage, per-connection decision records captured at CONNECT time, connection JSON built off the strand (activity poll merged in), a hit-rule column with reasons and conflict hints, blocking IPv6 for proxied processes so they fall back to IPv4, DNS TCP-only startup and asynchronous enable, an icon cache keyed by full path with backoff and a cap, `psn` in the pushed process tree, a split CI with `/W4` and ESLint, and a docs sweep (process-tree keyboard / ARIA was dropped). v0.15: child-process-tree exceptions, an engine state view with config import / export, editable presets, rule match state keyed by `(pid, psn)`, plus end-to-end IPv6 TCP/UDP and optional hook interception (already shipped). Later: a performance baseline first (decision latency, missed proxies, RSS vs process count), then resource caps, RecvEx/SendEx batching only if the baseline shows a need, a process info cache, nightly soak tests, service mode (with a Program Files installer and WebView2 profile protection as an interim step) and build tidy-up. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols; the `http` upstream type is dropped and SOCKS5 username / password stays unsupported (rejected with 400) until implemented.
 
-当前版本 v0.15.2（2026-11-24），新增可选的 Hook 注入拦截方式（无驱动，仅 TCP）；已完成 v0.14 第 1–5 项（测试归位、每连接决定记录、连接 JSON 移出 strand、命中规则列、IPv6 阻断回落），并提前带上 v0.15 第 5 项的 IPv6 TCP / UDP 代理（`ipv6.mode = proxy`，v0.14.2 起支持 IPv6 规则网段与出口不通时回落 IPv4）；其余各项在后续 v0.14.x 发布。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。v0.13.1 已完成：代理组快照替换、窗口位置经配置存储保存、自启动仅限管理员专属目录、开发钩子需 `--dev-hooks`、IPv6 移出判定路径（`ipv6_unmanaged` 计数）、进程排除改为运行时 (pid, psn) 状态、孤儿进程按 (pid, psn) 跟踪并限时限量、TCP :53 使用配置的 DNS 上游、代理组输入校验、WinDivert 关闭顺序、控制台模式不再一小时后退出。
+当前版本 v0.15.2（2026-11-24），新增可选的 Hook 注入拦截方式（无驱动，仅 TCP）；v0.14 计划已全部完成（第 1–9、11–12 项：测试归位、每连接决定记录、连接 JSON 移出 strand、命中规则列、IPv6 阻断回落、DNS 仅 TCP 启动与后台异步启用、全路径图标缓存与退避、进程树 `psn`、CI 拆分 + `/W4` + ESLint、文档清理；第 10 项进程树键盘与 ARIA 已按决定放弃并关闭 PR #14），并提前带上 v0.15 第 5 项的 IPv6 TCP / UDP 代理（`ipv6.mode = proxy`，支持 IPv6 规则网段与出口不通时回落 IPv4）。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。
 
 **原则**：先有唯一的事实来源（CONNECT 时记录的决定），界面、统计和 IPv6 标注都从它读取；性能改动必须先有能测出策略延迟与漏代理的基准。
-
-## v0.14：决定可解释，边界可见
-
-**目标**：用户不用读日志就能知道某条连接为什么走代理或直连，以及哪些流量 ProxyClaw 目前不接管。按下表顺序推进。
-
-| # | 项目 | 内容 |
-| --- | --- | --- |
-| 10 | 进程树键盘与 ARIA | `role="tree"/"treeitem"`、`aria-expanded`、`aria-selected`、方向键与 roving tabindex。 |
-| 12 | 文档清理 | 修正过时的注释与文档（批处理 RecvEx/SendEx、“Stage 4”、`config_sse_bridge` 命名、ARCHITECTURE 中的排除与 TCP:53 说明、README 的 IPv6 代理地址说法）。 |
-
-**验收**
-
-- CTest 覆盖全部 C++ 单元测试，CI 绿。
-- 每条连接的结论与记录的决定一致（不是重新计算）；任意一条连接都能在界面看到命中规则与原因；规则冲突有提示。
-- 带 UI 等效轮询的压测冒烟中 `late_rejected_proxied` 不上升。
-- 被代理进程连接全局 IPv6 地址时被拒绝（RST，Windows 重试后约 2 秒内失败），UDP 数据报被丢弃；规则排除端口的连接不受影响（e2e 用文档网段 2001:db8::/64 + 静态邻居覆盖）。
-- 进程树可只用键盘浏览与选择。
 
 ## v0.15：覆盖更多真实场景
 

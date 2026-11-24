@@ -40,7 +40,7 @@
 #include "domain/process_tree_manager.hpp"
 #include "domain/strand_bound.hpp"
 #include "hook/hook_mode.hpp"
-#include "projection/config_sse_bridge.hpp"
+#include "projection/config_push_bridge.hpp"
 #include "projection/process_projection.hpp"
 #include "proxy/acceptor.hpp"
 #include "proxy/ipv6_egress.hpp"
@@ -182,7 +182,7 @@ private:
     icon_cache icons_;
 
     process_projection projection_;
-    config_sse_bridge  cfg_bridge_;
+    config_push_bridge cfg_bridge_;
 
     config_service       config_svc_;
     connection_service   connection_svc_;

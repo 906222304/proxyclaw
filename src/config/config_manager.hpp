@@ -126,7 +126,7 @@ public:
 
     std::string get_raw_config() const { return last_raw_; }
 
-    // Set raw config (from Monaco editor). Returns error message or empty on success.
+    // Set raw config (from JSON editor). Returns error message or empty on success.
     std::string set_raw_config(const std::string& json_string) {
         try {
             nlohmann::json j = nlohmann::json::parse(json_string);

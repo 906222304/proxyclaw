@@ -45,7 +45,7 @@
 ```mermaid
 flowchart TD
     A[解压报错: WinDivert64.sys 被占用] --> B{任务管理器看 proxyclaw.exe 在不在}
-    B -->|在| C[退出 clew: 托盘菜单 Exit<br/>或任务管理器结束进程]
+    B -->|在| C[退出 ProxyClaw: 托盘菜单 Exit<br/>或任务管理器结束进程]
     C --> D[重试解压]
     D --> E{是否成功}
     E -->|是| F[完成]
@@ -104,7 +104,7 @@ sc.exe delete WinDivert
 4. `proxyclaw.log` 最后 200 行（先把 log_level 改成 debug 再复现一次）
 5. 是否能稳定复现
 
-[在 GitHub 提 Issue](https://github.com/ymonster/clew-proxy/issues/new)。
+[在 GitHub 提 Issue](https://github.com/906222304/proxyclaw/issues/new)。
 
 ## 7. 无法开启“登录 Windows 后自动启动”
 

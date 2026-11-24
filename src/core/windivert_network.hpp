@@ -3,15 +3,14 @@
 // WinDivert NETWORK layer: local TCP handoff, with original-tuple replies.
 // The acceptor receives a local connection, not a fabricated inbound public peer.
 //
-// Design (from architecture_redesign_v3.md §3.5):
-//   - 2-4 dedicated blocking worker threads (NOT Asio IOCP)
-//   - Batch RecvEx/SendEx for throughput
+// Design:
+//   - Dedicated blocking worker threads (NOT Asio IOCP), per-packet Recv/Send
 //   - Hot path: O(1) PortTracker lookup → passthrough if no match
-//   - Cold path: NAT rewrite + checksum recalc
-//   - Capture non-loopback outbound TCP plus local acceptor replies.
+//   - Cold path: NAT rewrite + checksum recalc (undecided SYNs parked via syn_parker)
+//   - Capture non-loopback outbound IPv4 TCP plus local acceptor replies
 //
-// Forward: SrcAddr=DstAddr=127.0.0.1, outbound localhost delivery.
-// Reply: restore both original addresses and the original inbound interface.
+// Forward: AppIP:AppPort -> AppIP:redirect_port, injected outbound.
+// Reply: restore OriginalRemoteIP:OriginalRemotePort -> AppIP:AppPort, injected inbound.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

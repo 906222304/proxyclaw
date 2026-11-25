@@ -70,7 +70,7 @@
 
 - **0xD1 蓝屏**：用户机器上 `NETIO.SYS` 出现 0xD1，栈上有 ESET 的 `epfwwfp.sys`，没有 WinDivert 帧。初步判断是 ESET 与 WinDivert 的 WFP 冲突，Hook 模式不加载驱动，可作为这类机器的绕行方案。
 - **WFP 驱动方向**：Draft PR #15 仅为设计草案，尚未立项。
-- **ROADMAP 剩余项**：v0.15 #2 引擎状态与配置导入/导出、#3 可编辑应用预设。
+- **ROADMAP 剩余项**：v0.15 #3 可编辑应用预设。
 - **已知 CI 抖动**：WebView2 截图步骤偶发 `#root` 超时，处理方法是重跑失败的 `e2e` job。
 
 ## 硬性规则

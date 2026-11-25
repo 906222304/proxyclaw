@@ -316,8 +316,25 @@ nlohmann::json app::traffic_stats() const {
     // DNS proxy: off / starting / running / stopping / failed (+ reason).
     j["dns"] = dns_mgr_.status().to_json();
     // The interception actually running; the config value applies on restart.
-    j["interception"] = {{"mode", hook_mode_requested_ ? "hook" : "windivert"},
-                         {"active", interception_active_.load(std::memory_order_relaxed)}};
+    {
+        std::scoped_lock lk(engine_status_mu_);
+        j["interception"] = {
+            {"mode", hook_mode_requested_ ? "hook" : "windivert"},
+            {"active", interception_active_.load(std::memory_order_relaxed)},
+        };
+        if (!interception_error_.empty()) {
+            j["interception"]["error"] = interception_error_;
+        }
+        if (!hook_mode_requested_) {
+            j["interception"]["layers"] = {
+                {"tcp_socket",  layers_.tcp_socket},
+                {"tcp_network", layers_.tcp_network},
+                {"tcp_v6",      layers_.tcp_v6},
+                {"udp_socket",  layers_.udp_socket},
+                {"udp_network", layers_.udp_network},
+            };
+        }
+    }
     if (hook_) j["interception"]["hook"] = hook_->stats();
     j["ipv6"] = {{"mode", ipv6_mode_name()}, {"proxy_available", ipv6_proxy_available()},
                  {"flows", v6_flows_.size()}};
@@ -543,6 +560,10 @@ void app::start_traffic_layers() {
         // No driver in this mode: the DLL does the interception.
         const bool active = hook_->start(exe_relative(std::wstring_view{hook::kDllName}));
         interception_active_.store(active, std::memory_order_relaxed);
+        {
+            std::scoped_lock lk(engine_status_mu_);
+            interception_error_ = active ? "" : "hook_start_failed";
+        }
         if (active) {
             connection_svc_.set_hook_relay_port(hook_->relay_port_v4());
             ipv6_proxy_.store(ipv6_proxies(cfg_store_.get().ipv6) && hook_->relay_port_v6() != 0);
@@ -573,19 +594,22 @@ void app::start_traffic_layers() {
     }
     interception_active_.store(socket_ok && network_ok, std::memory_order_relaxed);
 
-    if (wd_network_v6_->open()) {
+    const bool v6_ok = wd_network_v6_->open();
+    if (v6_ok) {
         wd_network_v6_->start();
         PC_LOG_INFO("WinDivert IPv6 TCP layer started (acceptor port {})", redirect_port_v6_);
     } else {
         PC_LOG_ERROR("WinDivert IPv6 TCP layer failed — IPv6 of proxied processes is not blocked or proxied");
     }
 
-    if (wd_socket_udp_->open()) {
+    const bool udp_socket_ok = wd_socket_udp_->open();
+    if (udp_socket_ok) {
         wd_socket_udp_->start();
         PC_LOG_INFO("WinDivert UDP SOCKET layer started");
     }
 
-    if (wd_network_udp_->open()) {
+    const bool udp_network_ok = wd_network_udp_->open();
+    if (udp_network_ok) {
         // Relay first, so the workers never see proxied datagrams without a
         // receiver.
         udp_relay_ = std::make_unique<UdpRelay>(
@@ -596,6 +620,24 @@ void app::start_traffic_layers() {
         }
         wd_network_udp_->start(2);
         PC_LOG_INFO("WinDivert UDP NETWORK layer started");
+    }
+
+    {
+        std::scoped_lock lk(engine_status_mu_);
+        layers_.tcp_socket  = socket_ok;
+        layers_.tcp_network = network_ok;
+        layers_.tcp_v6      = v6_ok;
+        layers_.udp_socket  = udp_socket_ok;
+        layers_.udp_network = udp_network_ok;
+        if (!socket_ok && !network_ok) {
+            interception_error_ = "windivert_driver_failed";
+        } else if (!socket_ok) {
+            interception_error_ = "windivert_socket_failed";
+        } else if (!network_ok) {
+            interception_error_ = "windivert_network_failed";
+        } else {
+            interception_error_.clear();
+        }
     }
 }
 

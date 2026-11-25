@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { AutoRule, ProxyGroup } from '@/api/types'
-import { dnsPatch, dnsStatusText, interceptionStatusText, patchConfig } from './ConfigEditor'
+import {
+  buildConfigFilename,
+  dnsPatch,
+  dnsRecoveryText,
+  dnsStatusText,
+  interceptionErrorText,
+  interceptionStatusText,
+  parseImportedConfig,
+  patchConfig,
+} from './ConfigEditor'
 import { filterLog } from './LogViewer'
 import { failedLabel, groupFormSchema, groupFormToPayload, normalizeProxyHost, testTooltip } from './ProxiesTab'
 import { formToPayload, ruleToForm } from './RuleEditorDialog'
@@ -128,5 +137,27 @@ describe('interception status line', () => {
     expect(interceptionStatusText('hook', { mode: 'windivert', active: true })).toBe('重启 ProxyClaw 后生效（当前：WinDivert 驱动）')
     expect(interceptionStatusText('windivert', { mode: 'hook', active: true })).toContain('Hook 注入')
     expect(interceptionStatusText('hook', { mode: 'hook', active: false })).toContain('启动失败')
+    expect(interceptionStatusText('windivert', { mode: 'windivert', active: false, error: 'windivert_driver_failed' }))
+      .toContain('WinDivert 驱动加载失败')
+    expect(interceptionErrorText('windivert_socket_failed', 'windivert')).toContain('TCP 套接字层')
+  })
+})
+
+describe('engine status and config import/export helpers', () => {
+  it('formats DNS recovery notices', () => {
+    expect(dnsRecoveryText(undefined)).toBe('')
+    expect(dnsRecoveryText('recovered')).toContain('自动恢复')
+    expect(dnsRecoveryText('failed')).toContain('恢复失败')
+  })
+
+  it('builds a date-stamped config export filename', () => {
+    expect(buildConfigFilename(new Date(2026, 10, 5))).toBe('proxyclaw-config-20261105.json')
+  })
+
+  it('parses valid config objects and rejects arrays or invalid JSON', () => {
+    expect(parseImportedConfig('{"version": 2}')).toEqual({ version: 2 })
+    expect(() => parseImportedConfig('{bad')).toThrow('JSON 格式无效')
+    expect(() => parseImportedConfig('[1, 2]')).toThrow('JSON 对象')
+    expect(() => parseImportedConfig('null')).toThrow('JSON 对象')
   })
 })

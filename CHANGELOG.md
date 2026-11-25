@@ -35,6 +35,16 @@
   the parent rule and record `decision.reason = "rule_exclude_child"` (with the
   parent rule id) across WinDivert TCP/UDP and Hook modes; configurable in the
   rule editor under Advanced Settings.
+- Engine status & config import/export (v0.15 #2): `/api/stats` now exposes
+  `interception.error` (`windivert_driver_failed` / `windivert_socket_failed` /
+  `windivert_network_failed` / `hook_start_failed`), per-layer WinDivert flags
+  (`interception.layers`), and DNS startup crash-recovery outcome
+  (`dns.recovery`: `recovered` / `failed`). The UI surfaces engine startup and
+  DNS recovery failures in the titlebar + top alert banner and adds an Engine
+  Status card in Settings (interception engine, ETW process tree readiness, DNS
+  & recovery, decision record counts). `PUT /api/config` (`config_manager::set_raw_config`)
+  now runs versioned v1 → v2 migration, rejects unsupported versions without
+  clobbering state, and backs the new Settings Export / Import JSON buttons.
 
 ## v0.15.2 (2026-11-24)
 

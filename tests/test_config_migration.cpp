@@ -62,7 +62,58 @@ int main() {
         clew::config_manager malformed(current);
         check(!malformed.load() && !fs::exists(current),
               "invalid legacy data is rejected without persisting defaults");
-        for (const auto& file : {legacy, current, custom}) fs::remove(file);
+
+        // v0.15 #2: config import via set_raw_config applies versioned migration
+        // (v1 -> v2, proxy_groups population, next_group_id normalization) and
+        // rejects unsupported versions without clobbering live config.
+        const auto dir_b = root / "fresh-dir";
+        fs::create_directories(dir_b);
+        const auto imported_cfg = dir_b / "proxyclaw.json";
+        fs::remove(imported_cfg);
+        clew::config_manager target(imported_cfg);
+        check(target.load(), "fresh directory initializes default config");
+
+        const std::string v1_json = R"({
+            "version": 1,
+            "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": 10808},
+            "auto_rules": [
+                {
+                    "id": "r_v1",
+                    "name": "Curl",
+                    "enabled": true,
+                    "process_name": "curl.exe",
+                    "proxy": {"type": "socks5", "host": "127.0.0.1", "port": 10809}
+                }
+            ]
+        })";
+        check(target.set_raw_config(v1_json).empty(), "v1 config import migrates cleanly");
+        check(target.get_v2().version == 2, "migrated version is 2");
+        check(target.get_v2().proxy_groups.size() == 2, "v1 import populates default + inline rule group");
+        check(target.get_v2().auto_rules.size() == 1 && target.get_v2().auto_rules[0].proxy_group_id == 1,
+              "v1 rule binds to migrated proxy group");
+        check(target.get_v2().next_group_id == 2, "next_group_id normalized above max id");
+
+        const std::string bad_ver = R"({"version": 99})";
+        check(!target.set_raw_config(bad_ver).empty(), "unsupported future version is rejected");
+        check(target.get_v2().auto_rules.size() == 1, "rejected import leaves existing config intact");
+
+        // Exported v2 config imported into another fresh directory reloads identically.
+        const std::string exported = target.get_raw_config();
+        const auto dir_c = root / "second-dir";
+        fs::create_directories(dir_c);
+        const auto cloned_cfg = dir_c / "proxyclaw.json";
+        fs::remove(cloned_cfg);
+        clew::config_manager clone(cloned_cfg);
+        check(clone.load() && clone.set_raw_config(exported).empty(),
+              "exported v2 config imports into fresh directory");
+        clew::config_manager reloaded(cloned_cfg);
+        check(reloaded.load()
+              && reloaded.get_v2().proxy_groups.size() == 2
+              && reloaded.get_v2().auto_rules.size() == 1
+              && reloaded.get_v2().auto_rules[0].id == "r_v1",
+              "imported config persists and reloads identically in new directory");
+
+        for (const auto& file : {legacy, current, custom, imported_cfg, cloned_cfg}) fs::remove(file);
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "FAIL " << e.what() << '\n';

@@ -186,10 +186,12 @@ function RuleRow({ rule, groups, selected, selecting, onToggleSelect, onToggleEn
   // A rule saved with a custom address keeps its last group id; show it as 自定义.
   const custom = !!group && (rule.proxy.host !== group.host || rule.proxy.port !== group.port)
   const matched = rule.matched_count ?? 0
+  const childExclCount = rule.child_exclusions?.length ?? 0
   const sub = [
     rule.process_name,
     '进程树',
     PROTOCOL_LABEL[rule.protocol ?? 'tcp'] ?? 'TCP',
+    childExclCount > 0 ? `${childExclCount} 项子树例外` : null,
     matched > 0 ? `${matched} 个进程` : null,
   ].filter(Boolean).join(' · ')
 

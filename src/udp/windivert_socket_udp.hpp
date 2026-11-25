@@ -253,7 +253,9 @@ private:
         rec.reason = why;
         if (entry) {
             rec.psn = entry->psn;
-            const auto origin = rules_.origin_of(*entry);
+            const auto origin = (why == decision_reason::rule_exclude_child)
+                                    ? rules_.child_excluded_origin(*entry)
+                                    : rules_.origin_of(*entry);
             rec.source    = origin.source;
             rec.policy_id = origin.policy_id;
         }
@@ -349,10 +351,13 @@ private:
         // Check if this PID should be proxied for UDP protocol
         if (!rules_.should_proxy_protocol(tree_, pid, "udp")) {
             const bool proxied_process = entry.alive && entry.is_proxied();
-            decide_direct(src_port, addr,
-                          proxied_process ? decision_reason::rule_protocol
-                                          : decision_reason::not_proxied,
-                          proxied_process ? &entry : nullptr);
+            if (proxied_process) {
+                decide_direct(src_port, addr, decision_reason::rule_protocol, &entry);
+            } else if (rules_.child_excluded_origin(entry).policy_id != 0) {
+                decide_direct(src_port, addr, decision_reason::rule_exclude_child, &entry);
+            } else {
+                decide_direct(src_port, addr, decision_reason::not_proxied);
+            }
             return;
         }
 

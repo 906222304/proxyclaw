@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, CircleHelp, Cpu, FolderOpen, Lock, Terminal, Trash2 } from 'lucide-react'
+import { ChevronRight, CircleHelp, Cpu, FolderOpen, Lock, Plus, Terminal, Trash2, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import * as z from 'zod/mini'
@@ -8,7 +8,7 @@ import { browseExe } from '@/api/client'
 import { useRestoreProcess, type RulePayload } from '@/api/mutations'
 import { autoRulesQuery, proxyGroupsQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
-import type { AutoRule, ProxyGroup, ProxyTarget } from '@/api/types'
+import type { AutoRule, ChildExclusion, ProxyGroup, ProxyTarget } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -19,6 +19,12 @@ import { Tooltip } from '@/components/ui/tooltip'
 import { TagInput } from './TagInput'
 import { pushError, pushSuccess } from '@/lib/toast'
 import { cn } from '@/lib/utils'
+
+const childExclusionSchema = z.object({
+  process_name: z.string(),
+  cmdline_pattern: z.string(),
+  image_path_pattern: z.string(),
+})
 
 const schema = z.object({
   name: z.string().check(z.trim(), z.minLength(1)),
@@ -35,6 +41,7 @@ const schema = z.object({
   includePorts: z.array(z.string()),
   includeCidrs: z.array(z.string()),
   excludePorts: z.array(z.string()),
+  childExclusions: z.array(childExclusionSchema),
 })
 export type RuleForm = z.infer<typeof schema>
 
@@ -54,6 +61,11 @@ export function ruleToForm(rule: AutoRule | null, prefillName = '', prefillDir =
       includePorts: [...rule.dst_filter.include_ports],
       includeCidrs: [...(rule.dst_filter.include_cidrs ?? [])],
       excludePorts: [...(rule.dst_filter.exclude_ports ?? [])],
+      childExclusions: (rule.child_exclusions ?? []).map(c => ({
+        process_name: c.process_name ?? '',
+        cmdline_pattern: c.cmdline_pattern ?? '',
+        image_path_pattern: c.image_path_pattern ?? '',
+      })),
     }
   }
   return {
@@ -70,6 +82,7 @@ export function ruleToForm(rule: AutoRule | null, prefillName = '', prefillDir =
     includePorts: [],
     includeCidrs: [],
     excludePorts: [],
+    childExclusions: [],
   }
 }
 
@@ -83,6 +96,13 @@ export function formToPayload(f: RuleForm, groups: ProxyGroup[], enabled: boolea
     const g = groups.find(x => x.id === Number.parseInt(f.group))
     proxy = { type: g?.type ?? 'socks5', host: g?.host ?? '127.0.0.1', port: g?.port ?? 7890 }
   }
+  const childExclusions: ChildExclusion[] = f.childExclusions
+    .map(c => ({
+      process_name: c.process_name.trim(),
+      cmdline_pattern: c.cmdline_pattern.trim(),
+      image_path_pattern: c.image_path_pattern.trim(),
+    }))
+    .filter(c => c.process_name !== '' || c.cmdline_pattern !== '' || c.image_path_pattern !== '')
   return {
     name: f.name,
     enabled,
@@ -101,6 +121,7 @@ export function formToPayload(f: RuleForm, groups: ProxyGroup[], enabled: boolea
       include_ports: f.includePorts,
       exclude_ports: f.excludePorts,
     },
+    child_exclusions: childExclusions,
   }
 }
 
@@ -160,7 +181,10 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
     const values = ruleToForm(rule, prefillName, prefillDir)
     reset(values)
     setConfirmingDelete(false)
-    setAdvanced(values.excludeCidrs.length + values.includePorts.length + values.includeCidrs.length + values.excludePorts.length > 0)
+    setAdvanced(
+      values.excludeCidrs.length + values.includePorts.length + values.includeCidrs.length
+      + values.excludePorts.length + values.childExclusions.length > 0,
+    )
     void qc.invalidateQueries({ queryKey: queryKeys.proxyGroups })
   }, [open, rule, prefillName, prefillDir, reset, qc])
 
@@ -363,6 +387,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             </button>
             {advanced && (
               <div className="mt-4 space-y-5 border-l-2 border-border pl-4">
+                <ChildExclusionsField control={control} id={`${ids}-ce`} />
                 <TagField control={control} name="excludeCidrs" id={`${ids}-xc`} label="直连网段（CIDR）"
                   help="访问这些网段时使用直连，支持 IPv4 与 IPv6。配置文件中的默认排除网段对所有规则生效。"
                   placeholder="例如 192.168.0.0/16 或 2001:db8::/32（回车添加）" note="按回车或逗号添加，点击 × 删除。" />
@@ -428,6 +453,97 @@ function MatchedProcesses({ ruleId, fallback }: { ruleId: string; fallback: Auto
         ))}
       </ul>
     </Section>
+  )
+}
+
+const COMMON_CHILD_EXCLUSIONS = ['ssh.exe', 'scp.exe', 'sftp.exe'] as const
+
+function ChildExclusionsField({ control, id }: {
+  control: ReturnType<typeof useForm<RuleForm>>['control']
+  id: string
+}) {
+  return (
+    <Controller
+      control={control}
+      name="childExclusions"
+      render={({ field }) => {
+        const items = field.value
+        const addItem = (processName = '') => {
+          field.onChange([...items, { process_name: processName, cmdline_pattern: '', image_path_pattern: '' }])
+        }
+        const updateItem = (idx: number, patch: Partial<ChildExclusion>) => {
+          field.onChange(items.map((item, i) => (i === idx ? { ...item, ...patch } : item)))
+        }
+        const removeItem = (idx: number) => {
+          field.onChange(items.filter((_, i) => i !== idx))
+        }
+        const existingNames = new Set(items.map(i => i.process_name.trim().toLowerCase()))
+        const quickPicks = COMMON_CHILD_EXCLUSIONS.filter(name => !existingNames.has(name))
+
+        return (
+          <div className="space-y-2" id={id}>
+            <div className="flex items-center justify-between gap-2">
+              <Label hint={<Help>命中的子进程及其整棵子树不继承本条规则，直接走直连。支持按进程名（* 通配符）、命令行关键词/通配符或目录前缀过滤。</Help>}>
+                子进程树例外（直连）
+              </Label>
+              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-2xs" onClick={() => addItem()}>
+                <Plus className="size-3" /> 添加例外
+              </Button>
+            </div>
+            {quickPicks.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-2xs text-muted-foreground">快捷添加：</span>
+                {quickPicks.map(name => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => addItem(name)}
+                    className="rounded-md border border-border bg-surface-2 px-2 py-0.5 text-2xs text-foreground-2 transition hover:bg-field hover:text-foreground"
+                  >
+                    + {name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {items.length > 0 && (
+              <div className="space-y-1.5">
+                {items.map((item, idx) => (
+                  <div key={idx} className="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-1.5">
+                    <Input
+                      aria-label={`例外进程名 ${idx + 1}`}
+                      placeholder="进程名，如 ssh.exe"
+                      value={item.process_name}
+                      onChange={e => updateItem(idx, { process_name: e.target.value })}
+                    />
+                    <Input
+                      aria-label={`例外命令行 ${idx + 1}`}
+                      placeholder="命令行（可选）"
+                      value={item.cmdline_pattern}
+                      onChange={e => updateItem(idx, { cmdline_pattern: e.target.value })}
+                    />
+                    <Input
+                      aria-label={`例外目录前缀 ${idx + 1}`}
+                      placeholder="目录前缀（可选）"
+                      value={item.image_path_pattern}
+                      onChange={e => updateItem(idx, { image_path_pattern: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      aria-label={`删除子进程例外 ${idx + 1}`}
+                      onClick={() => removeItem(idx)}
+                      className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-field hover:text-destructive"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">仅对本条规则下的子进程树生效，不影响其他应用中的同名进程。</p>
+          </div>
+        )
+      }}
+    />
   )
 }
 

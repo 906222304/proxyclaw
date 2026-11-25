@@ -464,7 +464,13 @@ private:
         const auto& entry = tree_.at(idx);
         rec.psn = entry.psn;
         if (!entry.alive || !entry.is_proxied()) {
-            rec.reason = decision_reason::not_proxied;
+            if (const auto excl = rules_.child_excluded_origin(entry); excl.policy_id != 0) {
+                rec.source    = excl.source;
+                rec.policy_id = excl.policy_id;
+                rec.reason    = decision_reason::rule_exclude_child;
+            } else {
+                rec.reason = decision_reason::not_proxied;
+            }
             return slot_state::direct;
         }
         const auto origin = rules_.origin_of(entry);
@@ -503,7 +509,14 @@ private:
         if (idx == INVALID_IDX) { rec.reason = decision_reason::unknown_pid; return v6_verdict::allow; }
         const auto& entry = tree_.at(idx);
         rec.psn = entry.psn;
-        if (!entry.alive || !entry.is_proxied()) return v6_verdict::allow;
+        if (!entry.alive || !entry.is_proxied()) {
+            if (const auto excl = rules_.child_excluded_origin(entry); excl.policy_id != 0) {
+                rec.source    = excl.source;
+                rec.policy_id = excl.policy_id;
+                rec.reason    = decision_reason::rule_exclude_child;
+            }
+            return v6_verdict::allow;
+        }
         const auto origin = rules_.origin_of(entry);
         rec.source    = origin.source;
         rec.policy_id = origin.policy_id;

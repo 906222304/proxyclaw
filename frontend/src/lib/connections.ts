@@ -18,6 +18,7 @@ export const ROUTE_REASONS: Record<string, string> = {
   global_exclude: '命中全局排除网段',
   rule_exclude: '命中规则的直连网段',
   rule_exclude_port: '命中规则的直连端口',
+  rule_exclude_child: '命中规则的子进程树例外，直连',
   rule_include_cidr_miss: '不在规则的仅代理网段内',
   rule_include_port_miss: '不在规则的代理端口内',
   rule_protocol: '规则未启用该协议',

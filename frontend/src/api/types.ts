@@ -31,6 +31,12 @@ export interface TrafficFilter {
   exclude_ports: string[]
 }
 
+export interface ChildExclusion {
+  process_name: string
+  cmdline_pattern: string
+  image_path_pattern: string
+}
+
 export interface AutoRule {
   id: string
   name: string
@@ -41,11 +47,12 @@ export interface AutoRule {
   hack_tree: boolean
   protocol?: RuleProtocol
   dst_filter: TrafficFilter
+  child_exclusions?: ChildExclusion[]
   proxy_group_id: number
   proxy: ProxyTarget
   matched_count?: number
   excluded_count?: number
-  matched_pids?: { pid: number; name: string; excluded: boolean }[]
+  matched_pids?: { pid: number; psn?: number; name: string; excluded: boolean }[]
 }
 
 export interface ProxyGroup {

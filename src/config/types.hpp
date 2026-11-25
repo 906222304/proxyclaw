@@ -328,6 +328,45 @@ struct ProcessKeyHash {
 };
 
 // ============================================================
+// Child-process-tree exclusion (v0.15 #1)
+// ============================================================
+//
+// A descendant matching any entry (plus its entire subtree) does not inherit
+// the parent rule and goes direct with decision_reason::rule_exclude_child.
+// Empty entries never match.
+struct ChildExclusion {
+    std::string process_name;       // Wildcard pattern (e.g. "ssh.exe", "scp*")
+    std::string cmdline_pattern;    // Keyword or wildcard pattern (optional)
+    std::string image_path_pattern; // Directory prefix match (optional)
+
+    bool empty() const {
+        return process_name.empty() && cmdline_pattern.empty() && image_path_pattern.empty();
+    }
+
+    bool operator==(const ChildExclusion&) const = default;
+};
+
+inline void to_json(nlohmann::json& j, const ChildExclusion& c) {
+    j = nlohmann::json{
+        {"process_name", c.process_name},
+        {"cmdline_pattern", c.cmdline_pattern},
+        {"image_path_pattern", c.image_path_pattern}
+    };
+}
+
+inline void from_json(const nlohmann::json& j, ChildExclusion& c) {
+    if (j.is_string()) {
+        c.process_name = j.get<std::string>();
+        c.cmdline_pattern.clear();
+        c.image_path_pattern.clear();
+        return;
+    }
+    c.process_name = j.value("process_name", std::string(""));
+    c.cmdline_pattern = j.value("cmdline_pattern", std::string(""));
+    c.image_path_pattern = j.value("image_path_pattern", std::string(""));
+}
+
+// ============================================================
 // Auto Rule
 // ============================================================
 
@@ -346,6 +385,7 @@ struct AutoRule {
     std::string image_path_pattern; // Directory prefix match (e.g. "C:\\Python311\\")
     bool hack_tree = false;
     TrafficFilter dst_filter;
+    std::vector<ChildExclusion> child_exclusions; // Subtrees under this rule that go direct
     uint32_t proxy_group_id = 0;    // References ProxyGroup, 0 = default group
     std::string protocol = "tcp";   // "tcp", "udp", or "both"
     ProxyTarget proxy;              // Legacy: kept for backward compat during migration
@@ -356,11 +396,15 @@ struct AutoRule {
     bool matches_process(DWORD pid, uint64_t psn) const {
         return matched_processes.contains(ProcessKey{pid, psn});
     }
+    bool is_child_excluded(DWORD pid, uint64_t psn) const {
+        return child_excluded_processes.contains(ProcessKey{pid, psn});
+    }
 
     // Runtime state (not serialized), keyed by (pid, psn) so a recycled PID
     // never inherits or shadows a dead predecessor's match state. Per-process
     // exclusions remain engine-owned in rule_engine_v3::exclusions_.
     std::unordered_set<ProcessKey, ProcessKeyHash> matched_processes;
+    std::unordered_set<ProcessKey, ProcessKeyHash> child_excluded_processes;
 };
 
 inline void to_json(nlohmann::json& j, const AutoRule& r) {
@@ -373,6 +417,7 @@ inline void to_json(nlohmann::json& j, const AutoRule& r) {
         {"image_path_pattern", r.image_path_pattern},
         {"hack_tree", r.hack_tree},
         {"dst_filter", r.dst_filter},
+        {"child_exclusions", r.child_exclusions},
         {"proxy_group_id", r.proxy_group_id},
         {"protocol", r.protocol},
         {"proxy", r.proxy}
@@ -388,6 +433,11 @@ inline void from_json(const nlohmann::json& j, AutoRule& r) {
     r.image_path_pattern = j.value("image_path_pattern", "");
     r.hack_tree = j.value("hack_tree", true);
     if (j.contains("dst_filter")) j.at("dst_filter").get_to(r.dst_filter);
+    if (j.contains("child_exclusions") && j.at("child_exclusions").is_array()) {
+        j.at("child_exclusions").get_to(r.child_exclusions);
+    } else {
+        r.child_exclusions.clear();
+    }
     r.proxy_group_id = j.value("proxy_group_id", 0u);
     r.protocol = j.value("protocol", std::string("tcp"));
     if (j.contains("proxy")) j.at("proxy").get_to(r.proxy);

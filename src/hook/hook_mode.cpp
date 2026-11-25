@@ -161,9 +161,16 @@ reply mode::decide_connect(const request& req, DWORD pid) {
     if (idx == INVALID_IDX) return direct(decision_reason::unknown_pid);
     const auto& entry = tree.at(idx);
     rec.psn = entry.psn;
-    if (!entry.alive || !entry.is_proxied()) return direct(decision_reason::not_proxied);
-
     const auto& rules = tree_mgr_.rules();
+    if (!entry.alive || !entry.is_proxied()) {
+        if (const auto excl = rules.child_excluded_origin(entry); excl.policy_id != 0) {
+            rec.source = excl.source;
+            rec.policy_id = excl.policy_id;
+            return direct(decision_reason::rule_exclude_child);
+        }
+        return direct(decision_reason::not_proxied);
+    }
+
     const auto origin = rules.origin_of(entry);
     rec.source = origin.source;
     rec.policy_id = origin.policy_id;

@@ -1,6 +1,6 @@
 import * as Tabs from '@radix-ui/react-tabs'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Minus, Moon, Square, Sun, X } from 'lucide-react'
+import { AlertTriangle, Copy, Minus, Moon, Square, Sun, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Toaster } from 'sonner'
 import { useDeleteRules, useSaveRule, type RulePayload } from '@/api/mutations'
@@ -9,7 +9,7 @@ import { processDetailQuery, statsQuery, useProcessTree } from '@/api/queries'
 import type { AutoRule, ProcessInfo } from '@/api/types'
 import appIcon from '@/assets/proxyclaw-icon.png'
 import { AutoRules } from '@/components/AutoRules'
-import { ConfigEditor } from '@/components/ConfigEditor'
+import { ConfigEditor, dnsRecoveryText, interceptionErrorText } from '@/components/ConfigEditor'
 import { NetworkActivities } from '@/components/NetworkActivities'
 import { ProcessTree } from '@/components/ProcessTree'
 import { ProxiesTab } from '@/components/ProxiesTab'
@@ -135,6 +135,20 @@ export default function App() {
   }
 
   const rulesCount = stats?.auto_rules_count ?? 0
+  const interceptionFailed = connected && stats?.interception?.active === false
+  const dnsRecoveryFailed = connected && stats?.dns?.recovery === 'failed'
+  const engineBanner = interceptionFailed
+    ? interceptionErrorText(stats?.interception?.error, stats?.interception?.mode)
+    : dnsRecoveryFailed
+      ? dnsRecoveryText('failed')
+      : ''
+  const statusTooltip = !connected
+    ? '未连接到代理引擎'
+    : interceptionFailed
+      ? engineBanner
+      : dnsRecoveryFailed
+        ? engineBanner
+        : '代理引擎已连接 · 监听端口 18080'
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -173,16 +187,21 @@ export default function App() {
           </Tabs.List>
 
           <div className="aa-gray flex h-full min-w-0 flex-1 basis-0 items-center justify-end">
-            <Tooltip content={connected ? '代理引擎已连接 · 监听端口 18080' : '未连接到代理引擎'} side="bottom">
-              <span
-                tabIndex={0}
+            <Tooltip content={statusTooltip} side="bottom">
+              <button
+                type="button"
                 data-connected={connected}
-                aria-label={connected ? '已连接' : '未连接'}
+                aria-label={!connected ? '未连接' : interceptionFailed ? '拦截引擎异常' : '已连接'}
+                onClick={() => setTab('settings')}
                 className="no-drag mr-1 flex h-6 items-center gap-1.5 rounded-md px-2 text-2xs text-muted-foreground hover:bg-field"
               >
-                <span className={cn('size-1.5 rounded-full', connected ? 'bg-success' : 'bg-destructive')} />
+                <span className={cn(
+                  'size-1.5 rounded-full',
+                  !connected || interceptionFailed ? 'bg-destructive' : dnsRecoveryFailed ? 'bg-warning' : 'bg-success',
+                )}
+                />
                 <span className="tabular">18080</span>
-              </span>
+              </button>
             </Tooltip>
             <div className="no-drag flex h-full items-center text-muted-foreground [&>button]:inline-flex [&>button]:h-full [&>button]:w-11 [&>button]:items-center [&>button]:justify-center [&>button]:transition-colors [&>button]:duration-150">
               <button type="button" onClick={toggleTheme} title="切换主题" className="hover:bg-field hover:text-foreground">
@@ -200,6 +219,28 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {engineBanner && (
+          <div
+            role="alert"
+            data-testid="engine-alert-banner"
+            className="aa-gray flex shrink-0 items-center justify-between gap-3 border-b border-destructive/20 bg-destructive-soft px-4 py-1.5 text-xs text-destructive"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <AlertTriangle className="size-3.5 shrink-0" />
+              <span className="truncate font-medium">{engineBanner}</span>
+            </span>
+            {tab !== 'settings' && (
+              <button
+                type="button"
+                onClick={() => setTab('settings')}
+                className="shrink-0 rounded px-2 py-0.5 text-2xs font-medium underline underline-offset-2 hover:bg-destructive/10"
+              >
+                查看引擎状态
+              </button>
+            )}
+          </div>
+        )}
 
         {/* aa-gray on each (transparent) panel: grayscale AA for all page text */}
         <Tabs.Content value="network" className="aa-gray view-in flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">

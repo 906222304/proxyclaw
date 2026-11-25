@@ -125,11 +125,21 @@ static void crash_restore_failure_blocks_replacement_backup() {
     dns::current["eth"] = {"127.0.0.2"}; dns::current["wifi"] = {"127.0.0.2"};
     dns::restore_failures.insert("eth"); DnsManager mgr(ioc);
     mgr.recover_crash_state(); CHECK(dns::backup);
+    CHECK(mgr.status().recovery == "failed");
     mgr.apply(enabled(), "127.0.0.1", 7890);
     CHECK(fwd::starts == 0);
     CHECK(dns::backup->at(0).dns_servers == std::vector<std::string>{"192.168.50.1"});
     dns::restore_failures.clear(); mgr.apply(enabled(), "127.0.0.1", 7890);
     proxy_dns(); CHECK(fwd::starts == 1);
+
+    // Clean recovery marks recovery == "recovered".
+    reset();
+    dns::backup = dns::interfaces;
+    dns::current["eth"] = {"127.0.0.2"}; dns::current["wifi"] = {"127.0.0.2"};
+    DnsManager mgr2(ioc);
+    mgr2.recover_crash_state();
+    CHECK(!dns::backup);
+    CHECK(mgr2.status().recovery == "recovered");
 }
 static void unchanged_config_does_not_restart() {
     reset(); asio::io_context ioc; DnsManager mgr(ioc);

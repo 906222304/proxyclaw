@@ -177,6 +177,16 @@ private:
     // layers above are never constructed or opened; this injects and relays instead.
     bool                                   hook_mode_requested_ = false;
     std::atomic<bool>                      interception_active_{false};
+    mutable std::mutex                     engine_status_mu_;
+    std::string                            interception_error_;
+    struct layer_status {
+        bool tcp_socket{false};
+        bool tcp_network{false};
+        bool tcp_v6{false};
+        bool udp_socket{false};
+        bool udp_network{false};
+    };
+    layer_status                           layers_{};
     std::unique_ptr<hook::mode>            hook_;
 
     icon_cache icons_;

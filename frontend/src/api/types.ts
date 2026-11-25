@@ -177,12 +177,51 @@ export interface DnsStatus {
   tcp_only?: boolean
   error?: string
   listen?: string
+  /** Set when startup found a crash-leftover DNS backup and attempted recovery. */
+  recovery?: 'recovered' | 'failed'
+}
+
+export interface WinDivertLayers {
+  tcp_socket: boolean
+  tcp_network: boolean
+  tcp_v6: boolean
+  udp_socket: boolean
+  udp_network: boolean
+}
+
+export interface InterceptionStatus {
+  mode: 'windivert' | 'hook'
+  active: boolean
+  /** Machine-readable startup failure reason when active === false. */
+  error?: string
+  /** Per-layer startup flags in WinDivert mode. */
+  layers?: WinDivertLayers
+}
+
+export interface DecisionLogStats {
+  written: number
+  dropped: number
+  capacity: number
 }
 
 export interface Stats {
   hijacked_pids: number
   auto_rules_count: number
+  tree_ready?: boolean
+  process_count?: number
+  config_version?: number
   dns?: DnsStatus
   /** Interception actually running (config changes apply after a restart). */
-  interception?: { mode: 'windivert' | 'hook'; active: boolean }
+  interception?: InterceptionStatus
+  decisions?: DecisionLogStats
+  tcp_syn_parking?: {
+    socket?: {
+      late_rejected_proxied?: number
+    }
+    parking?: {
+      enabled?: boolean
+      released_by_watchdog?: number
+      pool_exhausted?: number
+    }
+  }
 }

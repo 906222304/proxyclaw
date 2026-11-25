@@ -44,16 +44,19 @@ namespace clew {
 // error (failed only): "proxy_unreachable" (neither UDP ASSOCIATE nor a TCP
 // CONNECT to the upstream worked), "no_interface", "backup_failed",
 // "set_failed", "restore_failed", "mode_unsupported".
+// recovery: "" (no prior crash file) | "recovered" | "failed".
 struct DnsStatus {
     std::string state = "off";
     bool tcp_only = false;
     std::string error;
     std::string listen;
+    std::string recovery;
 
     nlohmann::json to_json() const {
         nlohmann::json j{{"state", state}, {"tcp_only", tcp_only}};
         if (!error.empty()) j["error"] = error;
         if (!listen.empty()) j["listen"] = listen;
+        if (!recovery.empty()) j["recovery"] = recovery;
         return j;
     }
     bool operator==(const DnsStatus&) const = default;
@@ -87,6 +90,12 @@ public:
         saved_states_ = std::move(*states);
         system_dns_modified_ = !saved_states_.empty();
         restore_system_dns();
+        const std::string outcome = system_dns_modified_ ? "failed" : "recovered";
+        {
+            std::lock_guard lk(status_mu_);
+            recovery_ = outcome;
+            status_.recovery = outcome;
+        }
     }
 
     // Non-blocking apply: hand the config to the worker and return. Called
@@ -103,7 +112,7 @@ public:
         // final state is never overwritten by this one.
         auto st = status();
         if (want && st.state != "running") {
-            set_status(DnsStatus{"starting", false, {}, cfg.listen_host});
+            set_status(DnsStatus{"starting", false, {}, cfg.listen_host, st.recovery});
         } else if (!want && (st.state == "running" || st.state == "starting")) {
             st.state = "stopping";
             set_status(std::move(st));
@@ -242,6 +251,7 @@ private:
     void set_status(DnsStatus st) {
         {
             std::lock_guard lk(status_mu_);
+            if (st.recovery.empty() && !recovery_.empty()) st.recovery = recovery_;
             if (status_ == st) return;
             status_ = st;
         }
@@ -250,10 +260,10 @@ private:
     }
     void set_running() {
         set_status(DnsStatus{"running", forwarder_ && forwarder_->tcp_only(), {},
-                             current_cfg_.listen_host});
+                             current_cfg_.listen_host, {}});
     }
     void fail(const char* why, const DnsConfig& cfg) {
-        set_status(DnsStatus{"failed", false, why, cfg.listen_host});
+        set_status(DnsStatus{"failed", false, why, cfg.listen_host, {}});
     }
 
     std::mutex req_mu_;
@@ -263,6 +273,7 @@ private:
     std::thread worker_;
     mutable std::mutex status_mu_;
     DnsStatus status_;
+    std::string recovery_;
     std::atomic<frontend_push_sink*> sink_{nullptr};
 
     // Proxied TCP :53 goes to the configured upstream (proxy/tcp_dns_upstream.hpp).

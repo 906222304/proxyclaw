@@ -126,18 +126,36 @@ public:
 
     std::string get_raw_config() const { return last_raw_; }
 
-    // Set raw config (from JSON editor). Returns error message or empty on success.
+    // Set raw config (from JSON editor or config import). Applies versioned
+    // migration (v1 -> v2) and proxy_groups normalization. Returns error
+    // message or empty on success.
     std::string set_raw_config(const std::string& json_string) {
         try {
             nlohmann::json j = nlohmann::json::parse(json_string);
-
-            ConfigV2 test = j.get<ConfigV2>();
-            if (test.version != 2) {
-                return "Invalid version: expected 2";
+            if (!j.is_object()) {
+                return "Validation error: config root must be a JSON object";
             }
 
+            const int ver = j.value("version", 2);
+            if (ver < 1 || ver > 2) {
+                return std::format("Unsupported config version: {} (supported: 1-2)", ver);
+            }
+            if (ver == 1) {
+                j["version"] = 2;
+            }
+
+            ConfigV2 test = j.get<ConfigV2>();
+            test.version = 2;
+
+            ConfigV2 previous = std::move(v2_config_);
             v2_config_ = std::move(test);
-            save();
+            has_v2_ = true;
+            ensure_proxy_groups(/*persist=*/false);
+            normalize_group_counter();
+            if (!save()) {
+                v2_config_ = std::move(previous);
+                return "Failed to save config file";
+            }
             return "";
         } catch (const nlohmann::json::parse_error& e) {
             return std::string("JSON parse error: ") + e.what();
@@ -168,9 +186,22 @@ private:
         return std::format(".{:x}.{}.tmp", tid, seq.fetch_add(1, std::memory_order_relaxed));
     }
 
+    void normalize_group_counter() {
+        uint32_t max_id = 0;
+        for (const auto& g : v2_config_.proxy_groups) {
+            if (g.id > max_id) max_id = g.id;
+        }
+        if (v2_config_.next_group_id <= max_id) {
+            v2_config_.next_group_id = max_id + 1;
+        }
+    }
+
     // Ensure proxy_groups is populated (migration from default_proxy / inline proxy)
-    void ensure_proxy_groups() {
-        if (!v2_config_.proxy_groups.empty()) return;
+    void ensure_proxy_groups(bool persist = true) {
+        if (!v2_config_.proxy_groups.empty()) {
+            normalize_group_counter();
+            return;
+        }
 
         ProxyGroup default_group;
         default_group.id = 0;
@@ -208,8 +239,9 @@ private:
             }
         }
 
+        normalize_group_counter();
         PC_LOG_INFO("Migrated proxy config: {} groups created", v2_config_.proxy_groups.size());
-        save();
+        if (persist) save();
     }
 };
 

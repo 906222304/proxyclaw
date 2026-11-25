@@ -203,7 +203,7 @@ function Cell({ conn, col, onCreateRule }: {
       ) : null
     case 'proxy_status':
       return (
-        <div className="flex min-w-0 items-center justify-between gap-1.5">
+        <div className="relative flex min-w-0 items-center">
           <ProxyCell conn={conn} />
           {onCreateRule && conn.process_name && (
             <button
@@ -212,7 +212,7 @@ function Cell({ conn, col, onCreateRule }: {
               aria-label={`为 ${conn.process_name} 生成规则`}
               title={`基于此连接为 ${conn.process_name} 生成规则`}
               onClick={e => { e.stopPropagation(); onCreateRule(conn) }}
-              className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-field hover:text-primary focus-visible:opacity-100 group-hover:opacity-100"
+              className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded bg-surface-2/95 p-0.5 text-muted-foreground opacity-0 shadow-xs transition-opacity hover:bg-field hover:text-primary focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
             >
               <PlusCircle className="size-3.5" />
             </button>

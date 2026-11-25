@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, CircleHelp, Cpu, FolderOpen, Lock, Plus, Terminal, Trash2, X } from 'lucide-react'
+import { ChevronRight, CircleHelp, Cpu, FolderOpen, Lock, Package, Plus, Terminal, Trash2, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import * as z from 'zod/mini'
@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/misc'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
+import type { RulePrefill } from '@/lib/presets'
 import { TagInput } from './TagInput'
 import { pushError, pushSuccess } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -28,9 +29,10 @@ const childExclusionSchema = z.object({
 
 const schema = z.object({
   name: z.string().check(z.trim(), z.minLength(1)),
-  processName: z.string().check(z.trim(), z.minLength(1)),
+  processName: z.string(),
   workDir: z.string(),
   useWorkDir: z.boolean(),
+  packageFamilyName: z.string(),
   cmdlinePattern: z.string(),
   protocol: z.enum(['tcp', 'udp', 'both']),
   /** Proxy group id as a string. Kept while a custom address is chosen. */
@@ -45,13 +47,14 @@ const schema = z.object({
 })
 export type RuleForm = z.infer<typeof schema>
 
-export function ruleToForm(rule: AutoRule | null, prefillName = '', prefillDir = ''): RuleForm {
+export function ruleToForm(rule: AutoRule | null, prefillName = '', prefillDir = '', prefill?: RulePrefill): RuleForm {
   if (rule) {
     return {
       name: rule.name,
       processName: rule.process_name,
       workDir: rule.image_path_pattern || '',
       useWorkDir: !!rule.image_path_pattern,
+      packageFamilyName: rule.package_family_name || '',
       cmdlinePattern: rule.cmdline_pattern,
       protocol: rule.protocol || 'tcp',
       group: String(rule.proxy_group_id ?? 0),
@@ -68,13 +71,17 @@ export function ruleToForm(rule: AutoRule | null, prefillName = '', prefillDir =
       })),
     }
   }
+  const proc = prefill?.processName ?? prefillName
+  const dir = prefill?.workDir ?? prefillDir
+  const ruleName = prefill?.name ?? (proc ? `${proc} 的规则` : '')
   return {
-    name: prefillName ? `${prefillName} 的规则` : '',
-    processName: prefillName,
-    workDir: prefillDir,
-    useWorkDir: !!prefillDir,
-    cmdlinePattern: '',
-    protocol: 'tcp',
+    name: ruleName,
+    processName: proc,
+    workDir: dir,
+    useWorkDir: !!dir,
+    packageFamilyName: prefill?.packageFamilyName ?? '',
+    cmdlinePattern: prefill?.cmdlinePattern ?? '',
+    protocol: prefill?.protocol ?? 'tcp',
     group: '0',
     custom: false,
     customHost: '',
@@ -104,11 +111,12 @@ export function formToPayload(f: RuleForm, groups: ProxyGroup[], enabled: boolea
     }))
     .filter(c => c.process_name !== '' || c.cmdline_pattern !== '' || c.image_path_pattern !== '')
   return {
-    name: f.name,
+    name: f.name.trim(),
     enabled,
-    process_name: f.processName,
-    cmdline_pattern: f.cmdlinePattern,
-    image_path_pattern: f.useWorkDir ? f.workDir : '',
+    process_name: f.processName.trim(),
+    cmdline_pattern: f.cmdlinePattern.trim(),
+    image_path_pattern: f.useWorkDir ? f.workDir.trim() : '',
+    package_family_name: f.packageFamilyName.trim(),
     // v0.9.0+: always tree-mode; kept in the payload for schema compatibility.
     hack_tree: true,
     protocol: f.protocol,
@@ -151,12 +159,13 @@ function GroupChip({ group }: { group: ProxyGroup }) {
   )
 }
 
-export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefillDir, saving, onSave, onDelete }: {
+export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefillDir, prefill, saving, onSave, onDelete }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   rule: AutoRule | null
   prefillName?: string
   prefillDir?: string
+  prefill?: RulePrefill
   saving?: boolean
   onSave: (payload: RulePayload) => void
   onDelete: (id: string) => void
@@ -178,7 +187,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
   // Reset the form each time the dialog opens; refresh the group list.
   useEffect(() => {
     if (!open) return
-    const values = ruleToForm(rule, prefillName, prefillDir)
+    const values = ruleToForm(rule, prefillName, prefillDir, prefill)
     reset(values)
     setConfirmingDelete(false)
     setAdvanced(
@@ -186,7 +195,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
       + values.excludePorts.length + values.childExclusions.length > 0,
     )
     void qc.invalidateQueries({ queryKey: queryKeys.proxyGroups })
-  }, [open, rule, prefillName, prefillDir, reset, qc])
+  }, [open, rule, prefillName, prefillDir, prefill, reset, qc])
 
   const group = watch('group')
   const custom = watch('custom')
@@ -194,7 +203,8 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
   const useWorkDir = watch('useWorkDir')
   const name = watch('name')
   const processName = watch('processName')
-  const canSave = name.trim() !== '' && processName.trim() !== ''
+  const packageFamilyName = watch('packageFamilyName')
+  const canSave = name.trim() !== '' && (processName.trim() !== '' || packageFamilyName.trim() !== '')
 
   const onBrowse = async () => {
     try {
@@ -210,7 +220,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
     }
   }
 
-  const submit = handleSubmit(values => onSave(formToPayload(values, groups, rule?.enabled ?? false)))
+  const submit = handleSubmit(values => onSave(formToPayload(values, groups, rule?.enabled ?? prefill?.enabled ?? false)))
   const selectedGroup = groups.find(g => String(g.id) === group)
 
   return (
@@ -253,7 +263,7 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
         <Section title="进程匹配">
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <Label htmlFor={`${ids}-proc`} hint={<Help>匹配可执行文件名，不区分大小写。支持通配符：* 匹配任意内容，? 匹配单个字符。</Help>}>进程名称</Label>
+              <Label htmlFor={`${ids}-proc`} hint={<Help>匹配可执行文件名，不区分大小写。支持通配符：* 匹配任意内容，? 匹配单个字符。若已填写 Store 包身份，此处可留空以匹配包内全部进程。</Help>}>进程名称</Label>
               <span className="text-xs text-muted-foreground">支持通配符（*）</span>
             </div>
             <div className="flex gap-2">
@@ -282,17 +292,39 @@ export function RuleEditorDialog({ open, onOpenChange, rule, prefillName, prefil
             <div className={cn('flex h-control items-center gap-2 rounded-md bg-muted pl-2.5 pr-1.5', !useWorkDir && 'opacity-60')}>
               <Lock className="size-3.5 shrink-0 text-muted-foreground" />
               <input
-                readOnly
                 aria-label="程序所在目录"
-                className="min-w-0 flex-1 select-all bg-transparent text-xs text-muted-foreground outline-none"
-                placeholder="选择程序后自动填写"
-                {...register('workDir')}
+                className="min-w-0 flex-1 bg-transparent text-xs text-muted-foreground outline-none"
+                placeholder="目录前缀或通配符路径（如 C:\App\ 或 *\cursor\*）"
+                {...register('workDir', {
+                  onChange: e => { if ((e.target as HTMLInputElement).value) setValue('useWorkDir', true) },
+                })}
               />
               <span className="text-xs text-muted-foreground">作为匹配条件</span>
               <Controller
                 control={control}
                 name="useWorkDir"
                 render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} aria-label="目录作为匹配条件" />}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <Label
+                htmlFor={`${ids}-pfn`}
+                hint={<Help>选填。Microsoft Store / MSIX 应用的稳定包身份（PackageFamilyName，如 Microsoft.WindowsTerminal_8wekyb3d8bbwe）。商店升级导致 WindowsApps 版本路径变更时依然命中，支持通配符。</Help>}
+              >
+                Store 包身份
+              </Label>
+              <span className="text-xs text-muted-foreground">MSIX / Store 升级不失效</span>
+            </div>
+            <div className="relative">
+              <Package className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id={`${ids}-pfn`}
+                className="pl-8"
+                placeholder="例如 Microsoft.WindowsTerminal_8wekyb3d8bbwe"
+                {...register('packageFamilyName')}
               />
             </div>
           </div>

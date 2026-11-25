@@ -45,6 +45,17 @@
   & recovery, decision record counts). `PUT /api/config` (`config_manager::set_raw_config`)
   now runs versioned v1 → v2 migration, rejects unsupported versions without
   clobbering state, and backs the new Settings Export / Import JSON buttons.
+- Editable app presets & Store package identity matching (v0.15 #3):
+  - Rule engine adds `AutoRule::package_family_name` (queried via
+    `GetPackageFamilyName` with `WindowsApps\` path fallback) and wildcard
+    matching for `image_path_pattern`, so Microsoft Store / MSIX app rules stay
+    valid after Store version upgrades change the installation folder;
+    `/api/processes/{pid}/detail` also exposes `package_family_name`.
+  - Rules tab adds an editable **应用预设** picker (AI clients, IDEs/terminals,
+    browsers, communication apps) supporting one-click add or open-in-editor.
+  - Network activity rows gain a one-click rule creation action that prefills
+    the rule editor with the connection's process, protocol, and Store package
+    identity (or directory).
 
 ## v0.15.2 (2026-11-24)
 

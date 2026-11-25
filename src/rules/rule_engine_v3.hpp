@@ -734,8 +734,9 @@ private:
         return check_cmdline_pattern(tree, idx, rule.cmdline_pattern);
     }
 
-    // Lazy image_path prefix check (case-insensitive, shared by rule matching
-    // and child_exclusions).
+    // Lazy image_path check: wildcard match when pattern contains * or ?,
+    // otherwise case-insensitive directory prefix match (shared by rule
+    // matching and child_exclusions).
     bool check_image_path_pattern(flat_tree& tree, uint32_t idx, std::string_view pattern) {
         if (pattern.empty()) return true;
 
@@ -749,6 +750,9 @@ private:
         if (entry.image_path_cache[0] == '\x01') return false;
 
         const auto& path = entry.image_path_cache;
+        if (pattern.find_first_of("*?") != std::string_view::npos) {
+            return wildcard_match(pattern, path);
+        }
         if (path.size() < pattern.size()) return false;
         return std::equal(pattern.begin(), pattern.end(), path.begin(),
             [](char a, char b) {
@@ -789,13 +793,38 @@ private:
         });
     }
 
+    // Lazy Store/MSIX PackageFamilyName check: matches stably across Store app
+    // upgrades where the versioned WindowsApps\ folder path changes.
+    bool check_package_family(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
+        if (rule.package_family_name.empty()) return true;
+
+        auto& entry = tree.at(idx);
+        if (entry.package_family_cache.empty()) {
+            std::string pfn = query_process_package_family(entry.pid);
+            if (pfn.empty()) {
+                if (entry.image_path_cache.empty()) {
+                    entry.image_path_cache = query_process_image_path(entry.pid);
+                    if (entry.image_path_cache.empty()) {
+                        entry.image_path_cache = "\x01";
+                    }
+                }
+                if (entry.image_path_cache[0] != '\x01') {
+                    pfn = extract_package_family_from_path(entry.image_path_cache);
+                }
+            }
+            entry.package_family_cache = pfn.empty() ? "\x01" : std::move(pfn);
+        }
+        return entry.package_family_cache[0] != '\x01' &&
+               wildcard_match(rule.package_family_name, entry.package_family_cache);
+    }
+
     // Per-entry match decision against a single rule. Pure (no side effects).
-    // - name: entry passes process_name + cmdline + image_path filters
+    // - name: entry passes process_name and/or package_family_name, plus
+    //   optional cmdline / image_path filters.
     // - tree: entry inherits via (parent_pid, parent_psn) already in
-    //   matched_processes (hack_tree only)
-    // Both false → no match. Empty process_name never name-matches; cmdline /
-    // image_path are filters on top of the name match (matches the documented
-    // semantics in README).
+    //   matched_processes (hack_tree only).
+    // Both false -> no match. At least one of process_name or
+    // package_family_name must be non-empty to match directly.
     struct match_kind { bool name = false; bool tree = false; };
 
     match_kind try_match_one(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
@@ -805,9 +834,13 @@ private:
         if (is_excluded(rule.id, entry)) return {};
         if (rule.matches_process(entry.pid, entry.psn)) return {};
 
+        const bool has_identity = !rule.process_name.empty() || !rule.package_family_name.empty();
+        const bool proc_ok = rule.process_name.empty()
+            || wildcard_match(rule.process_name, entry.name_u8);
         const bool name_match =
-            !rule.process_name.empty()
-            && wildcard_match(rule.process_name, entry.name_u8)
+            has_identity
+            && proc_ok
+            && check_package_family(tree, idx, rule)
             && check_cmdline(tree, idx, rule)
             && check_image_path(tree, idx, rule);
 

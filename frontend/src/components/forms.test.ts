@@ -36,10 +36,11 @@ describe('rule editor mapping', () => {
     expect(payload.proxy).toEqual({ type: 'socks5', host: '127.0.0.1', port: 9050 })
   })
 
-  it('round-trips an existing rule', () => {
+  it('round-trips an existing rule including Store package_family_name', () => {
     const rule: AutoRule = {
       id: 'r1', name: 'R', enabled: true, process_name: 'x.exe', cmdline_pattern: '--a',
-      image_path_pattern: '', hack_tree: true, protocol: 'both', proxy_group_id: 2,
+      image_path_pattern: '', package_family_name: 'Microsoft.WindowsTerminal_8wekyb3d8bbwe',
+      hack_tree: true, protocol: 'both', proxy_group_id: 2,
       proxy: { type: 'socks5', host: 'h', port: 1 },
       dst_filter: { include_cidrs: [], exclude_cidrs: ['10.0.0.0/8'], include_ports: ['443'], exclude_ports: [] },
       child_exclusions: [{ process_name: 'ssh.exe', cmdline_pattern: '', image_path_pattern: '' }],
@@ -50,7 +51,21 @@ describe('rule editor mapping', () => {
     expect(payload.dst_filter).toEqual(rule.dst_filter)
     expect(payload.child_exclusions).toEqual(rule.child_exclusions)
     expect(payload.image_path_pattern).toBe('')
+    expect(payload.package_family_name).toBe('Microsoft.WindowsTerminal_8wekyb3d8bbwe')
     expect(payload.protocol).toBe('both')
+  })
+
+  it('maps a RulePrefill with Store package identity into the form', () => {
+    const f = ruleToForm(null, '', '', {
+      name: 'ChatGPT（Store 版）',
+      processName: 'ChatGPT.exe',
+      packageFamilyName: 'OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0',
+      protocol: 'tcp',
+      enabled: true,
+    })
+    expect(f.name).toBe('ChatGPT（Store 版）')
+    expect(f.packageFamilyName).toBe('OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0')
+    expect(f.useWorkDir).toBe(false)
   })
 
   it('filters rules by status and text', () => {

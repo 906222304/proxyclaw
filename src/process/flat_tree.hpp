@@ -22,11 +22,13 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -87,7 +89,8 @@ struct process_entry {
 
     // Lazy cmdline cache: empty = not yet queried, "\x01" = queried but failed/empty
     std::string cmdline_cache;
-    std::string image_path_cache;  // same convention as cmdline_cache
+    std::string image_path_cache;      // same convention as cmdline_cache
+    std::string package_family_cache;  // Store/MSIX PackageFamilyName, same convention
 
     // Helper: set name from wide string (one-time conversion at entry)
     void set_name(const wchar_t* wide_name) {
@@ -179,6 +182,81 @@ inline std::string query_process_image_path(DWORD pid) {
     auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
     if (!h) return {};
     return query_process_image_path(h.get());
+}
+
+// Extract the stable PackageFamilyName (<Name>_<PublisherId>) from a versioned
+// Microsoft Store / MSIX WindowsApps image path:
+//   ...\WindowsApps\<Name>_<Version>_<Arch>_<ResourceId>_<PublisherId>\...
+// Returns empty string when the path is not inside WindowsApps or malformed.
+inline std::string extract_package_family_from_path(std::string_view image_path) {
+    if (image_path.empty()) return {};
+    std::string lower(image_path.size(), '\0');
+    for (size_t i = 0; i < image_path.size(); ++i) {
+        char c = image_path[i];
+        if (c == '/') c = '\\';
+        lower[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    constexpr std::string_view marker = "\\windowsapps\\";
+    const size_t pos = lower.find(marker);
+    if (pos == std::string::npos) return {};
+    const size_t seg_start = pos + marker.size();
+    size_t seg_end = lower.find('\\', seg_start);
+    if (seg_end == std::string::npos) seg_end = image_path.size();
+    if (seg_end <= seg_start) return {};
+
+    // PackageFullName format: <Name>_<Version>_<Arch>_<ResourceId>_<PublisherId>.
+    // Strip the 3 middle version/arch/resource fields from the right so the
+    // resulting family name survives Store app version upgrades.
+    const std::string_view seg = image_path.substr(seg_start, seg_end - seg_start);
+    const size_t u4 = seg.rfind('_');
+    if (u4 == std::string_view::npos || u4 == 0) return {};
+    const size_t u3 = seg.rfind('_', u4 - 1);
+    if (u3 == std::string_view::npos || u3 == 0) return {};
+    const size_t u2 = seg.rfind('_', u3 - 1);
+    if (u2 == std::string_view::npos || u2 == 0) return {};
+    const size_t u1 = seg.rfind('_', u2 - 1);
+    if (u1 == std::string_view::npos || u1 == 0) return {};
+
+    const std::string_view pkg_name = seg.substr(0, u1);
+    const std::string_view pub_id   = seg.substr(u4 + 1);
+    if (pkg_name.empty() || pub_id.empty()) return {};
+
+    std::string family;
+    family.reserve(pkg_name.size() + 1 + pub_id.size());
+    family.append(pkg_name);
+    family.push_back('_');
+    family.append(pub_id);
+    return family;
+}
+
+// Query Store/MSIX PackageFamilyName via kernel32!GetPackageFamilyName (Win8+).
+// Returns empty string for non-packaged desktop apps or on failure.
+inline std::string query_process_package_family(HANDLE process) {
+    using get_pfn_t = LONG(WINAPI*)(HANDLE, UINT32*, PWSTR);
+    static auto fn = reinterpret_cast<get_pfn_t>(
+        GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetPackageFamilyName"));
+    if (!fn) return {};
+
+    WCHAR buf[128] = {};
+    UINT32 len = static_cast<UINT32>(std::size(buf));
+    if (fn(process, &len, buf) != ERROR_SUCCESS || len <= 1) return {};
+
+    // len includes the terminating NUL character.
+    const int wchar_count = static_cast<int>(len - 1);
+    const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, buf, wchar_count,
+                                             nullptr, 0, nullptr, nullptr);
+    if (utf8_len <= 0) return {};
+
+    std::string result(static_cast<size_t>(utf8_len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buf, wchar_count,
+                        result.data(), utf8_len, nullptr, nullptr);
+    return result;
+}
+
+inline std::string query_process_package_family(DWORD pid) {
+    auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    if (!h) return {};
+    return query_process_package_family(h.get());
 }
 
 // ---------------------------------------------------------------------------

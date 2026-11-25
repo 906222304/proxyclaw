@@ -1035,6 +1035,96 @@ TEST(orphan_inherits_from_late_tree_inherited_parent) {
     ASSERT_TRUE(engine.auto_rules()[0].matches_process(702, 7002));
 }
 
+// v0.15 #1: child-process-tree exclusions prune the matching child AND its
+// entire descendant subtree during both bulk apply_auto_rules() and dynamic
+// on_process_start(), while leaving sibling children proxied and recording
+// child_excluded_origin() for decision records.
+TEST(child_exclusions_prune_subtree_bulk_and_dynamic) {
+    clew::flat_tree tree;
+    clew::rule_engine_v3 engine;
+    clew::AutoRule rule = make_rule("vscode", "code.exe", /*hack_tree=*/true, /*group=*/2);
+    rule.child_exclusions.push_back(clew::ChildExclusion{"ssh.exe", "", ""});
+    rule.child_exclusions.push_back(clew::ChildExclusion{"code.exe", "run-as-node", ""});
+    engine.set_auto_rules({rule});
+
+    FILETIME ft{};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    uint32_t code_idx = add_test_entry(tree, 100, 4, ft, L"code.exe");
+    uint32_t git_idx = add_test_entry(tree, 101, 100, ft, L"git.exe");
+    uint32_t ssh_idx = add_test_entry(tree, 102, 100, ft, L"ssh.exe");
+    uint32_t agent_idx = add_test_entry(tree, 103, 102, ft, L"ssh-agent.exe");
+    // Same-name descendant with matching cmdline exclusion.
+    uint32_t helper_code_idx = add_test_entry(tree, 104, 100, ft, L"code.exe");
+    tree.at(helper_code_idx).cmdline_cache = "code.exe --ms-enable-electron-run-as-node";
+    uint32_t helper_child_idx = add_test_entry(tree, 105, 104, ft, L"node.exe");
+    // Unrelated ssh.exe outside code.exe tree.
+    uint32_t other_ssh_idx = add_test_entry(tree, 200, 4, ft, L"ssh.exe");
+
+    engine.apply_auto_rules(tree);
+
+    ASSERT_TRUE(tree.at(code_idx).is_proxied());
+    ASSERT_TRUE(tree.at(git_idx).is_proxied());
+    ASSERT_FALSE(tree.at(ssh_idx).is_proxied());
+    ASSERT_FALSE(tree.at(agent_idx).is_proxied());
+    ASSERT_FALSE(tree.at(helper_code_idx).is_proxied());
+    ASSERT_FALSE(tree.at(helper_child_idx).is_proxied());
+    ASSERT_FALSE(tree.at(other_ssh_idx).is_proxied());
+
+    // Excluded subtree members report child_excluded_origin pointing to vscode;
+    // unrelated ssh.exe reports none.
+    auto ssh_origin = engine.child_excluded_origin(tree.at(ssh_idx));
+    ASSERT_EQ(ssh_origin.source, clew::decision_source::tree);
+    ASSERT_EQ(engine.rule_id_for_policy(ssh_origin.policy_id), std::string("vscode"));
+    auto agent_origin = engine.child_excluded_origin(tree.at(agent_idx));
+    ASSERT_EQ(engine.rule_id_for_policy(agent_origin.policy_id), std::string("vscode"));
+    ASSERT_EQ(engine.child_excluded_origin(tree.at(helper_child_idx)).policy_id, ssh_origin.policy_id);
+    ASSERT_EQ(engine.child_excluded_origin(tree.at(other_ssh_idx)).policy_id, 0u);
+
+    // Dynamic start: a new child under ssh-agent stays excluded, while a new
+    // child under git.exe is proxied, and a new ssh.exe under git.exe is excluded.
+    uint32_t dyn_under_ssh = add_test_entry(tree, 106, 103, ft, L"scp.exe");
+    ASSERT_FALSE(engine.on_process_start(tree, dyn_under_ssh).has_value());
+    ASSERT_FALSE(tree.at(dyn_under_ssh).is_proxied());
+    ASSERT_EQ(engine.child_excluded_origin(tree.at(dyn_under_ssh)).policy_id, ssh_origin.policy_id);
+
+    uint32_t dyn_under_git = add_test_entry(tree, 107, 101, ft, L"git-remote-https.exe");
+    ASSERT_TRUE(engine.on_process_start(tree, dyn_under_git).has_value());
+    ASSERT_TRUE(tree.at(dyn_under_git).is_proxied());
+
+    uint32_t dyn_ssh_under_git = add_test_entry(tree, 108, 101, ft, L"ssh.exe");
+    ASSERT_FALSE(engine.on_process_start(tree, dyn_ssh_under_git).has_value());
+    ASSERT_FALSE(tree.at(dyn_ssh_under_git).is_proxied());
+    ASSERT_EQ(engine.child_excluded_origin(tree.at(dyn_ssh_under_git)).policy_id, ssh_origin.policy_id);
+
+    // Process exit cleans up child_excluded_processes for exact (pid, psn).
+    const uint64_t dyn_ssh_psn = tree.at(dyn_ssh_under_git).psn;
+    engine.on_process_exit(108, dyn_ssh_psn);
+    ASSERT_FALSE(engine.auto_rules()[0].is_child_excluded(108, dyn_ssh_psn));
+}
+
+TEST(child_exclusion_json_roundtrip_and_string_shorthand) {
+    auto j = nlohmann::json::parse(R"({
+        "id": "r1",
+        "name": "IDE",
+        "enabled": true,
+        "process_name": "code.exe",
+        "child_exclusions": [
+            "ssh.exe",
+            {"process_name": "node.exe", "cmdline_pattern": "vite", "image_path_pattern": "C:\\dev\\"}
+        ]
+    })");
+    auto r = j.get<clew::AutoRule>();
+    ASSERT_EQ(r.child_exclusions.size(), 2u);
+    ASSERT_EQ(r.child_exclusions[0].process_name, std::string("ssh.exe"));
+    ASSERT_EQ(r.child_exclusions[1].process_name, std::string("node.exe"));
+    ASSERT_EQ(r.child_exclusions[1].cmdline_pattern, std::string("vite"));
+    ASSERT_EQ(r.child_exclusions[1].image_path_pattern, std::string("C:\\dev\\"));
+
+    nlohmann::json out = r;
+    ASSERT_TRUE(out.contains("child_exclusions"));
+    ASSERT_EQ(out["child_exclusions"].size(), 2u);
+}
+
 TEST(tcp_syn_parking_config_defaults_and_roundtrip) {
     clew::ConfigV2 def;
     ASSERT_TRUE(def.tcp_syn_parking.enabled);

@@ -33,9 +33,13 @@ describe('rule editor mapping', () => {
       image_path_pattern: '', hack_tree: true, protocol: 'both', proxy_group_id: 2,
       proxy: { type: 'socks5', host: 'h', port: 1 },
       dst_filter: { include_cidrs: [], exclude_cidrs: ['10.0.0.0/8'], include_ports: ['443'], exclude_ports: [] },
+      child_exclusions: [{ process_name: 'ssh.exe', cmdline_pattern: '', image_path_pattern: '' }],
     }
-    const payload = formToPayload(ruleToForm(rule), groups, rule.enabled)
+    const form = ruleToForm(rule)
+    form.childExclusions.push({ process_name: '  ', cmdline_pattern: '', image_path_pattern: '' })
+    const payload = formToPayload(form, groups, rule.enabled)
     expect(payload.dst_filter).toEqual(rule.dst_filter)
+    expect(payload.child_exclusions).toEqual(rule.child_exclusions)
     expect(payload.image_path_pattern).toBe('')
     expect(payload.protocol).toBe('both')
   })

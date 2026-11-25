@@ -98,6 +98,7 @@ const char* recorded_proxy_status(const DecisionRecord& d, bool hijacked_now) no
     case decision_reason::global_exclude:
     case decision_reason::rule_exclude:
     case decision_reason::rule_exclude_port:
+    case decision_reason::rule_exclude_child:
     case decision_reason::rule_include_cidr_miss:
     case decision_reason::rule_include_port_miss:
     case decision_reason::rule_protocol:

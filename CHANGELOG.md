@@ -29,6 +29,12 @@
 - UI: replaced the process-tree row quick action button (`⚡`) with quick rule
   creation, opening the rule editor dialog pre-filled with the selected
   process's name and working directory.
+- Child-process-tree exclusions (v0.15 #1): auto rules now support persisted
+  `child_exclusions` (`process_name` / `cmdline_pattern` / `image_path_pattern`).
+  Matching descendants and their entire subtrees go direct without inheriting
+  the parent rule and record `decision.reason = "rule_exclude_child"` (with the
+  parent rule id) across WinDivert TCP/UDP and Hook modes; configurable in the
+  rule editor under Advanced Settings.
 
 ## v0.15.2 (2026-11-24)
 

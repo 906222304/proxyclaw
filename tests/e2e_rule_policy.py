@@ -808,6 +808,112 @@ def run_udp_family_case(probe: pathlib.Path, work: pathlib.Path, socks: "Socks5S
 
 
 DECISION_CHECKS = 6   # run_decision_case: via proxy, proxied row, excluded row, conflict, stale, survives delete
+CHILD_EXCL_CHECKS = 3  # sibling proxied, excluded subtree direct, decision reason == rule_exclude_child
+
+CHILD_EXCL_RULE = {
+    "id": "e2e_child_ex", "name": "e2e_child_ex", "enabled": True,
+    "process_name": "pc_tree_root.exe", "hack_tree": True, "protocol": "tcp",
+    "proxy_group_id": 0, "dst_filter": {},
+    "child_exclusions": [
+        {"process_name": "pc_tree_excl.exe", "cmdline_pattern": "", "image_path_pattern": ""},
+    ],
+}
+
+
+def run_child_exclusion_case(root_exe: pathlib.Path, excl_exe: pathlib.Path,
+                             sibling_curl: pathlib.Path, leaf_curl: pathlib.Path,
+                             work: pathlib.Path, socks: Socks5Server,
+                             token: str, failures: list[str]) -> None:
+    """Verify child-process-tree exclusions (v0.15 #1) end-to-end with WinDivert:
+    - A non-excluded child under the rule root is proxied.
+    - A grandchild under an excluded child goes direct and records rule_exclude_child.
+    """
+    # Step 1: root spawns sibling curl -> must go through SOCKS5.
+    socks.take()
+    res1 = subprocess.run(
+        [str(root_exe), "-c",
+         "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+         str(sibling_curl), "-s", "-k", "-o", os.devnull, "-w", "%{http_code}",
+         "--noproxy", "*", "--connect-timeout", "10", "-m", "20", "http://1.1.1.1/"],
+        capture_output=True, text=True, timeout=30,
+    )
+    time.sleep(0.3)
+    seen1 = socks.take()
+    _check(failures, "e2e_child_ex sibling proxied",
+           res1.returncode == 0 and ("1.1.1.1", 80) in seen1,
+           {"rc": res1.returncode, "http": res1.stdout, "seen": seen1})
+
+    # Step 2: root -> excluded child -> leaf holds a TCP socket to 1.0.0.1:443
+    # (direct) so we can verify both direct egress and /api/tcp decision record.
+    hold_script = work / "child_excl_hold.py"
+    hold_script.write_text(
+        "import os, socket, sys\n"
+        "s = socket.create_connection(('1.0.0.1', 443), timeout=10)\n"
+        "print(f'READY {os.getpid()} {s.getsockname()[1]}', flush=True)\n"
+        "sys.stdin.readline()\n"
+        "s.close()\n",
+        encoding="utf-8",
+    )
+    # Chain: root_exe -> excl_exe -> leaf_curl (direct HTTP) AND hold socket in excl_exe.
+    socks.take()
+    res2 = subprocess.run(
+        [str(root_exe), "-c",
+         "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+         str(excl_exe), "-c",
+         "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+         str(leaf_curl), "-s", "-k", "-o", os.devnull, "-w", "%{http_code}",
+         "--noproxy", "*", "--connect-timeout", "10", "-m", "20", "http://1.0.0.1/"],
+        capture_output=True, text=True, timeout=30,
+    )
+    time.sleep(0.3)
+    seen2 = socks.take()
+    _check(failures, "e2e_child_ex excluded subtree direct",
+           res2.returncode == 0 and ("1.0.0.1", 80) not in seen2,
+           {"rc": res2.returncode, "http": res2.stdout, "seen": seen2})
+
+    # Step 3: root -> excl_exe holds TCP 1.0.0.1:443; verify decision record in /api/tcp.
+    socks.take()
+    p = subprocess.Popen(
+        [str(root_exe), "-c",
+         "import subprocess, sys\n"
+         "p = subprocess.Popen(sys.argv[1:], stdin=sys.stdin, stdout=sys.stdout)\n"
+         "sys.exit(p.wait())\n",
+         str(excl_exe), str(hold_script)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        line = p.stdout.readline().strip()
+        if not line.startswith("READY "):
+            _check(failures, "e2e_child_ex decision reason", False, {"line": line})
+            return
+        _, pid_s, port_s = line.split()
+        excl_pid, excl_port = int(pid_s), int(port_s)
+        time.sleep(0.3)
+        rows = api_get(f"/tcp?pid={excl_pid}", token)
+        row = next((r for r in rows if r.get("local_port") == excl_port), None)
+        dec = (row or {}).get("decision") or {}
+        seen3 = socks.take()
+        _check(
+            failures,
+            "e2e_child_ex decision reason",
+            row is not None
+            and ("1.0.0.1", 443) not in seen3
+            and row.get("proxy_status") == "IGNORED"
+            and dec.get("reason") == "rule_exclude_child"
+            and dec.get("rule_id") == CHILD_EXCL_RULE["id"],
+            {"row": row, "seen": seen3},
+        )
+    finally:
+        if p.stdin:
+            try:
+                p.stdin.write("\n")
+                p.stdin.flush()
+            except OSError:
+                pass
+        try:
+            p.wait(10)
+        except subprocess.TimeoutExpired:
+            p.kill()
 
 
 def main() -> int:
@@ -839,7 +945,7 @@ def main() -> int:
         ],
         "next_group_id": 3,
         "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES] + [c[0] for c in V6_CASES]
-                      + [DECISION_RULE, DECISION_SHADOW, UDP_FAMILY_RULE],
+                      + [DECISION_RULE, DECISION_SHADOW, UDP_FAMILY_RULE, CHILD_EXCL_RULE],
         "log_level": "debug",
         "dns": {"enabled": False},
     }
@@ -880,6 +986,16 @@ def main() -> int:
     udp_family_probe = py_dir / UDP_FAMILY_RULE["process_name"]
     shutil.copy2(sys.executable, udp_family_probe)
     udp_probes[UDP_FAMILY_RULE["id"]] = udp_family_probe
+    child_root_probe = py_dir / CHILD_EXCL_RULE["process_name"]
+    shutil.copy2(sys.executable, child_root_probe)
+    udp_probes["child_root"] = child_root_probe
+    child_excl_probe = py_dir / "pc_tree_excl.exe"
+    shutil.copy2(sys.executable, child_excl_probe)
+    udp_probes["child_excl"] = child_excl_probe
+    child_sibling_curl = work / "pc_tree_sibling.exe"
+    shutil.copy2(SYSTEM_CURL, child_sibling_curl)
+    child_leaf_curl = work / "pc_tree_leaf.exe"
+    shutil.copy2(SYSTEM_CURL, child_leaf_curl)
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
     proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
@@ -894,7 +1010,7 @@ def main() -> int:
                 rules = api_get("/auto-rules", token)
                 # tree_ready: initial process rundown verified (builds
                 # without the flag are not waited on).
-                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 3
+                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 4
                         and api_get("/stats", token).get("tree_ready", True)):
                     break
             except Exception:
@@ -955,6 +1071,10 @@ def main() -> int:
 
         run_udp_family_case(udp_family_probe, work, socks, failures)
 
+        run_child_exclusion_case(child_root_probe, child_excl_probe,
+                                 child_sibling_curl, child_leaf_curl,
+                                 work, socks, token, failures)
+
         # Last: it deletes its rules.
         decision_failures: list[str] = []
         run_decision_case(decision_probe, decision_script, socks, token, decision_failures)
@@ -978,7 +1098,7 @@ def main() -> int:
             shutil.rmtree(work, ignore_errors=True)
 
     total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + 2 + len(SPEED_CASES)
-             + DECISION_CHECKS + UDP_FAMILY_CHECKS)
+             + DECISION_CHECKS + UDP_FAMILY_CHECKS + CHILD_EXCL_CHECKS)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 

@@ -151,6 +151,7 @@ public:
         });
         for (auto& r : auto_rules_) {
             r.matched_processes.clear();
+            r.child_excluded_processes.clear();
             // v0.9.0: hack_tree pinned true; field retained on disk for future
             // per-rule single-node mode but never honored at runtime.
             r.hack_tree = true;
@@ -182,6 +183,20 @@ public:
             return {entry.has_flag(entry_flags::TREE_INHERITED) ? decision_source::tree
                                                                 : decision_source::rule,
                     it == policy_ids_.end() ? 0u : it->second};
+        }
+        return {};
+    }
+
+    // For an unproxied live entry that was excluded by an enabled rule's
+    // child_exclusions subtree (v0.15 #1), return that rule's origin for the
+    // decision record (source = tree, policy_id = rule's policy id).
+    [[nodiscard]] decision_origin child_excluded_origin(const process_entry& entry) const {
+        if (!entry.alive) return {};
+        for (const auto& rule : auto_rules_) {
+            if (!rule.enabled) continue;
+            if (!rule.is_child_excluded(entry.pid, entry.psn)) continue;
+            auto it = policy_ids_.find(rule.id);
+            return {decision_source::tree, it == policy_ids_.end() ? 0u : it->second};
         }
         return {};
     }
@@ -307,6 +322,7 @@ public:
         }
         for (auto& rule : auto_rules_) {
             rule.matched_processes.clear();
+            rule.child_excluded_processes.clear();
         }
 
         // Apply each rule
@@ -329,7 +345,29 @@ public:
         // config order decides the process (mark_proxied keeps it).
         const AutoRule* first = nullptr;
         bool first_inherited = false;
+        const bool has_parent =
+            entry.parent_pid != 0 &&
+            entry.parent_psn != INVALID_PSN &&
+            entry.parent_psn != ROOT_PSN_SENTINEL;
         for (auto& rule : auto_rules_) {
+            if (!rule.enabled) continue;
+            if (rule.hack_tree && has_parent) {
+                // Inside a subtree already excluded by this rule's child_exclusions:
+                // keep the entire subtree excluded (even if a descendant shares the
+                // rule's exe name).
+                if (rule.is_child_excluded(entry.parent_pid, entry.parent_psn)) {
+                    mark_child_excluded_subtree(tree, idx, rule);
+                    continue;
+                }
+                // Direct child of a matched process that hits child_exclusions:
+                // exclude it and any already-attached orphan descendants.
+                if (rule.matches_process(entry.parent_pid, entry.parent_psn) &&
+                    matches_child_exclusion(tree, idx, rule)) {
+                    mark_child_excluded_subtree(tree, idx, rule);
+                    continue;
+                }
+            }
+
             auto kind = try_match_one(tree, idx, rule);
             if (!kind.name && !kind.tree) continue;
 
@@ -337,7 +375,7 @@ public:
             mark_proxied(tree, idx, rule, /*inherited=*/kind.tree);
             // For hack_tree matches (both direct name matches and late-arriving
             // tree-inherited parents whose waiting orphans were just drained),
-            // expand to all existing descendants.
+            // expand to all existing descendants (pruning child_exclusions).
             if (rule.hack_tree) {
                 expand_descendants(tree, idx, rule);
             }
@@ -366,6 +404,7 @@ public:
         const ProcessKey key{pid, psn};
         for (auto& rule : auto_rules_) {
             rule.matched_processes.erase(key);
+            rule.child_excluded_processes.erase(key);
         }
         for (auto& [rule_id, by_pid] : exclusions_) {
             if (auto it = by_pid.find(pid); it != by_pid.end() && it->second == psn) {
@@ -667,14 +706,18 @@ private:
 
     void refresh_cmdline_flag() {
         any_rule_uses_cmdline_ = std::any_of(auto_rules_.begin(), auto_rules_.end(),
-            [](const AutoRule& r) { return !r.cmdline_pattern.empty(); });
+            [](const AutoRule& r) {
+                if (!r.cmdline_pattern.empty()) return true;
+                return std::any_of(r.child_exclusions.begin(), r.child_exclusions.end(),
+                    [](const ChildExclusion& c) { return !c.cmdline_pattern.empty(); });
+            });
     }
 
-    // Lazy cmdline check: returns true if cmdline matches (or rule has no cmdline_pattern).
-    // Queries OS on first call per process, caches result in entry.cmdline_cache.
-    // Sentinel "\x01" means "queried but empty/failed" — avoids repeated syscalls.
-    bool check_cmdline(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
-        if (rule.cmdline_pattern.empty()) return true;
+    // Lazy cmdline check against an arbitrary pattern (shared by rule matching
+    // and child_exclusions). Queries OS on first call per process, caches result
+    // in entry.cmdline_cache (sentinel "\x01" = queried but failed/empty).
+    bool check_cmdline_pattern(flat_tree& tree, uint32_t idx, std::string_view pattern) {
+        if (pattern.empty()) return true;
 
         auto& entry = tree.at(idx);
         if (entry.cmdline_cache.empty()) {
@@ -684,13 +727,17 @@ private:
             }
         }
         return entry.cmdline_cache[0] != '\x01' &&
-               cmdline_match(rule.cmdline_pattern, entry.cmdline_cache);
+               cmdline_match(pattern, entry.cmdline_cache);
     }
 
-    // Lazy image_path check: prefix match (case-insensitive).
-    // Only queries OS if rule has image_path_pattern and name already matched.
-    bool check_image_path(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
-        if (rule.image_path_pattern.empty()) return true;
+    bool check_cmdline(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
+        return check_cmdline_pattern(tree, idx, rule.cmdline_pattern);
+    }
+
+    // Lazy image_path prefix check (case-insensitive, shared by rule matching
+    // and child_exclusions).
+    bool check_image_path_pattern(flat_tree& tree, uint32_t idx, std::string_view pattern) {
+        if (pattern.empty()) return true;
 
         auto& entry = tree.at(idx);
         if (entry.image_path_cache.empty()) {
@@ -702,13 +749,44 @@ private:
         if (entry.image_path_cache[0] == '\x01') return false;
 
         const auto& path = entry.image_path_cache;
-        const auto& pattern = rule.image_path_pattern;
         if (path.size() < pattern.size()) return false;
         return std::equal(pattern.begin(), pattern.end(), path.begin(),
             [](char a, char b) {
                 return std::tolower(static_cast<unsigned char>(a)) ==
                        std::tolower(static_cast<unsigned char>(b));
             });
+    }
+
+    bool check_image_path(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
+        return check_image_path_pattern(tree, idx, rule.image_path_pattern);
+    }
+
+    // True if `idx` matches any non-empty child-process-tree exclusion on `rule`.
+    bool matches_child_exclusion(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
+        if (rule.child_exclusions.empty()) return false;
+        const auto& entry = tree.at(idx);
+        if (!entry.alive) return false;
+        for (const auto& ex : rule.child_exclusions) {
+            if (ex.empty()) continue;
+            if (!ex.process_name.empty() && !wildcard_match(ex.process_name, entry.name_u8)) {
+                continue;
+            }
+            if (!check_cmdline_pattern(tree, idx, ex.cmdline_pattern)) continue;
+            if (!check_image_path_pattern(tree, idx, ex.image_path_pattern)) continue;
+            return true;
+        }
+        return false;
+    }
+
+    // Mark `idx` and its entire alive descendant subtree as child-excluded for `rule`.
+    void mark_child_excluded_subtree(flat_tree& tree, uint32_t idx, AutoRule& rule) {
+        const auto& root = tree.at(idx);
+        if (!root.alive) return;
+        rule.child_excluded_processes.insert(ProcessKey{root.pid, root.psn});
+        tree.visit_descendants(idx, [&rule](uint32_t, const process_entry& child) {
+            if (!child.alive) return;
+            rule.child_excluded_processes.insert(ProcessKey{child.pid, child.psn});
+        });
     }
 
     // Per-entry match decision against a single rule. Pure (no side effects).
@@ -769,10 +847,42 @@ private:
         return entry.parent_pid;
     }
 
+    // Walk up LC-RS parent_index pointers to check whether `idx` has any
+    // ancestor in `set` (and, if requested, whether any node on that path
+    // including `idx` itself hits `rule.child_exclusions`).
+    bool has_ancestor_in(const flat_tree& tree, uint32_t idx,
+                         const std::unordered_set<ProcessKey, ProcessKeyHash>& set) const {
+        uint32_t cur = tree.at(idx).parent_index;
+        for (int depth = 0; cur != INVALID_IDX && depth < 128; ++depth) {
+            const auto* p = tree.try_at(cur);
+            if (!p || !p->alive) break;
+            if (set.contains(ProcessKey{p->pid, p->psn})) return true;
+            cur = p->parent_index;
+        }
+        return false;
+    }
+
+    bool child_excluded_under_root(flat_tree& tree, uint32_t idx, const AutoRule& rule,
+                                   const std::unordered_set<ProcessKey, ProcessKeyHash>& roots) {
+        bool excluded_on_path = matches_child_exclusion(tree, idx, rule);
+        uint32_t cur = tree.at(idx).parent_index;
+        for (int depth = 0; cur != INVALID_IDX && depth < 128; ++depth) {
+            const auto* p = tree.try_at(cur);
+            if (!p || !p->alive) break;
+            if (roots.contains(ProcessKey{p->pid, p->psn})) {
+                return excluded_on_path;
+            }
+            if (!excluded_on_path && matches_child_exclusion(tree, cur, rule)) {
+                excluded_on_path = true;
+            }
+            cur = p->parent_index;
+        }
+        return false;
+    }
+
     // Apply a single auto rule to all alive entries.
     // Phase 1: collect direct name matches. Phase 2 (hack_tree only): expand
-    // from roots whose parent is NOT itself name-matched, so each name-matched
-    // chain has exactly one expansion root.
+    // from topmost roots, pruning any subtree matching child_exclusions.
     void apply_single_rule(flat_tree& tree, AutoRule& rule) {
         std::unordered_set<ProcessKey, ProcessKeyHash> name_matched;
         std::vector<uint32_t> name_matched_indices;
@@ -795,16 +905,37 @@ private:
         }
 
         if (rule.hack_tree) {
+            // Drop any name-matched descendant that falls under an ancestor
+            // root AND hits child_exclusions (either itself or via an
+            // excluded intermediate ancestor): phase 2 will mark its whole
+            // subtree in child_excluded_processes.
+            if (!rule.child_exclusions.empty() && !name_matched_indices.empty()) {
+                std::vector<uint32_t> kept;
+                kept.reserve(name_matched_indices.size());
+                std::unordered_set<ProcessKey, ProcessKeyHash> dropped;
+                for (uint32_t idx : name_matched_indices) {
+                    if (child_excluded_under_root(tree, idx, rule, name_matched)) {
+                        const auto& e = tree.at(idx);
+                        dropped.insert(ProcessKey{e.pid, e.psn});
+                    } else {
+                        kept.push_back(idx);
+                    }
+                }
+                for (const auto& k : dropped) name_matched.erase(k);
+                name_matched_indices = std::move(kept);
+            }
+
+            // First mark all surviving direct name matches (inherited=false)
+            // so expand_descendants recognizes them while still descending
+            // through them.
             for (uint32_t idx : name_matched_indices) {
                 const auto& entry = tree.at(idx);
                 rule.matched_processes.insert(ProcessKey{entry.pid, entry.psn});
                 mark_proxied(tree, idx, rule, /*inherited=*/false);
-                const bool parent_matched =
-                    entry.parent_pid != 0 &&
-                    entry.parent_psn != INVALID_PSN &&
-                    entry.parent_psn != ROOT_PSN_SENTINEL &&
-                    name_matched.contains(ProcessKey{entry.parent_pid, entry.parent_psn});
-                if (!parent_matched) {
+            }
+
+            for (uint32_t idx : name_matched_indices) {
+                if (!has_ancestor_in(tree, idx, name_matched)) {
                     expand_descendants(tree, idx, rule);
                 }
             }
@@ -815,15 +946,41 @@ private:
         }
     }
 
-    // Expand all descendants of an entry via LC-RS traversal
+    // Expand descendants of an entry via LC-RS traversal, pruning any subtree
+    // that hits rule.child_exclusions (marking it in child_excluded_processes).
     void expand_descendants(flat_tree& tree, uint32_t idx, AutoRule& rule) {
-        tree.visit_descendants(idx, [this, &tree, &rule](uint32_t child_idx, const process_entry& child) {
-            if (is_excluded(rule.id, child)) return;
-            const ProcessKey key{child.pid, child.psn};
-            if (rule.matched_processes.contains(key)) return;
-            rule.matched_processes.insert(key);
-            mark_proxied(tree, child_idx, rule, /*inherited=*/true);
-        });
+        std::vector<uint32_t> stack;
+        uint32_t first = tree.at(idx).first_child_index;
+        if (first != INVALID_IDX) stack.push_back(first);
+
+        while (!stack.empty()) {
+            uint32_t cur = stack.back();
+            stack.pop_back();
+            while (cur != INVALID_IDX) {
+                const auto* ep = tree.try_at(cur);
+                if (!ep) break;
+                const uint32_t next_sib = ep->next_sibling_index;
+                const uint32_t first_child = ep->first_child_index;
+                if (ep->alive) {
+                    if (matches_child_exclusion(tree, cur, rule)) {
+                        // Prune entire subtree: do not descend for proxying.
+                        mark_child_excluded_subtree(tree, cur, rule);
+                    } else {
+                        if (!is_excluded(rule.id, *ep)) {
+                            const ProcessKey key{ep->pid, ep->psn};
+                            if (!rule.matched_processes.contains(key)) {
+                                rule.matched_processes.insert(key);
+                                mark_proxied(tree, cur, rule, /*inherited=*/true);
+                            }
+                        }
+                        if (first_child != INVALID_IDX) {
+                            stack.push_back(first_child);
+                        }
+                    }
+                }
+                cur = next_sib;
+            }
+        }
     }
 
     // Set group_id and AUTO_MATCHED flag on an entry

@@ -70,6 +70,7 @@ enum class decision_reason : uint8_t {
     ipv6,                     // IPv6 remote: not managed, goes direct (ipv6.mode = direct)
     ipv6_blocked,             // IPv6 remote of a proxied process: blocked so it falls back to IPv4
     ipv6_no_egress,           // ipv6.mode = proxy, but the group's proxy cannot reach IPv6: blocked
+    rule_exclude_child,       // descendant excluded by a rule's child-process-tree exception
 };
 
 inline const char* decision_reason_name(decision_reason r) noexcept {
@@ -90,6 +91,7 @@ inline const char* decision_reason_name(decision_reason r) noexcept {
     case decision_reason::ipv6:                   return "ipv6";
     case decision_reason::ipv6_blocked:           return "ipv6_blocked";
     case decision_reason::ipv6_no_egress:         return "ipv6_no_egress";
+    case decision_reason::rule_exclude_child:     return "rule_exclude_child";
     }
     return "none";
 }

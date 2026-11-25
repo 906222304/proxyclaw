@@ -117,6 +117,15 @@ void test_tcp_recorded_direct() {
     check(c["decision"]["group"].is_null(), "no group -> null");
     check(!c["decision"].contains("late_verdict"), "late_verdict only for late");
 
+    row.record = record(decision_verdict::direct, decision_reason::rule_exclude_child);
+    row.record->source = decision_source::tree;
+    auto child_f = alive(false);
+    child_f.rule_id = "rule-parent";
+    const json ce = tcp_row_to_json(row, child_f);
+    check(ce["proxy_status"] == "IGNORED", "rule_exclude_child -> IGNORED");
+    check(ce["route_reason"] == "rule_exclude_child", "rule_exclude_child route_reason");
+    check(ce["decision"]["rule_id"] == "rule-parent", "rule_exclude_child keeps parent rule_id");
+
     row.record = record(decision_verdict::direct, decision_reason::not_proxied);
     check(tcp_row_to_json(row, alive(false))["proxy_status"] == "-", "not-proxied -> -");
 

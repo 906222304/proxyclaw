@@ -1074,9 +1074,9 @@ TEST(child_exclusions_prune_subtree_bulk_and_dynamic) {
     // unrelated ssh.exe reports none.
     auto ssh_origin = engine.child_excluded_origin(tree.at(ssh_idx));
     ASSERT_EQ(ssh_origin.source, clew::decision_source::tree);
-    ASSERT_EQ(engine.rule_id_for_policy(ssh_origin.policy_id), std::string("vscode"));
+    ASSERT_EQ(engine.rule_id_for_policy(ssh_origin.policy_id), std::string("rule_vscode"));
     auto agent_origin = engine.child_excluded_origin(tree.at(agent_idx));
-    ASSERT_EQ(engine.rule_id_for_policy(agent_origin.policy_id), std::string("vscode"));
+    ASSERT_EQ(engine.rule_id_for_policy(agent_origin.policy_id), std::string("rule_vscode"));
     ASSERT_EQ(engine.child_excluded_origin(tree.at(helper_child_idx)).policy_id, ssh_origin.policy_id);
     ASSERT_EQ(engine.child_excluded_origin(tree.at(other_ssh_idx)).policy_id, 0u);
 

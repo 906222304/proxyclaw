@@ -18,9 +18,11 @@ import { Split } from '@/components/ui/split'
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
 import { useDocumentVisibility } from '@/hooks/useDocumentVisibility'
 import { toggleTheme, useIsDark } from '@/hooks/useTheme'
-import { dirOf, exeFromCmdline, findInTree } from '@/lib/process'
+import { connectionToPrefill, processToPrefill, type RulePrefill } from '@/lib/presets'
+import { findInTree } from '@/lib/process'
 import { pushError } from '@/lib/toast'
 import { cn } from '@/lib/utils'
+import type { NetworkConnection } from '@/lib/connections'
 
 type TabKey = 'network' | 'rules' | 'proxies' | 'settings'
 const TABS: { key: TabKey; label: string }[] = [
@@ -46,7 +48,7 @@ function useMaximized(): boolean {
   return max
 }
 
-interface RuleDialogState { open: boolean; rule: AutoRule | null; name: string; dir: string }
+interface RuleDialogState { open: boolean; rule: AutoRule | null; prefill?: RulePrefill }
 
 export default function App() {
   const qc = useQueryClient()
@@ -58,7 +60,7 @@ export default function App() {
   // The selection is one process, (pid, psn): when the PID is reused the
   // new process is not silently shown as the selected one.
   const [selected, setSelected] = useState<{ pid: number; psn: number } | undefined>(undefined)
-  const [ruleDialog, setRuleDialog] = useState<RuleDialogState>({ open: false, rule: null, name: '', dir: '' })
+  const [ruleDialog, setRuleDialog] = useState<RuleDialogState>({ open: false, rule: null })
 
   const { data: stats } = useQuery(statsQuery)
   const tree = useProcessTree()
@@ -84,36 +86,47 @@ export default function App() {
   }, [visible])
 
   // Dynamic fields (hijacked, hijack_source, name) come from the pushed
-  // tree; static fields (cmdline, image_path) from the one-shot detail query.
+  // tree; static fields (cmdline, image_path, package_family_name) from the one-shot detail query.
   const selectedProcess = useMemo<ProcessInfo | null>(() => {
     if (selected == null) return null
     const live = findInTree(tree, selected.pid)
     if (!live || live.psn !== selected.psn) return null
     return detail && detail.pid === live.pid && detail.psn === live.psn
-      ? { ...live, cmdline: detail.cmdline, image_path: detail.image_path }
+      ? { ...live, cmdline: detail.cmdline, image_path: detail.image_path, package_family_name: detail.package_family_name }
       : live
   }, [tree, selected, detail])
 
   const saveRule = useSaveRule()
   const deleteRules = useDeleteRules()
 
-  const openRuleDialog = (rule: AutoRule | null, name = '', dir = '') =>
-    setRuleDialog({ open: true, rule, name, dir })
+  const openRuleDialog = (rule: AutoRule | null, prefill?: RulePrefill) =>
+    setRuleDialog({ open: true, rule, prefill })
+
+  const fetchDetailSafe = async (pid: number, psn: number): Promise<ProcessInfo | null> => {
+    try {
+      return await qc.fetchQuery(processDetailQuery({ pid, psn }))
+    } catch {
+      return null
+    }
+  }
 
   const openRuleForProcess = async (proc: ProcessInfo) => {
     setSelected({ pid: proc.pid, psn: proc.psn })
-    let imagePath = proc.image_path ?? ''
-    let cmdline = proc.cmdline ?? ''
-    if (!imagePath && !cmdline) {
-      try {
-        const d = await qc.fetchQuery(processDetailQuery({ pid: proc.pid, psn: proc.psn }))
-        imagePath = d.image_path ?? ''
-        cmdline = d.cmdline ?? ''
-      } catch {
-        // Protected or exited process: still open dialog with process name pre-filled.
-      }
+    let resolved: Pick<ProcessInfo, 'image_path' | 'cmdline' | 'package_family_name'> = proc
+    if (!proc.image_path && !proc.cmdline && !proc.package_family_name) {
+      const d = await fetchDetailSafe(proc.pid, proc.psn)
+      if (d) resolved = d
     }
-    openRuleDialog(null, proc.name, dirOf(imagePath || exeFromCmdline(cmdline)))
+    openRuleDialog(null, processToPrefill(proc.name, resolved))
+  }
+
+  const openRuleForConnection = async (conn: NetworkConnection) => {
+    const live = findInTree(tree, conn.pid)
+    const psn = conn.decision?.psn && conn.decision.psn > 0 ? conn.decision.psn : live?.psn
+    const resolved = live && psn != null && live.psn === psn
+      ? await fetchDetailSafe(live.pid, live.psn)
+      : null
+    openRuleDialog(null, connectionToPrefill(conn, resolved))
   }
 
   const onCreateRuleFromProcess = () => {
@@ -258,13 +271,18 @@ export default function App() {
                   selectedPid={selectedPid}
                   process={selectedProcess}
                   onCreateRule={onCreateRuleFromProcess}
+                  onCreateRuleFromConnection={conn => void openRuleForConnection(conn)}
                 />
               </div>
             }
           />
         </Tabs.Content>
         <Tabs.Content value="rules" className="aa-gray view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
-          <AutoRules onAdd={() => openRuleDialog(null)} onEdit={r => openRuleDialog(r)} />
+          <AutoRules
+            onAdd={() => openRuleDialog(null)}
+            onEdit={r => openRuleDialog(r)}
+            onEditPreset={p => openRuleDialog(null, p)}
+          />
         </Tabs.Content>
         <Tabs.Content value="proxies" className="aa-gray view-in mx-auto flex min-h-0 w-full max-w-content flex-1 flex-col px-4 data-[state=inactive]:hidden">
           <ProxiesTab onEditRule={r => openRuleDialog(r)} />
@@ -278,8 +296,7 @@ export default function App() {
         open={ruleDialog.open}
         onOpenChange={open => setRuleDialog(d => ({ ...d, open }))}
         rule={ruleDialog.rule}
-        prefillName={ruleDialog.name}
-        prefillDir={ruleDialog.dir}
+        prefill={ruleDialog.prefill}
         saving={saveRule.isPending}
         onSave={onSave}
         onDelete={onDelete}

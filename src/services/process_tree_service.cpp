@@ -25,6 +25,7 @@ struct process_os_detail {
     bool same_process = true;  // false: the PID now belongs to another process
     std::string image_path;
     std::string cmdline;
+    std::string package_family_name;
 };
 
 // Opens the process once and keeps the handle for every read: an open handle
@@ -36,7 +37,13 @@ process_os_detail query_process_detail_impl(DWORD pid, uint64_t expected_psn) {
     if (!h) return {};  // gone or protected: tree facts only, as before
     const uint64_t live = query_process_psn(h.get());
     if (live != INVALID_PSN && live != expected_psn) return {.same_process = false};
-    return {true, query_process_image_path(h.get()), query_process_cmdline(h.get())};
+    auto image_path = query_process_image_path(h.get());
+    auto cmdline    = query_process_cmdline(h.get());
+    auto pfn        = query_process_package_family(h.get());
+    if (pfn.empty() && !image_path.empty()) {
+        pfn = extract_package_family_from_path(image_path);
+    }
+    return {true, std::move(image_path), std::move(cmdline), std::move(pfn)};
 }
 
 } // namespace
@@ -87,6 +94,9 @@ nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid,
     }
     result["image_path"] = std::move(os.image_path);
     result["cmdline"]    = std::move(os.cmdline);
+    if (!os.package_family_name.empty()) {
+        result["package_family_name"] = std::move(os.package_family_name);
+    }
     return result;
 }
 

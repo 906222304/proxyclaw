@@ -1708,6 +1708,86 @@ TEST(sync_resolve_chain_must_insert_top_down) {
     }
 }
 
+TEST(extract_package_family_from_windowsapps_path) {
+    ASSERT_EQ(
+        clew::extract_package_family_from_path(
+            "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.21.2911.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe"),
+        std::string("Microsoft.WindowsTerminal_8wekyb3d8bbwe"));
+    ASSERT_EQ(
+        clew::extract_package_family_from_path(
+            "C:/Program Files/WindowsApps/OpenAI.ChatGPT-Desktop_1.2025.100.0_x64_neutral_2p2nqsd0c76g0/app/ChatGPT.exe"),
+        std::string("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0"));
+    ASSERT_EQ(
+        clew::extract_package_family_from_path("C:\\Program Files\\Cursor\\Cursor.exe"),
+        std::string(""));
+    ASSERT_EQ(
+        clew::extract_package_family_from_path(""),
+        std::string(""));
+}
+
+TEST(store_package_identity_survives_version_upgrade) {
+    // v0.15 #3: Store app rule keyed by package_family_name still matches
+    // after a Microsoft Store upgrade changes the versioned WindowsApps path.
+    AutoRule rule = make_rule("chatgpt_store", "ChatGPT.exe", /*hack_tree=*/true, /*group=*/3);
+    rule.package_family_name = "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0";
+
+    AutoRule pkg_only = make_rule("terminal_pkg", "", /*hack_tree=*/true, /*group=*/4);
+    pkg_only.package_family_name = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
+
+    AutoRule wildcard_path = make_rule("cursor_user", "Cursor.exe", /*hack_tree=*/true, /*group=*/5);
+    wildcard_path.image_path_pattern = "*\\AppData\\Local\\Programs\\cursor\\*";
+
+    rule_engine_v3 engine;
+    engine.set_auto_rules({rule, pkg_only, wildcard_path});
+
+    flat_tree tree;
+    FILETIME ft{};
+    uint32_t v1_idx = tree.add_entry(900001, 0, 10, ROOT_PSN_SENTINEL, ft, L"ChatGPT.exe");
+    tree.mark_root(v1_idx);
+    tree.at(v1_idx).image_path_cache =
+        "C:\\Program Files\\WindowsApps\\OpenAI.ChatGPT-Desktop_1.2025.100.0_x64__2p2nqsd0c76g0\\ChatGPT.exe";
+
+    uint32_t v2_idx = tree.add_entry(900002, 0, 11, ROOT_PSN_SENTINEL, ft, L"ChatGPT.exe");
+    tree.mark_root(v2_idx);
+    tree.at(v2_idx).image_path_cache =
+        "C:\\Program Files\\WindowsApps\\OpenAI.ChatGPT-Desktop_1.2026.250.0_x64__2p2nqsd0c76g0\\ChatGPT.exe";
+
+    uint32_t fake_idx = tree.add_entry(900003, 0, 12, ROOT_PSN_SENTINEL, ft, L"ChatGPT.exe");
+    tree.mark_root(fake_idx);
+    tree.at(fake_idx).image_path_cache = "C:\\Temp\\ChatGPT.exe";
+
+    uint32_t wt_idx = tree.add_entry(900004, 0, 13, ROOT_PSN_SENTINEL, ft, L"OpenConsole.exe");
+    tree.mark_root(wt_idx);
+    tree.at(wt_idx).package_family_cache = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
+
+    uint32_t cursor_ok = tree.add_entry(900005, 0, 14, ROOT_PSN_SENTINEL, ft, L"Cursor.exe");
+    tree.mark_root(cursor_ok);
+    tree.at(cursor_ok).image_path_cache = "C:\\Users\\Alice\\AppData\\Local\\Programs\\cursor\\Cursor.exe";
+
+    uint32_t cursor_no = tree.add_entry(900006, 0, 15, ROOT_PSN_SENTINEL, ft, L"Cursor.exe");
+    tree.mark_root(cursor_no);
+    tree.at(cursor_no).image_path_cache = "D:\\Other\\Cursor.exe";
+
+    engine.apply_auto_rules(tree);
+
+    ASSERT_EQ(tree.at(v1_idx).group_id, uint32_t{3});
+    ASSERT_EQ(tree.at(v2_idx).group_id, uint32_t{3});
+    ASSERT_EQ(tree.at(fake_idx).group_id, NO_PROXY);
+    ASSERT_EQ(tree.at(wt_idx).group_id, uint32_t{4});
+    ASSERT_EQ(tree.at(cursor_ok).group_id, uint32_t{5});
+    ASSERT_EQ(tree.at(cursor_no).group_id, NO_PROXY);
+
+    // JSON round-trip preserves package_family_name and omits when empty.
+    nlohmann::json j = rule;
+    ASSERT_EQ(j.at("package_family_name").get<std::string>(), rule.package_family_name);
+    AutoRule restored = j.get<AutoRule>();
+    ASSERT_EQ(restored.package_family_name, rule.package_family_name);
+
+    AutoRule plain = make_rule("plain", "curl.exe");
+    nlohmann::json j_plain = plain;
+    ASSERT_FALSE(j_plain.contains("package_family_name"));
+}
+
 // ============================================================
 // Main runner
 // ============================================================

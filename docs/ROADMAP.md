@@ -1,26 +1,10 @@
 # ProxyClaw 路线图
 
-> **English summary.** v0.14 makes every decision explainable from one source of truth: CTest coverage, per-connection decision records captured at CONNECT time, connection JSON built off the strand (activity poll merged in), a hit-rule column with reasons and conflict hints, blocking IPv6 for proxied processes so they fall back to IPv4, DNS TCP-only startup and asynchronous enable, an icon cache keyed by full path with backoff and a cap, `psn` in the pushed process tree, a split CI with `/W4` and ESLint, and a docs sweep (process-tree keyboard / ARIA was dropped). v0.15: editable presets remain; child-process-tree exceptions, engine status with config import / export, rule match state keyed by `(pid, psn)`, end-to-end IPv6 TCP/UDP, and optional hook interception are already shipped. Later: a performance baseline first (decision latency, missed proxies, RSS vs process count), then resource caps, RecvEx/SendEx batching only if the baseline shows a need, a process info cache, nightly soak tests, service mode (with a Program Files installer and WebView2 profile protection as an interim step) and build tidy-up. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols; the `http` upstream type is dropped and SOCKS5 username / password stays unsupported (rejected with 400) until implemented.
+> **English summary.** v0.14 and v0.15 are complete: CTest coverage, per-connection decision records captured at CONNECT time, connection JSON built off the strand (activity poll merged in), a hit-rule column with reasons and conflict hints, blocking IPv6 for proxied processes so they fall back to IPv4, DNS TCP-only startup and asynchronous enable, an icon cache keyed by full path with backoff and a cap, `psn` in the pushed process tree, a split CI with `/W4` and ESLint, a docs sweep (process-tree keyboard / ARIA was dropped), child-process-tree exceptions, an engine state view with versioned config import / export, editable app presets with Store package identity matching and one-click rule creation from network activity, rule match state keyed by `(pid, psn)`, end-to-end IPv6 TCP/UDP, and optional hook interception. Next: a performance baseline first (decision latency, missed proxies, RSS vs process count), then resource caps, RecvEx/SendEx batching only if the baseline shows a need, a process info cache, nightly soak tests, service mode (with a Program Files installer and WebView2 profile protection as an interim step) and build tidy-up. Not planned: a custom WFP driver, DLL injection by default, a TUN back end, built-in proxy protocols; the `http` upstream type is dropped and SOCKS5 username / password stays unsupported (rejected with 400) until implemented.
 
-当前版本 v0.15.2（2026-11-24），新增可选的 Hook 注入拦截方式（无驱动，仅 TCP）；v0.14 计划已全部完成（第 1–9、11–12 项；第 10 项进程树键盘与 ARIA 已放弃并关闭 PR #14），并已完成 v0.15 第 1 项（子进程树例外）、第 2 项（引擎状态与配置导入 / 导出）、第 4 项（规则匹配状态按 `(pid, psn)` 键控）与第 5 项（IPv6 TCP / UDP 代理 `ipv6.mode = proxy`，支持 IPv6 规则网段与出口不通时回落 IPv4）。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。
+当前版本 v0.15.2（2026-11-24），新增可选的 Hook 注入拦截方式（无驱动，仅 TCP）；v0.14 计划（第 1–9、11–12 项；第 10 项进程树键盘与 ARIA 已放弃并关闭 PR #14）与 v0.15 计划（第 1–5 项：子进程树例外、引擎状态与配置导入 / 导出、可编辑应用预设与 Store 包身份匹配、规则匹配状态按 `(pid, psn)` 键控、IPv6 TCP / UDP 代理）已全部完成。本文只列尚未完成的工作；已完成的见 [CHANGELOG](../CHANGELOG.md)。
 
 **原则**：先有唯一的事实来源（CONNECT 时记录的决定），界面、统计和 IPv6 标注都从它读取；性能改动必须先有能测出策略延迟与漏代理的基准。
-
-## v0.15：覆盖更多真实场景
-
-**目标**：双栈网络、常见应用和复杂进程树开箱即用，少写规则。按下表顺序推进。
-
-| # | 项目 | 内容 |
-| --- | --- | --- |
-| 3 | 可编辑应用预设 | 基于现有规则系统的预设（常见 AI 客户端、IDE、浏览器等），支持路径 / Store 包身份匹配；可从网络活动的决定记录一键生成规则。 |
-
-**验收**
-
-- 设置例外后，例外子树的连接直连，其余子进程仍走代理（e2e）。
-- 驱动加载失败时界面给出明确提示；导出的配置在新目录导入后行为一致。
-- 选择预设后无需手写规则即可代理对应应用；Store 应用升级后路径变化仍能命中。
-- PID 复用后新进程不继承旧进程的匹配状态。
-- 双栈环境下 IPv6 TCP 与 UDP 经 SOCKS5 出口，出口地址与 IPv4 一致（e2e 用回环 IPv6 代理验证）；IPv6 规则排除网段生效。
 
 ## 之后：先有基准，再谈性能与部署
 

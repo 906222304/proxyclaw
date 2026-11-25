@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Plus, Power, PowerOff, Trash2 } from 'lucide-react'
+import { Check, Pencil, Plus, Power, PowerOff, Sparkles, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { useDeleteRules, useSetRuleGroup, useSetRulesEnabled } from '@/api/mutations'
+import { useDeleteRules, useSaveRule, useSetRuleGroup, useSetRulesEnabled } from '@/api/mutations'
 import { autoRulesQuery, proxyGroupsQuery } from '@/api/queries'
 import type { AutoRule, ProxyGroup } from '@/api/types'
 import { ProcessIcon } from '@/components/ProcessIcon'
@@ -9,10 +9,21 @@ import { MoreMenu } from '@/components/ui/menu'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Checkbox, EmptyState, ListSkeleton, Segmented } from '@/components/ui/misc'
+import { Badge, Checkbox, EmptyState, ListSkeleton, Segmented } from '@/components/ui/misc'
 import { SearchInput } from '@/components/ui/search-input'
 import { Switch } from '@/components/ui/switch'
-import { pushError } from '@/lib/toast'
+import {
+  APP_PRESETS,
+  PRESET_CATEGORIES,
+  filterPresets,
+  isPresetInstalled,
+  presetToPrefill,
+  presetToRulePayload,
+  type AppPreset,
+  type PresetCategory,
+  type RulePrefill,
+} from '@/lib/presets'
+import { pushError, pushSuccess } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 type StatusFilter = 'all' | 'active' | 'disabled'
@@ -22,13 +33,20 @@ export function filterRules(rules: AutoRule[], status: StatusFilter, query: stri
   if (status === 'active') out = out.filter(r => r.enabled)
   if (status === 'disabled') out = out.filter(r => !r.enabled)
   const q = query.toLowerCase().trim()
-  if (q) out = out.filter(r => r.name.toLowerCase().includes(q) || r.process_name.toLowerCase().includes(q))
+  if (q) {
+    out = out.filter(r =>
+      r.name.toLowerCase().includes(q)
+      || r.process_name.toLowerCase().includes(q)
+      || (r.package_family_name ?? '').toLowerCase().includes(q),
+    )
+  }
   return out
 }
 
-export function AutoRules({ onAdd, onEdit }: {
+export function AutoRules({ onAdd, onEdit, onEditPreset }: {
   onAdd: () => void
   onEdit: (rule: AutoRule) => void
+  onEditPreset?: (prefill: RulePrefill) => void
 }) {
   const { data: rules = [], isPending: loading } = useQuery(autoRulesQuery)
   const { data: groups = [] } = useQuery(proxyGroupsQuery)
@@ -37,10 +55,12 @@ export function AutoRules({ onAdd, onEdit }: {
   const [status, setStatus] = useState<StatusFilter>('all')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [pendingDelete, setPendingDelete] = useState<{ ids: string[]; label: string } | null>(null)
+  const [presetOpen, setPresetOpen] = useState(false)
 
   const setEnabled = useSetRulesEnabled()
   const setGroup = useSetRuleGroup()
   const del = useDeleteRules()
+  const saveRule = useSaveRule()
 
   const visible = useMemo(() => filterRules(rules, status, query), [rules, status, query])
   const activeCount = rules.filter(r => r.enabled).length
@@ -83,6 +103,18 @@ export function AutoRules({ onAdd, onEdit }: {
     del.mutate(ids, { onError: e => pushError(e, '删除规则失败') })
   }
 
+  const quickAddPreset = (preset: AppPreset) => {
+    saveRule.mutate({ payload: presetToRulePayload(preset, groups) }, {
+      onSuccess: () => pushSuccess(`已添加预设规则：${preset.name}`),
+      onError: e => pushError(e, '添加预设失败'),
+    })
+  }
+
+  const editPreset = (preset: AppPreset) => {
+    setPresetOpen(false)
+    onEditPreset?.(presetToPrefill(preset))
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 pl-4 pr-0">
@@ -102,6 +134,7 @@ export function AutoRules({ onAdd, onEdit }: {
                 { value: 'disabled', label: `已停用 ${rules.length - activeCount}` },
               ]}
             />
+            <Button size="sm" onClick={() => setPresetOpen(true)}><Sparkles /> 应用预设</Button>
             <Button size="sm" variant="primary" onClick={onAdd}><Plus /> 添加规则</Button>
           </>
         ) : (
@@ -131,7 +164,7 @@ export function AutoRules({ onAdd, onEdit }: {
           <EmptyState
             title={query || status !== 'all'
               ? '没有找到匹配的规则'
-              : <>暂无规则，点击 <strong>添加规则</strong> 创建第一条规则</>}
+              : <>暂无规则，点击 <strong>应用预设</strong> 或 <strong>添加规则</strong> 快速开始</>}
           />
         ) : (
           <div className="divide-y divide-divider overflow-hidden rounded-xl border border-border bg-card">
@@ -153,6 +186,15 @@ export function AutoRules({ onAdd, onEdit }: {
         )}
       </div>
 
+      <PresetPickerDialog
+        open={presetOpen}
+        onOpenChange={setPresetOpen}
+        rules={rules}
+        adding={saveRule.isPending}
+        onAdd={quickAddPreset}
+        onEdit={editPreset}
+      />
+
       <Dialog
         open={pendingDelete != null}
         onOpenChange={o => { if (!o) setPendingDelete(null) }}
@@ -165,6 +207,85 @@ export function AutoRules({ onAdd, onEdit }: {
         </>}
       />
     </div>
+  )
+}
+
+function PresetPickerDialog({ open, onOpenChange, rules, adding, onAdd, onEdit }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  rules: AutoRule[]
+  adding: boolean
+  onAdd: (preset: AppPreset) => void
+  onEdit: (preset: AppPreset) => void
+}) {
+  const [category, setCategory] = useState<PresetCategory | 'all'>('all')
+  const [query, setQuery] = useState('')
+  const items = useMemo(() => filterPresets(APP_PRESETS, category, query), [category, query])
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="应用预设"
+      description="选择常见应用一键添加规则，或点击“编辑”自定义匹配条件后再保存。"
+      className="max-w-2xl"
+      footer={<Button onClick={() => onOpenChange(false)}>关闭</Button>}
+    >
+      <div className="space-y-3" data-testid="preset-picker">
+        <div className="flex flex-wrap items-center gap-2">
+          <SearchInput value={query} onChange={setQuery} placeholder="搜索预设应用或进程名…" className="w-56" />
+          <Segmented
+            value={category}
+            onChange={setCategory}
+            size="sm"
+            className="ml-auto"
+            options={PRESET_CATEGORIES.map(c => ({ value: c.key, label: c.label }))}
+          />
+        </div>
+
+        {items.length === 0 ? (
+          <div className="py-8 text-center text-xs text-muted-foreground">没有匹配的应用预设</div>
+        ) : (
+          <div className="divide-y divide-divider overflow-hidden rounded-xl border border-border bg-card">
+            {items.map(preset => {
+              const installed = isPresetInstalled(preset, rules)
+              return (
+                <div key={preset.id} className="flex items-center gap-3 px-3.5 py-2.5 hover:bg-surface-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">{preset.name}</span>
+                      {preset.package_family_name && <Badge tone="blue">Store 包</Badge>}
+                      {installed && (
+                        <Badge tone="green">
+                          <Check className="mr-0.5 size-2.5" /> 已添加
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="mt-0.5 truncate text-2xs text-muted-foreground">{preset.description}</div>
+                    <div className="mt-0.5 truncate font-mono text-2xs text-faint">
+                      {[
+                        preset.process_name,
+                        preset.package_family_name ? `pkg:${preset.package_family_name}` : null,
+                        preset.cmdline_pattern ? `cmd:${preset.cmdline_pattern}` : null,
+                        PROTOCOL_LABEL[preset.protocol] ?? 'TCP',
+                      ].filter(Boolean).join(' · ')}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Button size="sm" onClick={() => onEdit(preset)}>
+                      <Pencil /> 编辑
+                    </Button>
+                    <Button size="sm" variant="primary" disabled={adding} onClick={() => onAdd(preset)}>
+                      <Plus /> 添加
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </Dialog>
   )
 }
 
@@ -188,7 +309,8 @@ function RuleRow({ rule, groups, selected, selecting, onToggleSelect, onToggleEn
   const matched = rule.matched_count ?? 0
   const childExclCount = rule.child_exclusions?.length ?? 0
   const sub = [
-    rule.process_name,
+    rule.process_name || (rule.package_family_name ? 'Store 包' : ''),
+    rule.package_family_name ? `包:${rule.package_family_name}` : null,
     '进程树',
     PROTOCOL_LABEL[rule.protocol ?? 'tcp'] ?? 'TCP',
     childExclCount > 0 ? `${childExclCount} 项子树例外` : null,

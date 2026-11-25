@@ -380,9 +380,10 @@ struct AutoRule {
     std::string id;
     std::string name;
     bool enabled = true;
-    std::string process_name;       // Wildcard pattern (e.g. "curl*")
-    std::string cmdline_pattern;    // Wildcard pattern (optional)
-    std::string image_path_pattern; // Directory prefix match (e.g. "C:\\Python311\\")
+    std::string process_name;        // Wildcard pattern (e.g. "curl*")
+    std::string cmdline_pattern;     // Wildcard pattern (optional)
+    std::string image_path_pattern;  // Directory prefix or wildcard match (e.g. "C:\\Python311\\")
+    std::string package_family_name; // Store/MSIX PackageFamilyName pattern (e.g. "Microsoft.WindowsTerminal_8wekyb3d8bbwe")
     bool hack_tree = false;
     TrafficFilter dst_filter;
     std::vector<ChildExclusion> child_exclusions; // Subtrees under this rule that go direct
@@ -422,6 +423,9 @@ inline void to_json(nlohmann::json& j, const AutoRule& r) {
         {"protocol", r.protocol},
         {"proxy", r.proxy}
     };
+    if (!r.package_family_name.empty()) {
+        j["package_family_name"] = r.package_family_name;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, AutoRule& r) {
@@ -431,6 +435,7 @@ inline void from_json(const nlohmann::json& j, AutoRule& r) {
     r.process_name = j.value("process_name", "");
     r.cmdline_pattern = j.value("cmdline_pattern", "");
     r.image_path_pattern = j.value("image_path_pattern", "");
+    r.package_family_name = j.value("package_family_name", "");
     r.hack_tree = j.value("hack_tree", true);
     if (j.contains("dst_filter")) j.at("dst_filter").get_to(r.dst_filter);
     if (j.contains("child_exclusions") && j.at("child_exclusions").is_array()) {

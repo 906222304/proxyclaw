@@ -14,6 +14,8 @@ export interface ProcessInfo {
   children?: ProcessInfo[]
   cmdline?: string
   image_path?: string
+  /** Store / MSIX PackageFamilyName, populated by /api/processes/{pid}/detail. */
+  package_family_name?: string
 }
 
 export interface ProxyTarget {
@@ -44,6 +46,7 @@ export interface AutoRule {
   process_name: string
   cmdline_pattern: string
   image_path_pattern?: string
+  package_family_name?: string
   hack_tree: boolean
   protocol?: RuleProtocol
   dst_filter: TrafficFilter

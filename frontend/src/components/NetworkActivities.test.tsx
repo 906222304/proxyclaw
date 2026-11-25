@@ -127,4 +127,29 @@ describe('NetworkActivities 代理 · 规则', () => {
 
     expect(cellOf(1006).textContent).toBe('已代理已删除的规则')
   })
+
+  it('triggers one-click rule creation from a network activity row', async () => {
+    const picked: { process_name: string; protocol: string; local_port: number }[] = []
+    root = createRoot(host)
+    act(() => root.render(
+      <QueryClientProvider client={createQueryClient()}>
+        <TooltipProvider>
+          <NetworkActivities
+            selectedPid={undefined}
+            process={null}
+            onCreateRule={() => {}}
+            onCreateRuleFromConnection={c => picked.push({ process_name: c.process_name, protocol: c.protocol, local_port: c.local_port })}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    ))
+    await flush()
+    await flush()
+
+    const row1005 = [...host.querySelectorAll<HTMLElement>('[role="row"]')].find(e => e.textContent?.includes('1005'))!
+    const btn = row1005.querySelector<HTMLButtonElement>('[data-testid="create-rule-from-conn"]')!
+    expect(btn).toBeTruthy()
+    act(() => { btn.click() })
+    expect(picked).toEqual([{ process_name: 'svchost.exe', protocol: 'TCP', local_port: 1005 }])
+  })
 })

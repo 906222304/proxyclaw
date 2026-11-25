@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, History, Layers } from 'lucide-react'
+import { ArrowDown, ArrowUp, History, Layers, PlusCircle } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { autoRulesQuery, connectionsQuery } from '@/api/queries'
 import type { ProcessInfo } from '@/api/types'
@@ -25,10 +25,11 @@ const stateDot: Record<ReturnType<typeof stateTone>, string> = {
   idle: 'bg-faint',
 }
 
-export function NetworkActivities({ selectedPid, process, onCreateRule }: {
+export function NetworkActivities({ selectedPid, process, onCreateRule, onCreateRuleFromConnection }: {
   selectedPid: number | undefined
   process: ProcessInfo | null
   onCreateRule: () => void
+  onCreateRuleFromConnection?: (conn: NetworkConnection) => void
 }) {
   // Keyed by PID: switching selection shows an empty table until the new
   // PID's first response, never the previous PID's rows.
@@ -110,7 +111,7 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
                       key={item.key}
                       role="row"
                       className={cn(
-                        'absolute inset-x-0 grid items-center border-b border-divider text-xs text-foreground transition-colors duration-100 hover:bg-surface-2',
+                        'group absolute inset-x-0 grid items-center border-b border-divider text-xs text-foreground transition-colors duration-100 hover:bg-surface-2',
                         // A socket whose owner exited: struck through and faded.
                         !c.pid_alive && 'line-through opacity-40',
                       )}
@@ -118,7 +119,7 @@ export function NetworkActivities({ selectedPid, process, onCreateRule }: {
                     >
                       {columns.map(col => (
                         <div key={col.key} role="cell" className={cn('truncate px-2.5', col.mono && 'tabular text-foreground-2')}>
-                          <Cell conn={c} col={col} />
+                          <Cell conn={c} col={col} onCreateRule={onCreateRuleFromConnection} />
                         </div>
                       ))}
                     </div>
@@ -167,7 +168,11 @@ function HeaderCell({ col, sort, onSort }: { col: ColumnDef; sort: SortState | n
   )
 }
 
-function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
+function Cell({ conn, col, onCreateRule }: {
+  conn: NetworkConnection
+  col: ColumnDef
+  onCreateRule?: (conn: NetworkConnection) => void
+}) {
   switch (col.key) {
     case 'process_name':
       return (
@@ -197,7 +202,23 @@ function Cell({ conn, col }: { conn: NetworkConnection; col: ColumnDef }) {
         </span>
       ) : null
     case 'proxy_status':
-      return <ProxyCell conn={conn} />
+      return (
+        <div className="flex min-w-0 items-center justify-between gap-1.5">
+          <ProxyCell conn={conn} />
+          {onCreateRule && conn.process_name && (
+            <button
+              type="button"
+              data-testid="create-rule-from-conn"
+              aria-label={`为 ${conn.process_name} 生成规则`}
+              title={`基于此连接为 ${conn.process_name} 生成规则`}
+              onClick={e => { e.stopPropagation(); onCreateRule(conn) }}
+              className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-field hover:text-primary focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <PlusCircle className="size-3.5" />
+            </button>
+          )}
+        </div>
+      )
     case 'rule':
       return null
     case 'local_port':

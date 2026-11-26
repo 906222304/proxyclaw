@@ -24,6 +24,10 @@ bool is_v4_unroutable(uint32_t ip) {
     return (ip >> 24) == 127 || ip == 0;
 }
 
+bool is_v4_udp_unroutable(uint32_t ip) {
+    return is_v4_unroutable(ip) || (ip >> 28) == 0xEu || ip == 0xFFFFFFFFu;
+}
+
 reply make_reply(verdict v, uint16_t port = 0, uint32_t error = 0) {
     reply r{};
     r.magic = kMagic;
@@ -36,8 +40,9 @@ reply make_reply(verdict v, uint16_t port = 0, uint32_t error = 0) {
 } // namespace
 
 mode::mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_manager& tree_mgr,
-           const proxy_group_table& groups, ipv6_egress& egress, DecisionLog* decisions,
-           const std::atomic<bool>& ipv6_block, const std::atomic<bool>& ipv6_proxy)
+           const proxy_group_table& groups, Socks5UdpManager& udp_mgr, ipv6_egress& egress,
+           DecisionLog* decisions, const std::atomic<bool>& ipv6_block,
+           const std::atomic<bool>& ipv6_proxy)
     : ioc_(ioc)
     , strand_(strand)
     , tree_mgr_(tree_mgr)
@@ -49,6 +54,7 @@ mode::mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_mana
     , self_pid_(GetCurrentProcessId())
     , acceptor_v4_(ioc, flows_, groups, false)
     , acceptor_v6_(ioc, flows_, groups, true, &egress)
+    , udp_relay_(ioc, udp_mgr)
     , sweep_timer_(ioc)
 {}
 
@@ -82,9 +88,12 @@ bool mode::start(const std::filesystem::path& dll64, const std::filesystem::path
         return false;
     }
 
+    udp_relay_.start();
+
     pipe_ = std::make_unique<pipe_server>(
         [this](const request& req, DWORD pid) { return on_request(req, pid); });
     if (!pipe_->start()) {
+        udp_relay_.stop();
         acceptor_v4_.stop();
         acceptor_v6_.stop();
         port_v4_.store(0, std::memory_order_relaxed);
@@ -111,11 +120,14 @@ void mode::stop() {
         inj_cv_.notify_all();
         injector_.join();
     }
+    udp_relay_.stop();
     acceptor_v4_.stop();
     acceptor_v6_.stop();
-    PC_LOG_INFO("[HOOK] stopped (proxy={} direct={} block={} injected={} children={})",
-                n_proxy_.load(), n_direct_.load(), n_block_.load(), n_inject_ok_.load(),
-                n_child_inject_.load());
+    PC_LOG_INFO("[HOOK] stopped (proxy={} direct={} block={} udp_proxy={} udp_direct={} "
+                "udp_block={} injected={} children={})",
+                n_proxy_.load(), n_direct_.load(), n_block_.load(),
+                n_udp_proxy_.load(), n_udp_direct_.load(), n_udp_block_.load(),
+                n_inject_ok_.load(), n_child_inject_.load());
 }
 
 // ---------------------------------------------------------------------------
@@ -123,12 +135,17 @@ void mode::stop() {
 
 reply mode::on_request(const request& req, DWORD client_pid) {
     if (!running_) return make_reply(verdict::direct);
+    const auto type = static_cast<msg_type>(req.type);
+    if (type == msg_type::udp_close) {
+        udp_relay_.on_socket_close(client_pid, req.src_port, req.family);
+        return make_reply(verdict::direct);
+    }
     auto done = std::make_shared<std::promise<reply>>();
     auto fut = done->get_future();
-    asio::post(strand_, [this, req, client_pid, done] {
+    asio::post(strand_, [this, req, client_pid, type, done] {
         try {
-            const auto type = static_cast<msg_type>(req.type);
             if (type == msg_type::connect)           done->set_value(decide_connect(req, client_pid));
+            else if (type == msg_type::udp_send)     done->set_value(decide_udp(req, client_pid));
             else if (type == msg_type::child)        done->set_value(decide_child(client_pid, req.child_pid));
             else if (type == msg_type::child_failed) done->set_value(on_child_failed(client_pid, req.child_pid));
             else                                     done->set_value(make_reply(verdict::direct));
@@ -154,7 +171,7 @@ reply mode::decide_connect(const request& req, DWORD pid) {
     const bool v6 = req.family == 6;
     auto direct = [&](decision_reason why) {
         rec.reason = why;
-        record(req, pid, rec);
+        record(req, pid, decision_proto::tcp, rec);
         n_direct_.fetch_add(1);
         return make_reply(verdict::direct);
     };
@@ -202,7 +219,7 @@ reply mode::decide_connect(const request& req, DWORD pid) {
         const bool proxy_v6 = ipv6_proxy_.load(std::memory_order_relaxed) && p6 != 0;
         if (!proxy_v6 || egress_.unavailable(entry.group_id)) {
             rec.reason = proxy_v6 ? decision_reason::ipv6_no_egress : decision_reason::ipv6_blocked;
-            record(req, pid, rec);
+            record(req, pid, decision_proto::tcp, rec);
             n_block_.fetch_add(1);
             return make_reply(verdict::block, 0, WSAENETUNREACH);
         }
@@ -214,9 +231,85 @@ reply mode::decide_connect(const request& req, DWORD pid) {
     rec.verdict = decision_verdict::proxied;
     rec.reason = decision_reason::none;
     rec.group_id = entry.group_id;
-    record(req, pid, rec);
+    record(req, pid, decision_proto::tcp, rec);
     n_proxy_.fetch_add(1);
     PC_LOG_DEBUG("[HOOK] proxy PID={} port={} group={} -> relay {}", pid, req.src_port,
+                 entry.group_id, relay);
+    return make_reply(verdict::proxy, relay);
+}
+
+reply mode::decide_udp(const request& req, DWORD pid) {
+    DecisionRecord rec;
+    rec.pid = pid;
+    rec.reason = decision_reason::not_proxied;
+    const bool v6 = req.family == 6;
+    auto direct = [&](decision_reason why) {
+        rec.reason = why;
+        record(req, pid, decision_proto::udp, rec);
+        n_udp_direct_.fetch_add(1);
+        return make_reply(verdict::direct);
+    };
+
+    if (pid == self_pid_) return direct(decision_reason::self);
+    if (req.src_port == 0 || req.dst_port == 0) return direct(decision_reason::global_exclude);
+    if (!v6 && is_v4_udp_unroutable(v4_host_order(req.dst)))
+        return direct(decision_reason::global_exclude);
+
+    if (!tree_mgr_.resolve_pid_now(pid)) return direct(decision_reason::unknown_pid);
+    const auto& tree = tree_mgr_.tree();
+    const uint32_t idx = tree.find_by_pid(pid);
+    if (idx == INVALID_IDX) return direct(decision_reason::unknown_pid);
+    const auto& entry = tree.at(idx);
+    rec.psn = entry.psn;
+    const auto& rules = tree_mgr_.rules();
+    if (!entry.alive || !entry.is_proxied()) {
+        if (const auto excl = rules.child_excluded_origin(entry); excl.policy_id != 0) {
+            rec.source = excl.source;
+            rec.policy_id = excl.policy_id;
+            return direct(decision_reason::rule_exclude_child);
+        }
+        return direct(decision_reason::not_proxied);
+    }
+
+    const auto origin = rules.origin_of(entry);
+    rec.source = origin.source;
+    rec.policy_id = origin.policy_id;
+
+    if (!v6) {
+        const auto why = rules.route_reason(tree, pid, true, v4_host_order(req.dst), req.dst_port);
+        if (why != IpExcludeReason::none) return direct(to_decision_reason(why));
+    } else {
+        const auto why = rules.route_reason_v6(tree, pid, true, is_local_scope_ipv6(req.dst),
+                                               req.dst, req.dst_port);
+        if (why != IpExcludeReason::none) return direct(to_decision_reason(why));
+        if (!ipv6_block_.load(std::memory_order_relaxed)) return direct(decision_reason::ipv6);
+        const bool proxy_v6 = ipv6_proxy_.load(std::memory_order_relaxed) && relay_port_v6() != 0;
+        if (!proxy_v6 || egress_.unavailable(entry.group_id)) {
+            rec.reason = proxy_v6 ? decision_reason::ipv6_no_egress : decision_reason::ipv6_blocked;
+            record(req, pid, decision_proto::udp, rec);
+            n_udp_block_.fetch_add(1);
+            return make_reply(verdict::block, 0, WSAENETUNREACH);
+        }
+    }
+
+    const uint16_t relay = udp_relay_.ensure_flow(v6, req.src_port, req.dst, req.dst_port,
+                                                  entry.group_id, pid);
+    if (relay == 0) {
+        if (v6) {
+            rec.reason = decision_reason::ipv6_blocked;
+            record(req, pid, decision_proto::udp, rec);
+            n_udp_block_.fetch_add(1);
+            return make_reply(verdict::block, 0, WSAENETUNREACH);
+        }
+        return direct(decision_reason::pool_exhausted);
+    }
+
+    rec.verdict = decision_verdict::proxied;
+    rec.reason = decision_reason::none;
+    rec.group_id = entry.group_id;
+    record(req, pid, decision_proto::udp, rec);
+    n_udp_proxy_.fetch_add(1);
+    PC_LOG_DEBUG("[HOOK-UDP] proxy PID={} port={} group={} -> relay {}", pid, req.src_port,
                  entry.group_id, relay);
     return make_reply(verdict::proxy, relay);
 }
@@ -268,10 +361,10 @@ reply mode::on_child_failed(DWORD parent, DWORD child) {
     return make_reply(verdict::direct);
 }
 
-void mode::record(const request& req, DWORD pid, DecisionRecord& rec) {
+void mode::record(const request& req, DWORD pid, decision_proto proto, DecisionRecord& rec) {
     if (!decisions_) return;
     rec.pid = pid;
-    rec.proto = decision_proto::tcp;
+    rec.proto = proto;
     rec.local_port = req.src_port;
     rec.remote_port = req.dst_port;
     if (req.family == 6) {
@@ -305,6 +398,7 @@ void mode::schedule_sweep() {
     if (!running_) return;
     publish_wanted_now();
     flows_.prune();
+    udp_relay_.prune();
     sweep_timer_.expires_after(kSweepPeriod);
     sweep_timer_.async_wait(asio::bind_executor(strand_, [this](const std::error_code& ec) {
         if (!ec) schedule_sweep();
@@ -405,6 +499,14 @@ nlohmann::json mode::stats() const {
         {"proxied", n_proxy_.load()},
         {"direct", n_direct_.load()},
         {"blocked", n_block_.load()},
+        {"udp_proxied", n_udp_proxy_.load()},
+        {"udp_direct", n_udp_direct_.load()},
+        {"udp_blocked", n_udp_block_.load()},
+        {"udp_relays_active", udp_relay_.active_relays()},
+        {"udp_packets_up", udp_relay_.packets_up()},
+        {"udp_packets_down", udp_relay_.packets_down()},
+        {"udp_packets_dropped", udp_relay_.packets_dropped()},
+        {"udp_packets_filtered", udp_relay_.packets_filtered()},
         {"decision_timeouts", n_timeout_.load()},
         {"injected", n_inject_ok_.load()},
         {"inject_skipped", n_inject_skip_.load()},

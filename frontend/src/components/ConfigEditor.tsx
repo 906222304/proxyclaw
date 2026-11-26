@@ -271,7 +271,7 @@ export function ConfigEditor() {
             <Row
               title="拦截方式"
               description="如何接管被代理进程的连接。重启后生效。"
-              hint="WinDivert 驱动：内核层拦截，覆盖 TCP 与 UDP，进程启动后的第一个连接也能接管。Hook 注入：不加载驱动，把 DLL 注入被代理的进程，在用户态改写 TCP 连接；子进程在启动前注入，已在运行的进程约 1 秒内注入，注入前的连接直连。Hook 模式下 UDP 直连，32 位进程、沙盒进程和只加载微软签名模块的进程不会被注入。"
+              hint="WinDivert 驱动：内核层拦截，覆盖 TCP 与 UDP，进程启动后的第一个连接也能接管。Hook 注入：不加载驱动，把 DLL 注入被代理的进程，在用户态改写 TCP 与 UDP 连接（支持 64 位与 32 位进程）；子进程在启动前注入，已在运行的进程约 1 秒内注入，注入前的连接直连。沙盒进程和只加载微软签名模块的进程不会被注入。"
             >
               <div className="flex items-center gap-3">
                 {interceptionText && (

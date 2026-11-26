@@ -1563,7 +1563,7 @@ TEST(socks5_udp_auth_wrong_password_fails) {
 using nlohmann::json;
 
 TEST(json_proxy_group_credentials_roundtrip) {
-    ProxyGroup plain;
+    clew::ProxyGroup plain;
     plain.id = 1;
     plain.name = "plain";
     plain.host = "127.0.0.1";
@@ -1572,13 +1572,13 @@ TEST(json_proxy_group_credentials_roundtrip) {
     ASSERT_FALSE(jp.contains("user"));
     ASSERT_FALSE(jp.contains("password"));
 
-    ProxyGroup authed = plain;
+    clew::ProxyGroup authed = plain;
     authed.user = "alice";
     authed.password = "s3cr3t";
     json ja = authed;
     ASSERT_EQ(ja["user"].get<std::string>(), std::string("alice"));
     ASSERT_EQ(ja["password"].get<std::string>(), std::string("s3cr3t"));
-    ProxyGroup back = ja.get<ProxyGroup>();
+    clew::ProxyGroup back = ja.get<clew::ProxyGroup>();
     ASSERT_EQ(back.user, std::string("alice"));
     ASSERT_EQ(back.password, std::string("s3cr3t"));
     ASSERT_TRUE(back.to_string().find("s3cr3t") == std::string::npos);

@@ -1,6 +1,7 @@
 #include "projection/process_projection.hpp"
 
 #include <chrono>
+#include <optional>
 #include <system_error>
 #include <utility>
 

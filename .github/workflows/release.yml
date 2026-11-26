@@ -110,7 +110,7 @@ jobs:
       - name: Build 32-bit Hook DLL (WOW64) and e2e probe
         shell: pwsh
         run: |
-          cmake -S . -B build-hook32 -G "Visual Studio 17 2022" -A Win32 `
+          cmake -S . -B build-hook32 -G "Visual Studio 18 2026" -A Win32 `
             -DPROXYCLAW_HOOK32_ONLY=ON `
             -DPROXYCLAW_DETOURS_DIR="$PWD/build/release-deps/Detours-1dbd4ea281d73d478aa8d09a8b83fbd265f715f7" `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded

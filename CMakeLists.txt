@@ -139,6 +139,7 @@ set(PROXYCLAW_SOURCES
     src/services/autostart_service.cpp
     src/services/config_service.cpp
     src/services/connection_service.cpp
+    src/services/diagnostics_service.cpp
     src/services/group_service.cpp
     src/proxy/proxy_probe.cpp
     src/services/icon_service.cpp
@@ -417,6 +418,10 @@ if(BUILD_TESTING AND WIN32)
     proxyclaw_unit_test(log_tail_tests
         SOURCES tests/log_tail_test.cpp src/services/shell_service.cpp src/common/api_exception.cpp
         LIBS quill::quill nlohmann_json::nlohmann_json comdlg32 shell32 user32)
+    # v0.18 #4: sanitized diagnostic ZIP bundle (redaction + PKZIP CRC-32).
+    proxyclaw_unit_test(diagnostics_tests
+        SOURCES tests/test_diagnostics.cpp
+        LIBS nlohmann_json::nlohmann_json)
     proxyclaw_unit_test(projection_tests
         SOURCES tests/test_projection_visibility.cpp src/projection/process_projection.cpp
         FAKES ${CMAKE_SOURCE_DIR}/tests/projection_fakes ${CMAKE_SOURCE_DIR}/tests/network_fakes

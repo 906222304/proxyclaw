@@ -48,6 +48,7 @@
 #include "proxy/session_limiter.hpp"
 #include "services/config_service.hpp"
 #include "services/connection_service.hpp"
+#include "services/diagnostics_service.hpp"
 #include "services/group_service.hpp"
 #include "services/icon_service.hpp"
 #include "services/process_tree_service.hpp"
@@ -203,6 +204,7 @@ private:
     process_tree_service process_svc_;
     rule_service         rule_svc_;
     stats_service        stats_svc_;
+    diagnostics_service  diagnostics_svc_;
 
     api_context ctx_;
 

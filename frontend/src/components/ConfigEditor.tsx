@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, Save, Upload } from 'lucide-react'
 import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
-import { setAutostart, testProxyGroupIpv6, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
+import { exportDiagnostics, setAutostart, testProxyGroupIpv6, updateConfig, getConfig, UNSAFE_LOCATION_MESSAGE, type AutostartState } from '@/api/client'
 import { autostartQuery, configQuery, dnsStatusQuery, statsQuery } from '@/api/queries'
 import { queryKeys } from '@/api/queryKeys'
 import type { DnsStatus, InterceptionStatus, Stats, WinDivertLayers } from '@/api/types'
@@ -199,6 +199,28 @@ export function ConfigEditor() {
   const taskUnsafe = autostart.enabled && autostart.task_trusted === false
   const canEnableAutostart = autostart.enabled || !locationUnsafe
 
+  const [diagExporting, setDiagExporting] = useState(false)
+  const handleExportDiagnostics = async () => {
+    if (diagExporting) return
+    setDiagExporting(true)
+    try {
+      const { blob, filename } = await exportDiagnostics()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      pushSuccess('诊断包已导出')
+    } catch (e) {
+      pushError(e, '导出诊断包失败')
+    } finally {
+      setDiagExporting(false)
+    }
+  }
+
   const saveDns = (enabled = dnsEnabled, mode = dnsMode, upstream = upstreamValue) =>
     patch.mutate({ fn: dnsPatch(enabled, mode, upstream), ok: 'DNS 设置已保存', fail: '保存 DNS 设置失败' }, {
       // The backend applies DNS in the background; pick up "starting" now.
@@ -391,6 +413,19 @@ export function ConfigEditor() {
             </Row>
             <Row title="运行日志" description="连接、掉线和错误记录，用于排查问题。">
               <LogViewer />
+            </Row>
+            <Row
+              title="诊断包"
+              description="打包版本、引擎统计、脱敏配置（自动移除代理密码）与近期日志为 ZIP，便于排查或反馈问题。"
+            >
+              <Button
+                size="sm"
+                data-testid="export-diagnostics-btn"
+                disabled={diagExporting}
+                onClick={() => void handleExportDiagnostics()}
+              >
+                <Download /> {diagExporting ? '打包中…' : '导出诊断包'}
+              </Button>
             </Row>
           </Card>
         </section>

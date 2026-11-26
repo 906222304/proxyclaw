@@ -227,6 +227,24 @@ export function getStats(signal?: AbortSignal): Promise<Stats> {
   return request<Stats>('/stats', { signal })
 }
 
+export interface DiagnosticsBundle {
+  blob: Blob
+  filename: string
+}
+
+export async function exportDiagnostics(): Promise<DiagnosticsBundle> {
+  const res = await fetch(`${BASE}/diagnostics/export`, { cache: 'no-store' })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(failureMessage(res.status, text))
+  }
+  const disp = res.headers.get('Content-Disposition') ?? ''
+  const match = /filename="([^"]+)"/.exec(disp)
+  const fallback = `proxyclaw-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`
+  const blob = await res.blob()
+  return { blob, filename: match?.[1] || fallback }
+}
+
 // -- Shell --
 
 export interface LogSnapshot {

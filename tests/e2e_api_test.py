@@ -21,6 +21,7 @@ Two modes:
 """
 
 import ctypes
+import io
 import json
 import os
 import pathlib
@@ -28,6 +29,7 @@ import queue
 import socket
 import re
 import sys
+import zipfile
 
 import requests
 
@@ -193,6 +195,50 @@ def test_stats():
     v6 = data.get("ipv6_unmanaged")
     assert isinstance(v6, dict) and isinstance(v6.get("tcp"), int) \
         and isinstance(v6.get("udp"), int), f"ipv6_unmanaged missing: {data}"
+
+
+@test("Diagnostics export returns valid sanitized ZIP")
+def test_diagnostics_export():
+    secret_pw = "E2eDiagSecretPass_98765"
+    created_id = None
+    try:
+        cr = requests.post(
+            f"{BASE}/proxy-groups",
+            json={
+                "name": "e2e-diag-secret-group",
+                "type": "socks5",
+                "host": "127.0.0.1",
+                "port": 10899,
+                "user": "diaguser",
+                "password": secret_pw,
+            },
+            timeout=5,
+        )
+        assert cr.status_code in (200, 201), f"create group failed: {cr.status_code} {cr.text}"
+        created_id = cr.json()["id"]
+
+        r = requests.get(f"{BASE}/diagnostics/export", timeout=10)
+        assert r.status_code == 200, f"diagnostics export status={r.status_code}"
+        assert "application/zip" in r.headers.get("Content-Type", ""), r.headers
+        assert ".zip" in r.headers.get("Content-Disposition", ""), r.headers
+        assert secret_pw.encode("utf-8") not in r.content, "raw ZIP leaked SOCKS5 password"
+
+        with zipfile.ZipFile(io.BytesIO(r.content), "r") as zf:
+            assert zf.testzip() is None, f"corrupt zip entry: {zf.testzip()}"
+            names = set(zf.namelist())
+            assert {"summary.json", "config.sanitized.json", "proxyclaw.log"} <= names, names
+            summary = json.loads(zf.read("summary.json").decode("utf-8"))
+            assert summary.get("schema_version") == 1, summary
+            assert isinstance(summary.get("stats"), dict) and "tree_ready" in summary["stats"], summary
+            sanitized = json.loads(zf.read("config.sanitized.json").decode("utf-8"))
+            groups = sanitized.get("proxy_groups", [])
+            matched = [g for g in groups if g.get("id") == created_id]
+            assert len(matched) == 1, f"created group missing from sanitized config: {groups}"
+            assert matched[0].get("password") == "[REDACTED]", matched[0]
+            assert matched[0].get("user") == "diaguser", matched[0]
+    finally:
+        if created_id is not None:
+            requests.delete(f"{BASE}/proxy-groups/{created_id}", timeout=5)
 
 
 @test("TCP table returns data")
@@ -1676,6 +1722,7 @@ def _run(name_filter: str | None) -> int:
         test_api_reachable,
         test_process_tree,
         test_stats,
+        test_diagnostics_export,
         test_tcp_table,
         test_udp_table,
         test_connection_row_schema,

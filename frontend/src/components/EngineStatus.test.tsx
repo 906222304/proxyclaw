@@ -170,4 +170,59 @@ describe('EngineStatusCard and config import', () => {
     expect(summary?.textContent).toContain('注入失败 1')
     expect(summary?.textContent).not.toContain('32位跳过')
   })
+
+  it('exports sanitized diagnostics bundle ZIP from /api/diagnostics/export', async () => {
+    routes = {
+      '/api/config': baseConfig,
+      '/api/autostart': { enabled: false, start_minimized: false, location_trusted: true },
+      '/api/stats': {
+        hijacked_pids: 0,
+        auto_rules_count: 0,
+        tree_ready: true,
+        process_count: 50,
+        dns: { state: 'off' },
+        interception: { mode: 'windivert', active: true },
+        decisions: { written: 0, dropped: 0, capacity: 4096 },
+      },
+    }
+    const diagCalls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const path = url.split('?')[0]!
+      if (path === '/api/diagnostics/export') {
+        diagCalls.push(path)
+        return new Response(new Uint8Array([0x50, 0x4b, 0x05, 0x06]), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': 'attachment; filename="proxyclaw-diagnostics-20261126-120000.zip"',
+          },
+        })
+      }
+      return new Response(JSON.stringify(routes[path] ?? {}), { status: 200 })
+    }))
+
+    const createObjectURL = vi.fn(() => 'blob:mock-diag')
+    const revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true })
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, configurable: true })
+    let downloadedName = ''
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloadedName = this.download
+    })
+
+    try {
+      await render()
+      const btn = host.querySelector<HTMLButtonElement>('[data-testid="export-diagnostics-btn"]')!
+      expect(btn).not.toBeNull()
+      act(() => { btn.click() })
+      await flush()
+
+      expect(diagCalls).toEqual(['/api/diagnostics/export'])
+      expect(createObjectURL).toHaveBeenCalledTimes(1)
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-diag')
+      expect(downloadedName).toBe('proxyclaw-diagnostics-20261126-120000.zip')
+    } finally {
+      clickSpy.mockRestore()
+    }
+  })
 })

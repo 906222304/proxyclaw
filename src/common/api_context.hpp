@@ -8,6 +8,7 @@ namespace clew {
 
 class config_service;
 class connection_service;
+class diagnostics_service;
 class group_service;
 class icon_service;
 class process_tree_service;
@@ -24,6 +25,7 @@ class stats_service;
 struct api_context {
     config_service&       config;
     connection_service&   connections;
+    diagnostics_service&  diagnostics;
     group_service&        groups;
     icon_service&         icons;
     process_tree_service& processes;

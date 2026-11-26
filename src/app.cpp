@@ -14,6 +14,7 @@
 #include "config/types.hpp"
 #include "core/exe_paths.hpp"
 #include "core/log.hpp"
+#include "core/version.hpp"
 #include "services/autostart_service.hpp"
 
 namespace clew {
@@ -90,9 +91,15 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , process_svc_(exec_, &tree_mgr_.info_cache())
     , rule_svc_(exec_, cfg_store_)
     , stats_svc_(exec_, [this]() { return traffic_stats(); })
+    , diagnostics_svc_(cfg_store_,
+                       [this]() { return stats_svc_.get_stats(); },
+                       []() { return stats_service::get_env(); },
+                       exe_relative("proxyclaw.log"),
+                       PROXYCLAW_VERSION)
     , ctx_{
         .config      = config_svc_,
         .connections = connection_svc_,
+        .diagnostics = diagnostics_svc_,
         .groups      = group_svc_,
         .icons       = icon_svc_,
         .processes   = process_svc_,

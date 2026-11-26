@@ -6,18 +6,15 @@
 // Synchronization: shared_mutex (NETWORK workers = exclusive write, relay = shared read).
 // Low contention: writes only on new src_port first seen, reads on every relay packet.
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <windows.h>
-
+#include <algorithm>
 #include <array>
+#include <bit>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
-#include <optional>
-#include <chrono>
 #include <vector>
 
 namespace clew {
@@ -34,41 +31,67 @@ struct UdpSession {
     uint16_t app_src_port{};    // host byte order (key)
     uint32_t pid{};
     uint32_t group_id{};
-    UINT32 ifidx{};
-    UINT32 subifidx{};
+    uint32_t ifidx{};
+    uint32_t subifidx{};
     bool has_v4{false};
     // IPv6 side (ipv6.mode = proxy)
     bool has_v6{false};
     std::array<uint8_t, 16> app_src_addr6{};
-    UINT32 ifidx6{};
-    UINT32 subifidx6{};
+    uint32_t ifidx6{};
+    uint32_t subifidx6{};
     std::chrono::steady_clock::time_point last_active{std::chrono::steady_clock::now()};
 };
 
 class UdpSessionTable {
 public:
-    // Insert or update session (called from NETWORK workers)
+    static constexpr size_t kDefaultMaxSessions = 2048;
+
+    struct Stats {
+        size_t   active{0};
+        size_t   max_sessions{0};
+        size_t   peak{0};
+        uint64_t rejected_cap{0};
+    };
+
+    explicit UdpSessionTable(size_t max_sessions = kDefaultMaxSessions)
+        : max_sessions_(max_sessions) {}
+
+    // Insert or update session (called from NETWORK workers).
     // The other family's app-side fields of an existing entry are kept, so
     // a dual-stack socket's IPv4 and IPv6 replies both find their route.
-    void upsert(uint16_t app_port, const UdpSession& session) {
+    // Returns false when the table is at capacity even after pruning expired
+    // sessions; updating an existing port always succeeds.
+    bool upsert(uint16_t app_port, const UdpSession& session,
+                std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
         std::unique_lock lk(mu_);
-        auto [it, inserted] = sessions_.try_emplace(app_port, session);
-        if (inserted) return;
-        UdpSession merged = session;
-        const UdpSession& old = it->second;
-        if (!merged.has_v4 && old.has_v4) {
-            merged.has_v4 = true;
-            merged.app_src_addr = old.app_src_addr;
-            merged.ifidx = old.ifidx;
-            merged.subifidx = old.subifidx;
+        if (auto it = sessions_.find(app_port); it != sessions_.end()) {
+            UdpSession merged = session;
+            const UdpSession& old = it->second;
+            if (!merged.has_v4 && old.has_v4) {
+                merged.has_v4 = true;
+                merged.app_src_addr = old.app_src_addr;
+                merged.ifidx = old.ifidx;
+                merged.subifidx = old.subifidx;
+            }
+            if (!merged.has_v6 && old.has_v6) {
+                merged.has_v6 = true;
+                merged.app_src_addr6 = old.app_src_addr6;
+                merged.ifidx6 = old.ifidx6;
+                merged.subifidx6 = old.subifidx6;
+            }
+            it->second = merged;
+            return true;
         }
-        if (!merged.has_v6 && old.has_v6) {
-            merged.has_v6 = true;
-            merged.app_src_addr6 = old.app_src_addr6;
-            merged.ifidx6 = old.ifidx6;
-            merged.subifidx6 = old.subifidx6;
+        if (sessions_.size() >= max_sessions_) {
+            cleanup_expired_locked(now, std::chrono::seconds(120));
         }
-        it->second = merged;
+        if (sessions_.size() >= max_sessions_) {
+            ++rejected_cap_;
+            return false;
+        }
+        sessions_.emplace(app_port, session);
+        peak_ = std::max(peak_, sessions_.size());
+        return true;
     }
 
     // Lookup session (called from relay)
@@ -95,17 +118,10 @@ public:
     }
 
     // Remove expired sessions. Returns number removed.
-    size_t cleanup_expired(std::chrono::seconds timeout = std::chrono::seconds(120)) {
-        auto now = std::chrono::steady_clock::now();
+    size_t cleanup_expired(std::chrono::seconds timeout = std::chrono::seconds(120),
+                           std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
         std::unique_lock lk(mu_);
-        // DNS (port 53) gets shorter timeout
-        return std::erase_if(sessions_, [now, timeout](const auto& kv) {
-            auto age = std::chrono::duration_cast<std::chrono::seconds>(now - kv.second.last_active);
-            auto effective_timeout = (kv.second.orig_dst_port == htons(53))
-                                    ? std::chrono::seconds(10)
-                                    : timeout;
-            return age > effective_timeout;
-        });
+        return cleanup_expired_locked(now, timeout);
     }
 
     // Get all active sessions (for API)
@@ -123,9 +139,39 @@ public:
         return sessions_.size();
     }
 
+    Stats stats() const {
+        std::shared_lock lk(mu_);
+        return {
+            .active       = sessions_.size(),
+            .max_sessions = max_sessions_,
+            .peak         = peak_,
+            .rejected_cap = rejected_cap_,
+        };
+    }
+
 private:
+    static constexpr uint16_t kDnsPortNet =
+        (std::endian::native == std::endian::little)
+            ? static_cast<uint16_t>((53u & 0xFFu) << 8)
+            : uint16_t{53u};
+
+    size_t cleanup_expired_locked(std::chrono::steady_clock::time_point now,
+                                  std::chrono::seconds timeout) {
+        // DNS (port 53) gets shorter timeout
+        return std::erase_if(sessions_, [now, timeout](const auto& kv) {
+            auto age = std::chrono::duration_cast<std::chrono::seconds>(now - kv.second.last_active);
+            auto effective_timeout = (kv.second.orig_dst_port == kDnsPortNet)
+                                    ? std::chrono::seconds(10)
+                                    : timeout;
+            return age > effective_timeout;
+        });
+    }
+
+    size_t max_sessions_;
     mutable std::shared_mutex mu_;
     std::unordered_map<uint16_t, UdpSession> sessions_;
+    size_t peak_{0};
+    uint64_t rejected_cap_{0};
 };
 
 } // namespace clew

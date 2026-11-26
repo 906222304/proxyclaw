@@ -57,6 +57,7 @@
 #include "hook/hook_udp_relay.hpp"
 #include "proxy/ipv6_egress.hpp"
 #include "proxy/proxy_group_table.hpp"
+#include "proxy/session_limiter.hpp"
 #include "udp/socks5_udp_manager.hpp"
 
 namespace clew::hook {
@@ -68,7 +69,7 @@ public:
     mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_manager& tree_mgr,
          const proxy_group_table& groups, Socks5UdpManager& udp_mgr, ipv6_egress& egress,
          DecisionLog* decisions, const std::atomic<bool>& ipv6_block,
-         const std::atomic<bool>& ipv6_proxy);
+         const std::atomic<bool>& ipv6_proxy, session_limiter* tcp_limiter = nullptr);
     ~mode();
 
     mode(const mode&) = delete;

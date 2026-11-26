@@ -8,6 +8,7 @@
 #include <asio/use_awaitable.hpp>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +26,18 @@
 #include "udp/socks5_udp_codec.hpp"
 
 namespace clew {
+
+struct DnsForwarderStats {
+    size_t   pending{0};
+    size_t   max_pending{1024};
+    size_t   pending_peak{0};
+    size_t   tcp_active{0};
+    size_t   max_tcp{64};
+    size_t   tcp_peak{0};
+    uint64_t dropped_pending_cap{0};
+    uint64_t dropped_tcp_cap{0};
+};
+
 class dns_forwarder {
     using tcp = asio::ip::tcp;
     using udp = asio::ip::udp;
@@ -69,6 +82,12 @@ class dns_forwarder {
         std::random_device random;
         size_t tcp_active = 0;
         static constexpr size_t max_pending = 1024, max_tcp = 64;
+        std::atomic<size_t> pending_gauge{0};
+        std::atomic<size_t> pending_peak{0};
+        std::atomic<size_t> tcp_gauge{0};
+        std::atomic<size_t> tcp_peak{0};
+        std::atomic<uint64_t> dropped_pending_cap{0};
+        std::atomic<uint64_t> dropped_tcp_cap{0};
         std::unordered_map<uint16_t, std::shared_ptr<pending_query>> pending;
         // Quarantine released IDs so late UDP replies cannot hit a new query.
         std::array<clock::time_point, 65536> reusable_after{};
@@ -79,6 +98,19 @@ class dns_forwarder {
               proxy_creds(std::move(creds)),
               dns_ip_net(htonl(asio::ip::make_address_v4(dns).to_uint())), dns_port(dp),
               udp_timeout(ut), tcp_timeout(tt) {}
+        static void update_peak(std::atomic<size_t>& peak, size_t val) noexcept {
+            size_t cur = peak.load(std::memory_order_relaxed);
+            while (val > cur && !peak.compare_exchange_weak(cur, val, std::memory_order_relaxed)) {}
+        }
+        void sync_pending_gauge() noexcept {
+            const size_t n = pending.size();
+            pending_gauge.store(n, std::memory_order_relaxed);
+            update_peak(pending_peak, n);
+        }
+        void sync_tcp_gauge() noexcept {
+            tcp_gauge.store(tcp_active, std::memory_order_relaxed);
+            update_peak(tcp_peak, tcp_active);
+        }
         void shutdown() {
             running = false;
             asio::error_code ec;
@@ -91,6 +123,7 @@ class dns_forwarder {
                 q->cancel();
             }
             pending.clear();
+            pending_gauge.store(0, std::memory_order_relaxed);
         }
         std::optional<uint16_t> allocate_id() {
             auto now = clock::now();
@@ -119,6 +152,7 @@ class dns_forwarder {
             q->done = true;
             q->cancel();
             pending.erase(q->upstream_id);
+            pending_gauge.store(pending.size(), std::memory_order_relaxed);
             reusable_after[q->upstream_id] = clock::now() + std::chrono::seconds(10);
             if (response.size() > dns_wire::udp_limit(q->packet))
                 response = dns_wire::empty_response(q->packet, response[3] & 0x0f, true);
@@ -133,11 +167,17 @@ class dns_forwarder {
             if (!running || q->done || q->tcp_started)
                 return;
             if (tcp_active >= max_tcp) {
+                const auto n = dropped_tcp_cap.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (n == 1 || n % 100 == 0) {
+                    PC_LOG_WARN("[DNS-FWD] TCP fallback cap reached ({}), returning SERVFAIL (total={})",
+                                max_tcp, n);
+                }
                 fail(q);
                 return;
             }
             q->tcp_started = true;
             ++tcp_active;
+            sync_tcp_gauge();
             PC_LOG_DEBUG("[DNS-FWD] TCP fallback tx={:#06x}", q->upstream_id);
             q->deadline.expires_after(tcp_timeout);
             q->deadline.async_wait([this, q](asio::error_code ec) {
@@ -148,6 +188,7 @@ class dns_forwarder {
             });
             asio::co_spawn(ioc, tcp_query(q), [this, q](std::exception_ptr error) {
                 --tcp_active;
+                tcp_gauge.store(tcp_active, std::memory_order_relaxed);
                 if (error && !q->done) {
                     try {
                         std::rethrow_exception(error);
@@ -270,13 +311,24 @@ class dns_forwarder {
                 std::span<const uint8_t> query(buf.data(), n);
                 if (n < 12 || n > 65507 || (buf[2] & 0x80) || !dns_wire::parse_questions(query))
                     continue;
-                auto id = pending.size() < max_pending ? allocate_id() : std::nullopt;
+                if (pending.size() >= max_pending) {
+                    const auto dropped = dropped_pending_cap.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (dropped == 1 || dropped % 100 == 0) {
+                        PC_LOG_WARN("[DNS-FWD] Pending query cap reached ({}), returning SERVFAIL (total={})",
+                                    max_pending, dropped);
+                    }
+                    send_reply(client, dns_wire::empty_response(query, 2));
+                    continue;
+                }
+                auto id = allocate_id();
                 if (!id) {
+                    dropped_pending_cap.fetch_add(1, std::memory_order_relaxed);
                     send_reply(client, dns_wire::empty_response(query, 2));
                     continue;
                 }
                 auto q = std::make_shared<pending_query>(ioc, *id, client, query);
                 pending.emplace(*id, q);
+                sync_pending_gauge();
                 q->deadline.expires_after(udp_timeout);
                 q->deadline.async_wait([this, q](asio::error_code error) {
                     if (!error)
@@ -394,6 +446,18 @@ class dns_forwarder {
     }
     // True when started without a SOCKS5 UDP session (UDP ASSOCIATE refused).
     bool tcp_only() const { return state_->tcp_only; }
+    DnsForwarderStats stats() const {
+        return {
+            .pending             = state_->pending_gauge.load(std::memory_order_relaxed),
+            .max_pending         = state::max_pending,
+            .pending_peak        = state_->pending_peak.load(std::memory_order_relaxed),
+            .tcp_active          = state_->tcp_gauge.load(std::memory_order_relaxed),
+            .max_tcp             = state::max_tcp,
+            .tcp_peak            = state_->tcp_peak.load(std::memory_order_relaxed),
+            .dropped_pending_cap = state_->dropped_pending_cap.load(std::memory_order_relaxed),
+            .dropped_tcp_cap     = state_->dropped_tcp_cap.load(std::memory_order_relaxed),
+        };
+    }
     void stop() {
         if (worker_.joinable()) {
             asio::post(state_->ioc, [s = state_] { s->shutdown(); });

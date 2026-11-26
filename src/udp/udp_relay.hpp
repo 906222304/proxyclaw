@@ -68,12 +68,29 @@ public:
 
     ~UdpRelay() { stop(); }
 
+    struct Stats {
+        size_t   active_ports{0};
+        size_t   max_ports{0};
+        size_t   ports_peak{0};
+        size_t   queued_packets{0};
+        size_t   max_total_packets{0};
+        size_t   queued_bytes{0};
+        size_t   max_total_bytes{0};
+        size_t   max_port_packets{0};
+        uint64_t dropped_total{0};
+        uint64_t dropped_queue_full{0};
+        uint64_t dropped_port_queue_full{0};
+        uint64_t dropped_ports_cap{0};
+        uint64_t dropped_no_session{0};
+        uint64_t peer_evictions{0};
+    };
+
     bool start() {
         running_ = true;
         asio::co_spawn(strand_, cleanup_loop(), asio::detached);
-        PC_LOG_INFO("[UDP-RELAY] Started (queue limits: {} pkts, {} MB, {} per port)",
+        PC_LOG_INFO("[UDP-RELAY] Started (queue limits: {} pkts, {} MB, {} per port, {} ports)",
                     limits_.max_total_packets, limits_.max_total_bytes >> 20,
-                    limits_.max_port_packets);
+                    limits_.max_port_packets, limits_.max_ports);
         return true;
     }
 
@@ -84,11 +101,13 @@ public:
         const size_t bytes = datagram.payload.size();
         if (queued_packets_.fetch_add(1, std::memory_order_acq_rel) >= limits_.max_total_packets) {
             queued_packets_.fetch_sub(1, std::memory_order_acq_rel);
+            dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
             note_drop("queue full");
             return false;
         }
         if (queued_bytes_.fetch_add(bytes, std::memory_order_acq_rel) + bytes > limits_.max_total_bytes) {
             release(bytes);
+            dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
             note_drop("queue full");
             return false;
         }
@@ -126,6 +145,25 @@ public:
     uint64_t dropped_count() const { return dropped_count_; }
     uint64_t filtered_count() const { return filtered_count_; }
 
+    Stats stats() const {
+        return {
+            .active_ports            = active_ports_.load(std::memory_order_relaxed),
+            .max_ports               = limits_.max_ports,
+            .ports_peak              = ports_peak_.load(std::memory_order_relaxed),
+            .queued_packets          = queued_packets_.load(std::memory_order_relaxed),
+            .max_total_packets       = limits_.max_total_packets,
+            .queued_bytes            = queued_bytes_.load(std::memory_order_relaxed),
+            .max_total_bytes         = limits_.max_total_bytes,
+            .max_port_packets        = limits_.max_port_packets,
+            .dropped_total           = dropped_count_.load(std::memory_order_relaxed),
+            .dropped_queue_full      = dropped_queue_full_.load(std::memory_order_relaxed),
+            .dropped_port_queue_full = dropped_port_queue_full_.load(std::memory_order_relaxed),
+            .dropped_ports_cap       = dropped_ports_cap_.load(std::memory_order_relaxed),
+            .dropped_no_session      = dropped_no_session_.load(std::memory_order_relaxed),
+            .peer_evictions          = peer_evictions_.load(std::memory_order_relaxed),
+        };
+    }
+
 private:
     struct PortState {
         std::deque<UdpOutbound> queue;
@@ -146,6 +184,8 @@ private:
     // strand_-only
     std::unordered_map<uint16_t, PortState> ports_;
 
+    std::atomic<size_t> active_ports_{0};
+    std::atomic<size_t> ports_peak_{0};
     std::atomic<size_t> queued_packets_{0};
     std::atomic<size_t> queued_bytes_{0};
 
@@ -153,7 +193,28 @@ private:
     std::atomic<uint64_t> downstream_count_{0};
     std::atomic<uint64_t> injected_count_{0};
     std::atomic<uint64_t> dropped_count_{0};
+    std::atomic<uint64_t> dropped_queue_full_{0};
+    std::atomic<uint64_t> dropped_port_queue_full_{0};
+    std::atomic<uint64_t> dropped_ports_cap_{0};
+    std::atomic<uint64_t> dropped_no_session_{0};
+    std::atomic<uint64_t> peer_evictions_{0};
     std::atomic<uint64_t> filtered_count_{0};
+
+    void record_port_count() noexcept {
+        const size_t n = ports_.size();
+        active_ports_.store(n, std::memory_order_relaxed);
+        size_t p = ports_peak_.load(std::memory_order_relaxed);
+        while (n > p && !ports_peak_.compare_exchange_weak(p, n, std::memory_order_relaxed)) {}
+    }
+
+    size_t reap_idle_ports() {
+        const size_t removed = std::erase_if(ports_, [this](const auto& kv) {
+            return !kv.second.flushing && kv.second.queue.empty() &&
+                   !session_table_.lookup(kv.first).has_value();
+        });
+        if (removed) active_ports_.store(ports_.size(), std::memory_order_relaxed);
+        return removed;
+    }
 
     void release(size_t bytes) {
         queued_packets_.fetch_sub(1, std::memory_order_acq_rel);
@@ -180,16 +241,33 @@ private:
     void on_outbound(UdpOutbound d) {
         const size_t bytes = d.payload.size();
         if (!running_) { release(bytes); return; }
-        auto& port = ports_[d.app_port];
+        auto it = ports_.find(d.app_port);
+        if (it == ports_.end()) {
+            if (ports_.size() >= limits_.max_ports) {
+                reap_idle_ports();
+            }
+            if (ports_.size() >= limits_.max_ports) {
+                release(bytes);
+                dropped_ports_cap_.fetch_add(1, std::memory_order_relaxed);
+                note_drop("port table full");
+                return;
+            }
+            it = ports_.emplace(d.app_port, PortState{}).first;
+            record_port_count();
+        }
+        auto& port = it->second;
         if (port.queue.size() >= limits_.max_port_packets) {
             release(bytes);
+            dropped_port_queue_full_.fetch_add(1, std::memory_order_relaxed);
             note_drop("port queue full");
             return;
         }
         const bool evicted = d.v6 ? port.peers.add6(d.dst_addr6.data(), d.dst_port_host)
                                   : port.peers.add(d.dst_addr_net, d.dst_port_host);
-        if (evicted)
+        if (evicted) {
+            peer_evictions_.fetch_add(1, std::memory_order_relaxed);
             PC_LOG_DEBUG("[UDP-RELAY] port={} peer set full, forgot the oldest peer", d.app_port);
+        }
         const uint16_t app_port = d.app_port;
         port.queue.push_back(std::move(d));
         if (!port.flushing) {
@@ -220,9 +298,14 @@ private:
                 // The proxy is unreachable for this port: drop what is queued
                 // rather than paying the handshake timeout once per datagram.
                 if (auto again = ports_.find(app_port); again != ports_.end()) {
-                    for (auto& q : again->second.queue) { release(q.payload.size()); note_drop("no proxy session"); }
+                    for (auto& q : again->second.queue) {
+                        release(q.payload.size());
+                        dropped_no_session_.fetch_add(1, std::memory_order_relaxed);
+                        note_drop("no proxy session");
+                    }
                     again->second.queue.clear();
                 }
+                dropped_no_session_.fetch_add(1, std::memory_order_relaxed);
                 note_drop("no proxy session");
                 PC_LOG_WARN("[UDP-RELAY] No SOCKS5 session for port={} group={}", app_port, d.group_id);
                 continue;
@@ -318,10 +401,7 @@ private:
             auto removed = socks5_mgr_.cleanup_expired();
             auto routes = session_table_.cleanup_expired();
             // Forget peer sets for sockets whose route expired.
-            size_t ports = std::erase_if(ports_, [this](const auto& kv) {
-                return !kv.second.flushing && kv.second.queue.empty() &&
-                       !session_table_.lookup(kv.first).has_value();
-            });
+            size_t ports = reap_idle_ports();
             if (removed || routes || ports)
                 PC_LOG_INFO("[UDP-RELAY] Cleaned idle/dead sessions={} routes={} ports={}",
                             removed, routes, ports);

@@ -55,11 +55,14 @@ public:
                            UdpParkingLimits limits = {256, 8})
         : ttl_(ttl), parker_(limits) {}
 
+    static constexpr std::size_t kPruneSlotsAbove = 4096;
+
     // SOCKET strand: store the verdict for `port` and hand back the SYNs
     // parked for it, in arrival order. The caller acts on them.
     std::vector<Packet> decide(uint16_t port, v6_verdict v, time_point now) {
         {
             std::lock_guard lock(mu_);
+            if (slots_.size() >= kPruneSlotsAbove) prune_slots_locked(now);
             slots_[port] = slot{v, now};
         }
         return parker_.take(port);
@@ -97,12 +100,23 @@ public:
     }
 
     std::size_t parked() const { return parker_.size(); }
+    std::size_t slot_count() const {
+        std::lock_guard lock(mu_);
+        return slots_.size();
+    }
 
 private:
     struct slot {
         v6_verdict v = v6_verdict::none;
         time_point at{};
     };
+
+    void prune_slots_locked(time_point now) {
+        for (auto it = slots_.begin(); it != slots_.end();) {
+            if (now - it->second.at > ttl_) it = slots_.erase(it);
+            else ++it;
+        }
+    }
 
     v6_verdict lookup_locked(uint16_t port, time_point now) {
         const auto it = slots_.find(port);
@@ -114,7 +128,7 @@ private:
     }
 
     duration ttl_;
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::unordered_map<uint16_t, slot> slots_;
     udp_first_packet_parker<Packet, Clock> parker_;
 };

@@ -78,8 +78,8 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , tree_mgr_(ioc_, strand_)
     , exec_(tree_mgr_, strand_)
     , dns_mgr_(ioc_, exe_relative("dns_state.json"))
-    , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
-    , acceptor_v6_(ioc_, *port_tracker_, strand_, tcp_groups_, &v6_flows_, &ipv6_egress_)
+    , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_, nullptr, nullptr, &tcp_limiter_)
+    , acceptor_v6_(ioc_, *port_tracker_, strand_, tcp_groups_, &v6_flows_, &ipv6_egress_, &tcp_limiter_)
     , socks5_udp_mgr_(ioc_, {})
     , projection_(tree_mgr_, strand_)
     , cfg_bridge_(cfg_store_)
@@ -128,7 +128,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         // binds its [::1] relay in start_traffic_layers().
         hook_ = std::make_unique<hook::mode>(ioc_, strand_, tree_mgr_, tcp_groups_, socks5_udp_mgr_,
                                              ipv6_egress_, decision_log_.get(), ipv6_block_,
-                                             ipv6_proxy_);
+                                             ipv6_proxy_, &tcp_limiter_);
         auto provider = [h = hook_.get()]() { return h->status_snapshot(); };
         projection_.set_hook_status_provider(provider);
         process_svc_.set_hook_status_provider(provider);
@@ -174,8 +174,13 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         wd_socket_->set_ipv6(&ipv6_block_, &ipv6_proxy_,
                              [this](uint16_t port, v6_verdict v, const v6_flow* flow) {
             // Publish (or forget) the flow before the verdict releases parked SYNs.
-            if (v == v6_verdict::proxy && flow) v6_flows_.publish(port, *flow);
-            else if (v != v6_verdict::none)     v6_flows_.erase(port);
+            if (v == v6_verdict::proxy && flow) {
+                if (v6_flows_.publish(port, *flow) == 0) {
+                    v = v6_verdict::block;  // flow table full: fail closed to IPv4 fallback
+                }
+            } else if (v != v6_verdict::none) {
+                v6_flows_.erase(port);
+            }
             if (wd_network_v6_) wd_network_v6_->on_decided(port, v);
         });
         wd_socket_->set_ipv6_egress(&ipv6_egress_);
@@ -397,10 +402,100 @@ nlohmann::json app::traffic_stats() const {
         j["ipv6"]["syn_allowed"]   = wd_network_v6_->allowed();
         j["ipv6"]["syn_parked"]    = wd_network_v6_->parked();
         j["ipv6"]["syn_watchdog"]  = v6_watchdog;
+        j["ipv6"]["syn_park_full"] = wd_network_v6_->park_full();
     }
     if (decision_log_) {
         const auto d = decision_log_->snapshot();
         j["decisions"] = {{"written", d.written}, {"dropped", d.dropped}, {"capacity", d.capacity}};
+    }
+    // Unified resource caps & overflow counters (v0.18 #2).
+    {
+        const auto tcp = tcp_limiter_.stats();
+        const auto udp_s5 = socks5_udp_mgr_.stats();
+        const auto udp_rt = udp_session_table_.stats();
+        const auto v6f = v6_flows_.snapshot();
+        const auto dns_s = dns_mgr_.forwarder_stats();
+        nlohmann::json limits;
+        limits["tcp_relays"] = {
+            {"active",                 tcp.active},
+            {"max_active",             tcp.max_active},
+            {"active_peak",            tcp.active_peak},
+            {"pending_handshakes",     tcp.pending},
+            {"max_pending_handshakes", tcp.max_pending},
+            {"pending_peak",           tcp.pending_peak},
+            {"rejected_active",        tcp.rejected_active},
+            {"rejected_pending",       tcp.rejected_pending},
+        };
+        limits["udp_socks5"] = {
+            {"active",                 udp_s5.active},
+            {"total",                  udp_s5.total},
+            {"max_sessions",           udp_s5.max_sessions},
+            {"sessions_peak",          udp_s5.sessions_peak},
+            {"pending_handshakes",     udp_s5.pending},
+            {"max_pending_handshakes", udp_s5.max_pending},
+            {"pending_peak",           udp_s5.pending_peak},
+            {"rejected_sessions",      udp_s5.rejected_sessions},
+            {"rejected_pending",       udp_s5.rejected_pending},
+        };
+        limits["udp_routes"] = {
+            {"active",       udp_rt.active},
+            {"max_sessions", udp_rt.max_sessions},
+            {"peak",         udp_rt.peak},
+            {"rejected_cap", udp_rt.rejected_cap},
+        };
+        if (udp_relay_) {
+            const auto ur = udp_relay_->stats();
+            limits["udp_relay"] = {
+                {"active_ports",            ur.active_ports},
+                {"max_ports",               ur.max_ports},
+                {"ports_peak",              ur.ports_peak},
+                {"queued_packets",          ur.queued_packets},
+                {"max_total_packets",       ur.max_total_packets},
+                {"queued_bytes",            ur.queued_bytes},
+                {"max_total_bytes",         ur.max_total_bytes},
+                {"max_port_packets",        ur.max_port_packets},
+                {"dropped_total",           ur.dropped_total},
+                {"dropped_queue_full",      ur.dropped_queue_full},
+                {"dropped_port_queue_full", ur.dropped_port_queue_full},
+                {"dropped_ports_cap",       ur.dropped_ports_cap},
+                {"dropped_no_session",      ur.dropped_no_session},
+                {"peer_evictions",          ur.peer_evictions},
+            };
+        }
+        nlohmann::json v6_limits = {
+            {"active",       v6f.active},
+            {"max_flows",    v6f.max_flows},
+            {"peak",         v6f.peak},
+            {"rejected_cap", v6f.rejected_cap},
+        };
+        if (wd_network_v6_) {
+            v6_limits["park_full"]  = wd_network_v6_->park_full();
+            v6_limits["gate_slots"] = wd_network_v6_->gate_slots();
+        }
+        limits["ipv6_flows"] = std::move(v6_limits);
+        limits["dns_forwarder"] = {
+            {"pending",             dns_s.pending},
+            {"max_pending",         dns_s.max_pending},
+            {"pending_peak",        dns_s.pending_peak},
+            {"tcp_active",          dns_s.tcp_active},
+            {"max_tcp",             dns_s.max_tcp},
+            {"tcp_peak",            dns_s.tcp_peak},
+            {"dropped_pending_cap", dns_s.dropped_pending_cap},
+            {"dropped_tcp_cap",     dns_s.dropped_tcp_cap},
+        };
+        if (hook_ && j["interception"].contains("hook")) {
+            const auto& hs = j["interception"]["hook"];
+            limits["hook"] = {
+                {"flows_pending",           hs.value("flows_pending", std::size_t{0})},
+                {"flows_max",               hs.value("flows_max", std::size_t{0})},
+                {"flows_peak",              hs.value("flows_peak", std::size_t{0})},
+                {"flows_rejected_cap",      hs.value("flows_rejected_cap", uint64_t{0})},
+                {"udp_relays_active",       hs.value("udp_relays_active", std::size_t{0})},
+                {"udp_relays_max",          hs.value("udp_relays_max", std::size_t{0})},
+                {"udp_relays_cap_rejected", hs.value("udp_relays_cap_rejected", uint64_t{0})},
+            };
+        }
+        j["limits"] = std::move(limits);
     }
     if (parker_) {
         const auto c = parker_->snapshot();

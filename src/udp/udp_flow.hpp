@@ -126,6 +126,7 @@ struct UdpQueueLimits {
     size_t max_total_packets = 8192;
     size_t max_total_bytes   = 32u * 1024 * 1024;
     size_t max_port_packets  = 512;   // per app socket, covers proxy handshake time
+    size_t max_ports         = 1024;  // distinct local UDP ports tracked concurrently
 };
 
 } // namespace clew

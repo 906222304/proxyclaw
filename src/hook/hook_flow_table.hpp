@@ -13,8 +13,10 @@
 // Pipe threads publish, relay coroutines take: one mutex, tiny critical
 // sections, no strand involvement.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -36,12 +38,31 @@ public:
     using clock = std::chrono::steady_clock;
     static constexpr std::chrono::seconds kMaxAge{30};
     static constexpr std::size_t kPruneAbove = 4096;
+    static constexpr std::size_t kDefaultMaxPending = 2048;
 
-    void publish(bool ipv6, uint16_t src_port, const flow& f, clock::time_point now = clock::now()) {
+    explicit flow_table(std::size_t max_pending = kDefaultMaxPending)
+        : max_pending_(max_pending) {}
+
+    // Returns false when the pending flow table is at capacity even after
+    // pruning expired flows. Replacing an existing entry for the same port
+    // always succeeds.
+    bool publish(bool ipv6, uint16_t src_port, const flow& f, clock::time_point now = clock::now()) {
         std::lock_guard lock(mu_);
-        if (map_.size() >= kPruneAbove) prune_locked(now);
-        map_[key(ipv6, src_port)] = entry{f, now};
+        const uint32_t k = key(ipv6, src_port);
+        if (auto it = map_.find(k); it != map_.end()) {
+            it->second = entry{f, now};
+            ++published_;
+            return true;
+        }
+        if (map_.size() >= max_pending_ || map_.size() >= kPruneAbove) prune_locked(now);
+        if (map_.size() >= max_pending_) {
+            ++rejected_cap_;
+            return false;
+        }
+        map_.emplace(k, entry{f, now});
+        peak_ = std::max(peak_, map_.size());
         ++published_;
+        return true;
     }
 
     // The flow for an accepted relay connection, removed. nullopt when none
@@ -62,10 +83,18 @@ public:
         prune_locked(now);
     }
 
-    struct counters { uint64_t published, taken, expired; std::size_t pending; };
+    struct counters {
+        uint64_t published{0};
+        uint64_t taken{0};
+        uint64_t expired{0};
+        uint64_t rejected_cap{0};
+        std::size_t pending{0};
+        std::size_t max_pending{0};
+        std::size_t peak{0};
+    };
     counters snapshot() const {
         std::lock_guard lock(mu_);
-        return {published_, taken_, expired_, map_.size()};
+        return {published_, taken_, expired_, rejected_cap_, map_.size(), max_pending_, peak_};
     }
 
 private:
@@ -80,9 +109,11 @@ private:
         }
     }
 
+    std::size_t max_pending_;
     mutable std::mutex mu_;
     std::unordered_map<uint32_t, entry> map_;
-    uint64_t published_{0}, taken_{0}, expired_{0};
+    uint64_t published_{0}, taken_{0}, expired_{0}, rejected_cap_{0};
+    std::size_t peak_{0};
 };
 
 } // namespace clew::hook

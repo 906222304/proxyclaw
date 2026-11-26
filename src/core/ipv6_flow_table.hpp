@@ -53,17 +53,38 @@ public:
     using time_point = typename Clock::time_point;
     using duration   = typename Clock::duration;
 
-    explicit ipv6_flow_table(duration drain = std::chrono::seconds{10})
-        : drain_(drain), active_(std::make_unique<std::atomic<uint8_t>[]>(65536)) {
+    static constexpr std::size_t kDefaultMaxFlows = 2048;
+
+    struct counters {
+        std::size_t active{0};
+        std::size_t max_flows{0};
+        std::size_t peak{0};
+        uint64_t    rejected_cap{0};
+    };
+
+    explicit ipv6_flow_table(duration drain = std::chrono::seconds{10},
+                             std::size_t max_flows = kDefaultMaxFlows)
+        : drain_(drain), max_flows_(max_flows)
+        , active_(std::make_unique<std::atomic<uint8_t>[]>(65536)) {
         for (std::size_t i = 0; i < 65536; ++i) active_[i].store(0, std::memory_order_relaxed);
     }
 
-    uint64_t publish(uint16_t port, v6_flow flow) {
+    // Returns 0 when the flow table is at capacity even after pruning expired
+    // draining flows. Replacing an existing entry on the same port succeeds.
+    uint64_t publish(uint16_t port, v6_flow flow, time_point now = Clock::now()) {
         std::lock_guard lock(mu_);
+        if (flows_.find(port) == flows_.end()) {
+            if (flows_.size() >= max_flows_) prune_expired_locked(now);
+            if (flows_.size() >= max_flows_) {
+                ++rejected_cap_;
+                return 0;
+            }
+        }
         flow.id = ++next_id_;
         flow.has_route = false;
         flows_[port] = slot{flow, false, {}};
         active_[port].store(1, std::memory_order_release);
+        peak_ = std::max(peak_, flows_.size());
         return flow.id;
     }
 
@@ -129,6 +150,16 @@ public:
         return flows_.size();
     }
 
+    counters snapshot() const {
+        std::lock_guard lock(mu_);
+        return {
+            .active       = flows_.size(),
+            .max_flows    = max_flows_,
+            .peak         = peak_,
+            .rejected_cap = rejected_cap_,
+        };
+    }
+
 private:
     struct slot {
         v6_flow    flow;
@@ -136,11 +167,25 @@ private:
         time_point drain_until{};
     };
 
+    void prune_expired_locked(time_point now) {
+        for (auto it = flows_.begin(); it != flows_.end();) {
+            if (it->second.draining && now >= it->second.drain_until) {
+                active_[it->first].store(0, std::memory_order_release);
+                it = flows_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     duration drain_;
+    std::size_t max_flows_;
     std::unique_ptr<std::atomic<uint8_t>[]> active_;
     mutable std::mutex mu_;
     std::unordered_map<uint16_t, slot> flows_;
     uint64_t next_id_ = 0;
+    std::size_t peak_ = 0;
+    uint64_t rejected_cap_ = 0;
 };
 
 } // namespace clew

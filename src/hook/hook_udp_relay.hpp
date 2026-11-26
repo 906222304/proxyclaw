@@ -200,10 +200,14 @@ public:
         std::lock_guard lock(mu_);
         return index_.size();
     }
+    static constexpr std::size_t max_relays() noexcept {
+        return udp_relay_index<std::shared_ptr<relay_slot>>::kDefaultMaxRelays;
+    }
     uint64_t packets_up() const noexcept       { return packets_up_.load(std::memory_order_relaxed); }
     uint64_t packets_down() const noexcept     { return packets_down_.load(std::memory_order_relaxed); }
     uint64_t packets_dropped() const noexcept  { return packets_dropped_.load(std::memory_order_relaxed); }
     uint64_t packets_filtered() const noexcept { return packets_filtered_.load(std::memory_order_relaxed); }
+    uint64_t cap_rejected() const noexcept     { return cap_rejected_.load(std::memory_order_relaxed); }
 
 private:
     using clock = std::chrono::steady_clock;

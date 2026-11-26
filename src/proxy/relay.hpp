@@ -24,6 +24,7 @@
 #include "proxy/ipv6_egress.hpp"
 #include "proxy/socks5_async.hpp"
 #include "proxy/connection_health.hpp"
+#include "proxy/session_limiter.hpp"
 
 // Format host-byte-order IPv4 as dotted string
 inline std::string ip_host_to_string(uint32_t ip) {
@@ -93,7 +94,8 @@ asio::awaitable<void>
 relay_through_proxy(tcp::socket& client_sock, const ProxyGroupConfig& cfg, socks5_dest dest,
                     uint16_t src_port, Release release,
                     std::chrono::steady_clock::duration setup_timeout,
-                    ipv6_egress* egress = nullptr, uint32_t group_id = 0)
+                    ipv6_egress* egress = nullptr, uint32_t group_id = 0,
+                    session_limiter* limiter = nullptr)
 {
     auto ex = co_await asio::this_coro::executor;
 
@@ -115,6 +117,20 @@ relay_through_proxy(tcp::socket& client_sock, const ProxyGroupConfig& cfg, socks
     const auto dest_port = dest.port;
 
     try {
+        session_limiter::permit pending_permit;
+        if (limiter) {
+            pending_permit = limiter->try_acquire_pending();
+            if (!pending_permit) {
+                const auto n = limiter->stats().rejected_pending;
+                if (n == 1 || n % 100 == 0) {
+                    PC_LOG_WARN("[RELAY] Pending SOCKS5 handshake cap reached ({}), rejecting port={} (total={})",
+                                limiter->max_pending(), src_port, n);
+                }
+                release();
+                co_return;
+            }
+        }
+
         auto t0 = std::chrono::steady_clock::now();
 
         enable_tcp_keepalive(client_sock);
@@ -142,6 +158,7 @@ relay_through_proxy(tcp::socket& client_sock, const ProxyGroupConfig& cfg, socks
             }
             throw;
         }
+        pending_permit.release();
         if (egress && dest.ipv6) egress->report_success(group_id);
 
         auto t2 = std::chrono::steady_clock::now();
@@ -182,7 +199,9 @@ handle_connection(tcp::socket client_sock,
                   PortTracker& tracker,
                   asio::strand<asio::io_context::executor_type>& strand,
                   const proxy_group_table& groups,
-                  std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10))
+                  std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10),
+                  session_limiter* limiter = nullptr,
+                  [[maybe_unused]] session_limiter::permit active_permit = {})
 {
     std::error_code ep_ec;
     auto ep = client_sock.remote_endpoint(ep_ec);
@@ -220,7 +239,8 @@ handle_connection(tcp::socket client_sock,
     socks5_dest dest;
     dest.v4_host = entry.remote_addr[0];
     dest.port = entry.remote_port;
-    co_await relay_through_proxy(client_sock, *cfg_opt, dest, src_port, release_slot, setup_timeout);
+    co_await relay_through_proxy(client_sock, *cfg_opt, dest, src_port, release_slot, setup_timeout,
+                                 nullptr, 0, limiter);
 }
 
 // Handle a single redirected IPv6 connection (ipv6.mode = proxy): the flow
@@ -230,7 +250,9 @@ handle_connection_v6(tcp::socket client_sock,
                      ipv6_flow_table<>& flows,
                      const proxy_group_table& groups,
                      ipv6_egress* egress = nullptr,
-                     std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10))
+                     std::chrono::steady_clock::duration setup_timeout = std::chrono::seconds(10),
+                     session_limiter* limiter = nullptr,
+                     [[maybe_unused]] session_limiter::permit active_permit = {})
 {
     std::error_code ep_ec;
     auto ep = client_sock.remote_endpoint(ep_ec);
@@ -259,7 +281,7 @@ handle_connection_v6(tcp::socket client_sock,
     dest.v6 = flow->remote;
     dest.port = flow->remote_port;
     co_await relay_through_proxy(client_sock, *cfg_opt, dest, src_port, release, setup_timeout,
-                                 egress, flow->group_id);
+                                 egress, flow->group_id, limiter);
 }
 
 } // namespace clew

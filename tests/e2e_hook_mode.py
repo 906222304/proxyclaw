@@ -141,6 +141,12 @@ def child():
     return [r.returncode, r.stdout]
 
 step("child", child)
+if len(sys.argv) > 3 and sys.argv[3]:
+    def child32():
+        r = subprocess.run([sys.argv[3], "--connect-only"],
+                           capture_output=True, text=True, timeout=40)
+        return r.returncode
+    step("child32", child32)
 print(json.dumps(out))
 """
 
@@ -158,10 +164,25 @@ RULE = {
                    "exclude_ports": ["853"]},
 }
 
+RULE32 = {
+    "id": "e2e_hook32",
+    "name": "e2e hook 32-bit",
+    "enabled": True,
+    "process_name": "pc_hook32_app.exe",
+    "cmdline_pattern": "",
+    "image_path_pattern": "",
+    "hack_tree": True,
+    "protocol": "tcp",
+    "proxy_group_id": 0,
+    "dst_filter": {"include_cidrs": [], "exclude_cidrs": [], "include_ports": [],
+                   "exclude_ports": []},
+}
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", required=True, type=pathlib.Path)
+    ap.add_argument("--probe32", type=pathlib.Path, help="optional 32-bit hook32_probe.exe for WOW64 checks")
     ap.add_argument("--keep", action="store_true", help="keep the temp dir")
     args = ap.parse_args()
 
@@ -173,6 +194,9 @@ def main() -> int:
     if not (exe.parent / "proxyclaw_hook64.dll").is_file():
         print(f"FAIL: proxyclaw_hook64.dll missing next to {exe}")
         return 1
+    if not (exe.parent / "proxyclaw_hook32.dll").is_file():
+        print(f"FAIL: proxyclaw_hook32.dll missing next to {exe}")
+        return 1
     work = pathlib.Path(tempfile.mkdtemp(prefix="pc_e2e_hook_"))
     socks = Socks5Server()
     token = secrets.token_hex(32)
@@ -182,7 +206,7 @@ def main() -> int:
         "proxy_groups": [{"id": 0, "name": "default", "host": "127.0.0.1", "port": socks.port,
                           "type": "socks5", "test_url": "http://1.1.1.1/"}],
         "next_group_id": 1,
-        "auto_rules": [RULE],
+        "auto_rules": [RULE, RULE32],
         "log_level": "debug",
         "dns": {"enabled": False},
         "interception": {"mode": "hook"},
@@ -199,6 +223,18 @@ def main() -> int:
     shutil.copy2(SYSTEM_CURL, child)
     stranger = work / "pc_hook_none.exe"    # matched by nothing
     shutil.copy2(SYSTEM_CURL, stranger)
+
+    probe32_app = None
+    probe32_child = None
+    probe32_cross = None
+    if args.probe32 and args.probe32.is_file():
+        probe32_src = args.probe32.resolve()
+        probe32_app = work / RULE32["process_name"]
+        probe32_child = work / "pc_hook32_child.exe"
+        probe32_cross = work / "pc_hook32_cross.exe"
+        shutil.copy2(probe32_src, probe32_app)
+        shutil.copy2(probe32_src, probe32_child)
+        shutil.copy2(probe32_src, probe32_cross)
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
     proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
@@ -233,14 +269,17 @@ def main() -> int:
         inter = stats0.get("interception", {})
         check("stats.interception", inter.get("mode") == "hook" and inter.get("active") is True, inter)
         hook0 = inter.get("hook", {})
+        check("stats.hook.wow64_enabled", hook0.get("wow64_enabled") is True, hook0)
         ipv60 = stats0.get("ipv6", {})
         check("stats.ipv6.proxy_available matches hook relay_port_v6",
               ipv60.get("proxy_available") is (hook0.get("relay_port_v6", 0) != 0),
               {"ipv6": ipv60, "relay_port_v6": hook0.get("relay_port_v6")})
 
         socks.take()
-        res = subprocess.run([str(app), str(script), str(child), token], capture_output=True, text=True,
-                             timeout=120)
+        cmd_args = [str(app), str(script), str(child), token]
+        if probe32_cross:
+            cmd_args.append(str(probe32_cross))
+        res = subprocess.run(cmd_args, capture_output=True, text=True, timeout=120)
         time.sleep(0.5)
         seen = set(socks.take())
         try:
@@ -278,6 +317,30 @@ def main() -> int:
         check("child injected before its first connect",
               isinstance(child_out, list) and child_out[0] == 0 and ("1.1.1.1", 443) in seen,
               child_out)
+        if probe32_cross:
+            check("x64 -> 32-bit (WOW64) child injected before its first connect",
+                  out.get("child32") == 0 and ("1.0.0.1", 80) in seen,
+                  {"child32": out.get("child32"), "seen": sorted(seen)})
+
+        if probe32_app and probe32_child:
+            socks.take()
+            res32 = subprocess.run([str(probe32_app), "--child", str(probe32_child)],
+                                   capture_output=True, text=True, timeout=60)
+            time.sleep(0.5)
+            seen32 = set(socks.take())
+            try:
+                out32 = json.loads(res32.stdout.strip().splitlines()[-1])
+            except Exception:  # noqa: BLE001
+                out32 = {}
+                print(f"probe32 rc={res32.returncode} stdout={res32.stdout!r} stderr={res32.stderr[-400:]!r}")
+            check("32-bit (WOW64) running process injected & proxied",
+                  out32.get("arch") == 32 and out32.get("injected") is True
+                  and out32.get("peer") == "1.1.1.1:80" and out32.get("http") is True
+                  and ("1.1.1.1", 80) in seen32,
+                  {"out32": out32, "seen32": sorted(seen32)})
+            check("32-bit -> 32-bit child injected before its first connect",
+                  out32.get("child_rc") == 0 and ("1.0.0.1", 80) in seen32,
+                  {"out32": out32, "seen32": sorted(seen32)})
 
         socks.take()
         res = subprocess.run([str(stranger), "-s", "-o", os.devnull, "-w", "%{http_code}",

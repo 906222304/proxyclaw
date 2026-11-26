@@ -54,14 +54,21 @@ mode::mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_mana
 
 mode::~mode() { stop(); }
 
-bool mode::start(const std::filesystem::path& dll) {
+bool mode::start(const std::filesystem::path& dll64, const std::filesystem::path& dll32) {
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(dll, ec)) {
+    if (!std::filesystem::is_regular_file(dll64, ec)) {
         PC_LOG_ERROR("[HOOK] {} not found next to proxyclaw.exe: hook mode cannot intercept anything",
-                     dll.filename().string());
+                     dll64.filename().string());
         return false;
     }
-    dll_path_ = dll.wstring();
+    dll_path_ = dll64.wstring();
+    dll32_path_.clear();
+    if (!dll32.empty() && std::filesystem::is_regular_file(dll32, ec)) {
+        dll32_path_ = dll32.wstring();
+    } else if (!dll32.empty()) {
+        PC_LOG_WARN("[HOOK] {} not found next to proxyclaw.exe: 32-bit (WOW64) processes will be skipped",
+                    dll32.filename().string());
+    }
     enable_debug_privilege();
 
     const uint16_t p4 = acceptor_v4_.start();
@@ -89,8 +96,8 @@ bool mode::start(const std::filesystem::path& dll) {
     running_ = true;
     injector_ = std::jthread([this](std::stop_token st) { injector_loop(st); });
     asio::post(strand_, [this] { schedule_sweep(); });
-    PC_LOG_INFO("[HOOK] interception mode: hook (relay {} / {}, dll {})",
-                p4, p6, dll.string());
+    PC_LOG_INFO("[HOOK] interception mode: hook (relay {} / {}, dll64 {}, dll32 {})",
+                p4, p6, dll64.string(), dll32_path_.empty() ? "none" : dll32.string());
     return true;
 }
 
@@ -254,6 +261,9 @@ reply mode::on_child_failed(DWORD parent, DWORD child) {
         notify_status_changed();
         PC_LOG_WARN("[HOOK] child PID={} of PID={}: import-table injection failed; will retry on sweep",
                     child, parent);
+        // Kick the injector immediately so a fallback or cross-arch child
+        // doesn't wait up to kSweepPeriod after ResumeThread.
+        publish_wanted_now();
     }
     return make_reply(verdict::direct);
 }
@@ -277,7 +287,7 @@ void mode::record(const request& req, DWORD pid, DecisionRecord& rec) {
     decisions_->record(rec);
 }
 
-void mode::schedule_sweep() {
+void mode::publish_wanted_now() {
     if (!running_) return;
     std::vector<key> wanted;
     for (const auto& e : tree_mgr_.tree().entries()) {
@@ -289,6 +299,11 @@ void mode::schedule_sweep() {
         tracker_.publish_wanted(std::move(wanted));
     }
     inj_cv_.notify_one();
+}
+
+void mode::schedule_sweep() {
+    if (!running_) return;
+    publish_wanted_now();
     flows_.prune();
     sweep_timer_.expires_after(kSweepPeriod);
     sweep_timer_.async_wait(asio::bind_executor(strand_, [this](const std::error_code& ec) {
@@ -317,7 +332,7 @@ void mode::injector_loop(std::stop_token st) {
                 std::lock_guard lock(inj_mu_);
                 if (tracker_.is_done(k)) continue;
             }
-            const auto r = inject_into(k.first, dll_path_);
+            const auto r = inject_into(k.first, dll_path_, dll32_path_);
             const auto status = [](inject_result res) noexcept {
                 switch (res) {
                 case inject_result::ok:          return inject_status::injected;
@@ -384,6 +399,7 @@ nlohmann::json mode::stats() const {
     return {
         {"relay_port", relay_port_v4()},
         {"relay_port_v6", relay_port_v6()},
+        {"wow64_enabled", !dll32_path_.empty()},
         {"pipe_requests", pipe_ ? pipe_->requests() : 0},
         {"pipe_rejected", pipe_ ? pipe_->rejected() : 0},
         {"proxied", n_proxy_.load()},

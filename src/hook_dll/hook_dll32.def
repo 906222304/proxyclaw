@@ -1,0 +1,4 @@
+LIBRARY proxyclaw_hook32
+EXPORTS
+    ; Detours requires ordinal 1 in a DLL added to a process's import table.
+    proxyclaw_hook_marker @1

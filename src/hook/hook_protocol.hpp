@@ -19,8 +19,14 @@ namespace clew::hook {
 inline constexpr uint32_t kMagic   = 0x4B4F4850u;   // "PHOK"
 inline constexpr uint32_t kVersion = 1;
 inline constexpr wchar_t  kPipeName[] = L"\\\\.\\pipe\\proxyclaw-hook-v1";
-// Next to proxyclaw.exe. x64 only: 32-bit processes are not injected.
-inline constexpr wchar_t  kDllName[]  = L"proxyclaw_hook64.dll";
+// Next to proxyclaw.exe: 64-bit DLL for x64 processes, 32-bit DLL for WOW64.
+inline constexpr wchar_t  kDllName64[] = L"proxyclaw_hook64.dll";
+inline constexpr wchar_t  kDllName32[] = L"proxyclaw_hook32.dll";
+#ifdef _WIN64
+inline constexpr wchar_t  kDllName[]   = L"proxyclaw_hook64.dll";
+#else
+inline constexpr wchar_t  kDllName[]   = L"proxyclaw_hook32.dll";
+#endif
 
 enum class msg_type : uint32_t {
     connect      = 1,   // a TCP connect() / WSAConnect / ConnectEx is about to run

@@ -565,7 +565,8 @@ void app::start_traffic_layers() {
 
     if (hook_) {
         // No driver in this mode: the DLL does the interception.
-        const bool active = hook_->start(exe_relative(std::wstring_view{hook::kDllName}));
+        const bool active = hook_->start(exe_relative(std::wstring_view{hook::kDllName64}),
+                                         exe_relative(std::wstring_view{hook::kDllName32}));
         interception_active_.store(active, std::memory_order_relaxed);
         {
             std::scoped_lock lk(engine_status_mu_);

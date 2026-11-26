@@ -30,6 +30,7 @@
 #include <detours.h>
 
 #include <cstring>
+#include <cwchar>
 #include <new>
 #include <unordered_map>
 
@@ -68,7 +69,10 @@ SRWLOCK g_connectex_lock = SRWLOCK_INIT;
 bool g_connectex_hooked = false;   // under g_connectex_lock
 
 bool g_installed = false;
-char g_dll_ansi[MAX_PATH * 2] = {};   // for DetourUpdateProcessWithDll (LPCSTR only)
+char g_dll_ansi[MAX_PATH * 2] = {};     // own DLL path for DetourUpdateProcessWithDll (LPCSTR)
+#ifdef _WIN64
+char g_dll32_ansi[MAX_PATH * 2] = {};   // sibling proxyclaw_hook32.dll for x64 -> WOW64 children
+#endif
 thread_local bool t_in_create = false;
 
 // --- Original destinations of redirected sockets (getpeername) -------------
@@ -369,18 +373,34 @@ int WSAAPI hook_closesocket(SOCKET s) {
 
 // --- Children ----------------------------------------------------------------
 
-// The child is suspended and has not run: add this DLL to its imports when
-// the host says it is proxied and it can actually load it.
+// The child is suspended and has not run: add the matching-arch DLL to its
+// imports when the host says it is proxied and it can actually load it.
 void carry_into_child(const PROCESS_INFORMATION& pi) {
     if (!g_dll_ansi[0]) return;
-    if (process_is_wow64(pi.hProcess) || process_is_restricted(pi.hProcess) ||
-        process_requires_signed_images(pi.hProcess)) return;
+    if (process_is_restricted(pi.hProcess) || process_requires_signed_images(pi.hProcess)) return;
+
+    const bool child_wow64 = process_is_wow64(pi.hProcess);
+#ifdef _WIN64
+    const char* dll = child_wow64 ? g_dll32_ansi : g_dll_ansi;
+    if (!dll[0]) return;
+#else
+    // A 32-bit parent can patch 32-bit children directly; for a 64-bit child
+    // ask the host so it registers the child, then trigger immediate sweep.
+    const char* dll = child_wow64 ? g_dll_ansi : nullptr;
+#endif
+
     request req{};
     req.type = static_cast<uint32_t>(msg_type::child);
     req.child_pid = pi.dwProcessId;
     reply rep{};
     if (!ask_host(req, rep) || static_cast<verdict>(rep.verdict) != verdict::proxy) return;
-    LPCSTR dlls[1] = {g_dll_ansi};
+
+    if (!dll) {
+        req.type = static_cast<uint32_t>(msg_type::child_failed);
+        ask_host(req, rep);
+        return;
+    }
+    LPCSTR dlls[1] = {dll};
     if (!DetourUpdateProcessWithDll(pi.hProcess, dlls, 1)) {
         req.type = static_cast<uint32_t>(msg_type::child_failed);
         ask_host(req, rep);
@@ -415,19 +435,39 @@ bool resolve(HMODULE module, const char* name, T& slot) {
     return slot != nullptr;
 }
 
-void remember_own_path(HMODULE self) {
-    wchar_t wide[MAX_PATH] = {};
-    if (!GetModuleFileNameW(self, wide, MAX_PATH)) return;
+void wide_path_to_ansi(const wchar_t* wide, char* dst, int dst_cap) {
+    dst[0] = '\0';
     BOOL lossy = FALSE;
-    if (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide, -1, g_dll_ansi, sizeof(g_dll_ansi),
+    if (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide, -1, dst, dst_cap,
                             nullptr, &lossy) && !lossy) return;
     // A path the ANSI code page cannot spell: its 8.3 form usually can.
     wchar_t shortp[MAX_PATH] = {};
-    g_dll_ansi[0] = '\0';
+    dst[0] = '\0';
     if (GetShortPathNameW(wide, shortp, MAX_PATH) &&
-        (!WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, shortp, -1, g_dll_ansi,
-                              sizeof(g_dll_ansi), nullptr, &lossy) || lossy))
-        g_dll_ansi[0] = '\0';
+        (!WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, shortp, -1, dst,
+                              dst_cap, nullptr, &lossy) || lossy))
+        dst[0] = '\0';
+}
+
+void remember_own_path(HMODULE self) {
+    wchar_t wide[MAX_PATH] = {};
+    if (!GetModuleFileNameW(self, wide, MAX_PATH)) return;
+    wide_path_to_ansi(wide, g_dll_ansi, static_cast<int>(sizeof(g_dll_ansi)));
+#ifdef _WIN64
+    // Locate sibling proxyclaw_hook32.dll next to proxyclaw_hook64.dll.
+    wchar_t* slash = std::wcsrchr(wide, L'\\');
+    if (slash) {
+        const size_t dir_len = static_cast<size_t>(slash - wide) + 1;
+        const size_t name_len = std::wcslen(kDllName32);
+        if (dir_len + name_len < MAX_PATH) {
+            std::wmemcpy(slash + 1, kDllName32, name_len + 1);
+            const DWORD attrs = GetFileAttributesW(wide);
+            if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                wide_path_to_ansi(wide, g_dll32_ansi, static_cast<int>(sizeof(g_dll32_ansi)));
+            }
+        }
+    }
+#endif
 }
 
 void install(HMODULE self) {
@@ -465,8 +505,9 @@ void install(HMODULE self) {
 } // namespace
 
 // Detours requires an export with ordinal 1 in any DLL it adds to a
-// process's import table (DetourUpdateProcessWithDll).
-extern "C" void WINAPI proxyclaw_hook_marker() {}
+// process's import table (DetourUpdateProcessWithDll). __cdecl keeps the
+// .def symbol name undecorated on both x86 and x64.
+extern "C" void __cdecl proxyclaw_hook_marker() {}
 
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
     if (DetourIsHelperProcess()) return TRUE;

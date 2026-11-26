@@ -1,27 +1,10 @@
 # ProxyClaw 路线图
 
-> **English summary.** v0.14 and v0.15 shipped in **v0.16.0** (2026-11-25): explainable per-connection decisions, split CI with `/W4` & ESLint, `(pid, psn)` rule matching, child-process-tree exceptions, engine status view with versioned config import/export, editable app presets with Store package identity matching, IPv6 TCP/UDP proxy, and optional Hook interception. **v0.17** matures the driverless Hook mode and upstream auth: Hook UDP proxy (SOCKS5 UDP ASSOCIATE), 32-bit (WOW64) injection (`proxyclaw_hook32.dll`), Hook skip/failure observability in the UI, and SOCKS5 username/password authentication (RFC 1929). **v0.18** focuses on measured performance, bounds, and diagnostics: a performance baseline (CONNECT-to-decision p99, missed proxies, RSS vs process count), resource caps with overflow counters, a PSN-verified process info cache, and one-click diagnostic bundle export for real-machine troubleshooting (RecvEx/SendEx batching only if the baseline proves NETWORK threads are the bottleneck). Low-priority maintenance: vcpkg manifest, `pyproject` for Python test scripts, and out-of-tree generated `version.ts`. Not planned: installer or Windows Service split (stay portable zip), custom WFP driver (Draft PR #15 closed; WinDivert default + Hook driverless is the two-track model), default DLL injection, full TUN backend, built-in multi-protocol nodes, HTTP upstream (rejected with 400), hot-switching interception mode without restart, and a dedicated self-hosted nightly soak runner.
+> **English summary.** v0.14–v0.17 are complete (**v0.17.0**, 2026-11-26): explainable per-connection decisions, split CI with `/W4` & ESLint, `(pid, psn)` rule matching, child-process-tree exceptions, engine status view with versioned config import/export, editable app presets with Store package identity matching, IPv6 TCP/UDP proxy, driverless Hook mode with TCP/UDP proxy, 64/32-bit (WOW64) injection (`proxyclaw_hook64.dll` + `proxyclaw_hook32.dll`), and skip/failure observability, plus SOCKS5 username/password authentication (RFC 1929). **v0.18** focuses on measured performance, bounds, and diagnostics: a performance baseline (CONNECT-to-decision p99, missed proxies, RSS vs process count), resource caps with overflow counters, a PSN-verified process info cache, and one-click diagnostic bundle export for real-machine troubleshooting (RecvEx/SendEx batching only if the baseline proves NETWORK threads are the bottleneck). Low-priority maintenance: vcpkg manifest, `pyproject` for Python test scripts, and out-of-tree generated `version.ts`. Not planned: installer or Windows Service split (stay portable zip), custom WFP driver (Draft PR #15 closed; WinDivert default + Hook driverless is the two-track model), default DLL injection, full TUN backend, built-in multi-protocol nodes, HTTP upstream (rejected with 400), hot-switching interception mode without restart, and a dedicated self-hosted nightly soak runner.
 
-当前版本 **v0.16.0**（2026-11-25），v0.14（第 1–9、11–12 项；第 10 项已放弃）与 v0.15（第 1–5 项：子进程树例外、引擎状态与配置导入/导出、可编辑应用预设与 Store 包身份匹配、`(pid, psn)` 规则匹配状态、IPv6 TCP/UDP 代理，以及可选 Hook 注入模式）已全部完成。本文只列尚未完成的工作；已完成项见 [CHANGELOG](../CHANGELOG.md)。
+当前版本 **v0.17.0**（2026-11-26），v0.14–v0.17 路线图已全部完成（v0.17 补齐无驱动 Hook 模式的 UDP 代理、32 位 WOW64 双架构注入、注入/跳过原因可观测性以及 SOCKS5 RFC 1929 用户名/密码认证）。本文只列尚未完成的工作；已完成项见 [CHANGELOG](../CHANGELOG.md)。
 
 **原则**：先有唯一的事实来源（CONNECT 时记录的决定），界面、统计和 IPv6 标注都从它读取；性能改动必须先有能测出判定延迟与漏代理的基准；保持绿色便携包形态，把精力集中在核心代理能力。
-
-## v0.17：补齐无驱动 Hook 模式与上游认证
-
-**目标**：建立「WinDivert（默认）+ Hook（官方无驱动替代）」双路线，让因安全软件冲突改用 Hook 模式的用户也能覆盖常见 UDP 与 32 位应用、看得清跳过原因，并支持带账密认证的 SOCKS5 上游。
-
-| # | 项目 | 内容 |
-| --- | --- | --- |
-| 1 | Hook 模式 UDP 代理 | 拦截 `sendto` / `WSASendTo` / `recvfrom` / `WSARecvFrom` 与已连接 UDP，复用现有 SOCKS5 UDP ASSOCIATE 通道，覆盖 HTTP/3（QUIC）、语音通话与自定义 UDP 工具。 |
-| 2 | 32 位（WOW64）进程注入 | 新增 `proxyclaw_hook32.dll` 的 x86 构建与便携包打包，双架构注入器按目标进程位数自动注入 64/32 位 DLL，不再跳过 32 位桌面应用与旧组件。 |
-| 3 | Hook 注入与跳过可观测性 | 在进程树与网络活动（及决定原因）中明确标注未能注入的具体原因（AppContainer / 沙盒、仅允许微软签名模块、注入失败等），替代静默直连，便于排障。 |
-| 4 | SOCKS5 用户名 / 密码认证 | 实现 RFC 1929（方法 `0x02`），代理组支持可选用户名与密码，覆盖 TCP 中继、UDP 关联、连通性测速与 DNS 转发；凭据不写入运行日志。 |
-
-**验收**
-
-- Hook 模式下 64 位与 32 位进程的 TCP 及 UDP 流量（回环 SOCKS5 UDP e2e）均能按规则走代理，子进程例外与网段过滤行为与 WinDivert 一致。
-- 不可注入的受保护/沙盒进程在界面有明确的跳过原因标注。
-- 配置用户名/密码的 SOCKS5 代理组可正常通过回环认证代理完成 TCP/UDP 转发与测速，且日志不出现明文密码。
 
 ## v0.18：性能基准、资源上限与真机诊断
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.17.0 (2026-11-26)
+
+### Added
+
+- Hook mode UDP proxy (v0.17 #1): injected DLL now intercepts `sendto`,
+  `WSASendTo`, `WSASendMsg` (direct and `mswsock` extension), `recvfrom`,
+  `WSARecvFrom`, `WSARecvMsg`, connected UDP (`connect` / `WSAConnect`),
+  `WSAGetOverlappedResult`, and `GetQueuedCompletionStatus(Ex)`, redirecting
+  matched UDP flows to per-flow host loopback relays (`hook_udp_relay.hpp`)
+  backed by `Socks5UdpManager` (SOCKS5 UDP ASSOCIATE) without modifying
+  datagram payload bytes. Inbound replies restore the original remote address,
+  and `/api/udp` restores the real destination and recorded `PROXIED` decision.
+- Hook mode 32-bit (WOW64) process injection & dual-arch packaging (v0.17 #2):
+  added Win32 build target `proxyclaw_hook32.dll` (bundled alongside
+  `proxyclaw_hook64.dll` in portable releases), PE32 export lookup for remote
+  x86 `LoadLibraryW` injection (`pe32_export.hpp`), and cross-architecture
+  child injection (`x64 <-> WOW64`) via `DetourProcessViaHelperW` +
+  `DetourFinishHelperProcess @1`.
+- Hook mode injection & skip-reason observability (v0.17 #3): tracks per-process
+  injection status (`injected`, `pending`, `wow64`, `restricted`, `signed_only`,
+  `open_failed`, `failed`) across the process tree (`hook_status` badges &
+  tooltips), `/api/stats` (`interception.hook.live_injected` and `skip_reasons`,
+  surfaced in Settings → Engine Status), and `/api/tcp` / `/api/udp` rows
+  (`IGNORED` with `hook_skip_*` route reasons instead of silently claiming
+  `PROXIED`).
+- SOCKS5 username / password authentication (RFC 1929, v0.17 #4): proxy groups
+  now accept optional `username` and `password` across TCP relay, UDP
+  ASSOCIATE, DNS forwarding, and staged connectivity probing; credentials are
+  never written to logs and can be edited per group in the Proxies tab.
+
 ## v0.16.0 (2026-11-25)
 
 ### Changed

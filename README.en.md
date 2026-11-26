@@ -20,8 +20,8 @@
 - **Per-process proxying**: built on WinDivert; only processes matched by a rule are forwarded, system routes are untouched.
 - **Process trees**: once a rule matches, child processes follow, which suits multi-process apps like Chromium / Electron.
 - **Rules**: match by process name, path or command-line keywords, limited to TCP / UDP, CIDRs and ports; network activity shows the rule and reason behind every connection.
-- **Proxy groups and speed test**: multiple SOCKS5 back ends, staged speed test that shows which step failed.
-- **Two interception modes**: the WinDivert driver (default), or hook injection (no driver; a DLL is injected into proxied processes, TCP only for now). Settings → Network → Interception, applies after a restart.
+- **Proxy groups and speed test**: multiple SOCKS5 back ends (with optional username/password auth), staged speed test that shows which step failed.
+- **Two interception modes**: the WinDivert driver (default), or hook injection (no driver; injects a 64- or 32-bit DLL into proxied processes for TCP and UDP, with skip reasons shown in the UI). Settings → Network → Interception, applies after a restart.
 - **Optional DNS proxy**, **UDP forwarding**, tray mode, silent autostart, light and dark themes.
 
 ## Quick start

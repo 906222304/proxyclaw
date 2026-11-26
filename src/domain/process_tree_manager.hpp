@@ -51,6 +51,7 @@
 #include "domain/tree_change_receiver.hpp" // push_urgency + tree_change_receiver
 #include "process/etw_consumer.hpp"        // etw_consumer + etw_process_event
 #include "process/flat_tree.hpp"
+#include "process/process_info_cache.hpp"
 #include "rules/rule_engine_v3.hpp"
 
 namespace clew {
@@ -110,6 +111,9 @@ public:
     [[nodiscard]] flat_tree&             tree()        noexcept { return tree_; }
     [[nodiscard]] const rule_engine_v3&  rules() const noexcept { return rules_; }
     [[nodiscard]] rule_engine_v3&        rules()       noexcept { return rules_; }
+    // Thread-safe shared (pid, psn) process metadata cache (safe off-strand).
+    [[nodiscard]] const process_info_cache& info_cache() const noexcept { return info_cache_; }
+    [[nodiscard]] process_info_cache&       info_cache()       noexcept { return info_cache_; }
     // is_initialized: true once start() has been called and rundown was
     // requested. The tree may still be filling from rundown events, but
     // HTTP API can serve from the partial state — UI startup time greatly
@@ -154,8 +158,9 @@ private:
     asio::steady_timer  lost_debounce_timer_;
     asio::steady_timer  orphan_sweep_timer_;
 
-    flat_tree       tree_;
-    rule_engine_v3  rules_;
+    process_info_cache info_cache_;
+    flat_tree          tree_;
+    rule_engine_v3     rules_;
 
     std::unique_ptr<etw_consumer> etw_;
 

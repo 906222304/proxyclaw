@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "core/scoped_exit.hpp"
+#include "process/process_info_cache.hpp"
 
 namespace clew {
 
@@ -340,7 +341,8 @@ struct live_process_info {
     DWORD        parent_pid{0};
     uint64_t     psn{INVALID_PSN};
     FILETIME     create_time{};
-    std::wstring name;  // basename only, matching the ETW ImageName convention
+    std::wstring name;        // basename only, matching the ETW ImageName convention
+    std::string  image_path;  // UTF-8 full image path (seeds process_info_cache)
 };
 
 // Returns false when the process cannot be opened or identified (already gone,
@@ -371,6 +373,16 @@ inline bool query_live_process(DWORD pid, live_process_info& out) {
     out.parent_pid  = query_parent_pid(h.get());
     out.create_time = query_process_create_time(h.get());
     out.name.assign(basename);
+    out.image_path.clear();
+    if (path_len > 0) {
+        const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, path_buf, static_cast<int>(path_len),
+                                                 nullptr, 0, nullptr, nullptr);
+        if (utf8_len > 0) {
+            out.image_path.resize(static_cast<size_t>(utf8_len));
+            WideCharToMultiByte(CP_UTF8, 0, path_buf, static_cast<int>(path_len),
+                                out.image_path.data(), utf8_len, nullptr, nullptr);
+        }
+    }
     return true;
 }
 
@@ -382,6 +394,37 @@ inline uint64_t query_live_psn(DWORD pid) {
     auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
     if (!h) return INVALID_PSN;
     return query_process_psn(h.get());
+}
+
+// Result of a single-handle PSN-verified metadata query (v0.18 #3).
+// Opening the process once pins the kernel process object so its PID cannot be
+// recycled mid-query; checking PSN before reading image_path / cmdline /
+// PackageFamilyName prevents attributing a newer process's metadata to a stale
+// tree entry whose ETW STOP has not yet arrived.
+struct process_info_query_result {
+    bool               same_process{true};  // false: PID recycled to a different PSN
+    bool               opened{false};       // false: exited or PPL-protected
+    process_info_value info;
+};
+
+inline process_info_query_result query_process_info_verified(DWORD pid, uint64_t expected_psn) {
+    process_info_query_result out;
+    auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    if (!h) return out;
+    const uint64_t live = query_process_psn(h.get());
+    if (expected_psn != INVALID_PSN && live != INVALID_PSN && live != expected_psn) {
+        out.same_process = false;
+        return out;
+    }
+    out.opened = true;
+    out.info.image_path = query_process_image_path(h.get());
+    out.info.cmdline    = query_process_cmdline(h.get());
+    out.info.package_family_name = query_process_package_family(h.get());
+    if (out.info.package_family_name.empty() && !out.info.image_path.empty()) {
+        out.info.package_family_name = extract_package_family_from_path(out.info.image_path);
+    }
+    out.info.queried_mask = kFieldAll;
+    return out;
 }
 
 // Side-map value: index into entries_ + PSN tag for disambiguation.

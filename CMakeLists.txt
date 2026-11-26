@@ -365,6 +365,9 @@ if(BUILD_TESTING AND WIN32)
     # v0.14 #8: icon cache bookkeeping (LRU cap, negative entries + backoff).
     proxyclaw_unit_test(icon_store_tests
         SOURCES tests/test_icon_store.cpp)
+    # v0.18 #3: bounded (pid, psn) process metadata cache.
+    proxyclaw_unit_test(process_info_cache_tests
+        SOURCES tests/test_process_info_cache.cpp)
     # v0.14 #5: IPv6 block (SYN verdict gate, RST builder, local-scope check).
     proxyclaw_unit_test(ipv6_gate_tests
         SOURCES tests/test_ipv6_gate.cpp)

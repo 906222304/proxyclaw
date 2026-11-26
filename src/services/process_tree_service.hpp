@@ -17,12 +17,14 @@
 
 #include "domain/strand_bound.hpp"
 #include "hook/hook_status.hpp"
+#include "process/process_info_cache.hpp"
 
 namespace clew {
 
 class process_tree_service {
 public:
-    explicit process_tree_service(strand_bound_manager& exec);
+    explicit process_tree_service(strand_bound_manager& exec,
+                                  process_info_cache* info_cache = nullptr);
 
     process_tree_service(const process_tree_service&)            = delete;
     process_tree_service& operator=(const process_tree_service&) = delete;
@@ -55,6 +57,7 @@ public:
 
 private:
     strand_bound_manager& exec_;
+    process_info_cache*   info_cache_{nullptr};
     hook::status_provider hook_status_provider_;
 };
 

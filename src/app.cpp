@@ -87,7 +87,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , connection_svc_(exec_, udp_port_tracker_.get(), &udp_session_table_, decision_log_.get())
     , group_svc_(exec_, cfg_store_, &ipv6_egress_)
     , icon_svc_(icons_)
-    , process_svc_(exec_)
+    , process_svc_(exec_, &tree_mgr_.info_cache())
     , rule_svc_(exec_, cfg_store_)
     , stats_svc_(exec_, [this]() { return traffic_stats(); })
     , ctx_{

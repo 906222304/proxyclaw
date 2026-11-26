@@ -252,7 +252,7 @@ private:
                 note_drop("port table full");
                 return;
             }
-            it = ports_.emplace(d.app_port, PortState{}).first;
+            it = ports_.try_emplace(d.app_port).first;
             record_port_count();
         }
         auto& port = it->second;

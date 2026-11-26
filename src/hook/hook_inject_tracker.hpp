@@ -11,15 +11,18 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
+
+#include "hook/hook_status.hpp"
 
 namespace clew::hook {
 
 class inject_tracker {
 public:
-    using key = std::pair<uint32_t, uint64_t>;   // (pid, psn)
+    using key = process_key;   // (pid, psn)
 
     struct sweep_batch {
         std::vector<key> wanted;
@@ -44,11 +47,39 @@ public:
 
     bool is_done(const key& k) const { return done_.contains(k); }
 
+    std::optional<inject_status> status_of(const key& k) const {
+        const auto it = done_.find(k);
+        if (it == done_.end()) return std::nullopt;
+        return it->second.status;
+    }
+
+    status_map snapshot_statuses() const {
+        status_map out;
+        for (const auto& [k, e] : done_) out.emplace(k, e.status);
+        return out;
+    }
+
+    status_counts count_statuses() const noexcept {
+        status_counts c;
+        for (const auto& [_, e] : done_) {
+            switch (e.status) {
+            case inject_status::injected:    ++c.injected;    break;
+            case inject_status::wow64:       ++c.wow64;       break;
+            case inject_status::restricted:  ++c.restricted;  break;
+            case inject_status::signed_only: ++c.signed_only; break;
+            case inject_status::open_failed: ++c.open_failed; break;
+            case inject_status::failed:      ++c.failed;      break;
+            case inject_status::pending:     break;
+            }
+        }
+        return c;
+    }
+
     // Called on the strand when decide_child() approves import-table injection:
     // stamp with gen_ + 1 so any in-flight sweep (gen <= gen_) won't prune it
     // before the next sweep sees the child in the tree.
     void mark_child(const key& k) {
-        done_[k] = entry{gen_ + 1, /*from_child=*/true};
+        done_[k] = entry{gen_ + 1, /*from_child=*/true, inject_status::injected};
     }
 
     // Called on the strand if DetourUpdateProcessWithDll fails in the parent:
@@ -62,19 +93,24 @@ public:
     }
 
     // Called by the injector thread after inject_into() finishes for sweep `gen`.
-    void mark_swept(const key& k, uint64_t gen) {
-        done_[k] = entry{gen, /*from_child=*/false};
+    void mark_swept(const key& k, uint64_t gen, inject_status status = inject_status::injected) {
+        done_[k] = entry{gen, /*from_child=*/false, status};
     }
 
     // Called by the injector thread at the end of sweep `gen`: forget entries
-    // absent from `live` whose generation is <= `gen`.
-    void prune(const std::set<key>& live, uint64_t gen) {
+    // absent from `live` whose generation is <= `gen`. Returns true if any
+    // entry was pruned.
+    bool prune(const std::set<key>& live, uint64_t gen) {
+        bool removed = false;
         for (auto it = done_.begin(); it != done_.end();) {
-            if (!live.contains(it->first) && it->second.gen <= gen)
+            if (!live.contains(it->first) && it->second.gen <= gen) {
                 it = done_.erase(it);
-            else
+                removed = true;
+            } else {
                 ++it;
+            }
         }
+        return removed;
     }
 
     std::size_t done_count() const noexcept { return done_.size(); }
@@ -83,6 +119,7 @@ private:
     struct entry {
         uint64_t gen{0};
         bool from_child{false};
+        inject_status status{inject_status::injected};
     };
 
     uint64_t gen_{0};

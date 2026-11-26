@@ -52,7 +52,10 @@ process_tree_service::process_tree_service(strand_bound_manager& exec)
     : exec_(exec) {}
 
 nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
-    auto result = exec_.query([pid](const domain::process_tree_manager& m) -> nlohmann::json {
+    std::optional<hook::status_map> statuses;
+    if (hook_status_provider_) statuses = hook_status_provider_();
+    const auto* hs = statuses ? &*statuses : nullptr;
+    auto result = exec_.query([pid, hs](const domain::process_tree_manager& m) -> nlohmann::json {
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
         if (idx == INVALID_IDX) return {};
@@ -62,7 +65,7 @@ nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
         // sticky-tree-bug wininit-1032 crash signature.
         const auto* entry = tree.try_at(idx);
         if (!entry || !entry->alive) return {};
-        return process_entry_to_json(tree, m.rules(), idx, true);
+        return process_entry_to_json(tree, m.rules(), idx, true, hs);
     });
     if (result.is_null() || result.empty()) {
         throw api_exception{api_error::not_found, "Process not found"};
@@ -72,13 +75,16 @@ nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
 
 nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid,
                                                          std::optional<std::uint64_t> psn) const {
-    auto result = exec_.query([pid](const domain::process_tree_manager& m) -> nlohmann::json {
+    std::optional<hook::status_map> statuses;
+    if (hook_status_provider_) statuses = hook_status_provider_();
+    const auto* hs = statuses ? &*statuses : nullptr;
+    auto result = exec_.query([pid, hs](const domain::process_tree_manager& m) -> nlohmann::json {
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
         if (idx == INVALID_IDX) return {};
         const auto* entry = tree.try_at(idx);
         if (!entry || !entry->alive) return {};
-        return process_entry_to_json(tree, m.rules(), idx, true);
+        return process_entry_to_json(tree, m.rules(), idx, true, hs);
     });
     if (result.is_null() || result.empty()) {
         throw api_exception{api_error::not_found, "Process not found"};
@@ -101,7 +107,10 @@ nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid,
 }
 
 nlohmann::json process_tree_service::list_hijacked() const {
-    return exec_.query([](const domain::process_tree_manager& m) -> nlohmann::json {
+    std::optional<hook::status_map> statuses;
+    if (hook_status_provider_) statuses = hook_status_provider_();
+    const auto* hs = statuses ? &*statuses : nullptr;
+    return exec_.query([hs](const domain::process_tree_manager& m) -> nlohmann::json {
         const auto& tree  = m.tree();
         const auto& rules = m.rules();
         auto pids = rules.get_hijacked_pids(tree);
@@ -118,6 +127,9 @@ nlohmann::json process_tree_service::list_hijacked() const {
             p["name"]           = std::string(e.name_u8);
             p["hijacked"]       = true;
             p["hijack_source"]  = hijack_source_from_match(match);
+            if (const char* status = hook_status_for_entry(e, hs)) {
+                p["hook_status"] = status;
+            }
             arr.push_back(std::move(p));
         }
         return arr;

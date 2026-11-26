@@ -28,6 +28,11 @@ export const ROUTE_REASONS: Record<string, string> = {
   ipv6: 'IPv6 未接管，直连',
   ipv6_blocked: 'IPv6 已阻断，回落 IPv4 走代理',
   ipv6_no_egress: '代理无法访问 IPv6，已阻断并回落 IPv4',
+  hook_skip_wow64: 'Hook 模式未注入（32 位进程缺少 32 位 DLL），连接直连',
+  hook_skip_restricted: 'Hook 模式未注入（AppContainer / 低完整性沙盒进程），连接直连',
+  hook_skip_signed_only: 'Hook 模式未注入（进程仅允许加载微软/商店签名模块），连接直连',
+  hook_skip_open_failed: 'Hook 模式未注入（受保护进程或权限不足，无法打开进程），连接直连',
+  hook_skip_failed: 'Hook 模式注入失败（远程加载 DLL 失败或超时），连接直连',
 }
 
 /** Decision reasons that are not route reasons (tooltip "原因" line). */
@@ -50,6 +55,11 @@ export const REASON_LABELS: Record<string, string> = {
   ipv6: 'IPv6 未接管',
   ipv6_blocked: 'IPv6 已阻断',
   ipv6_no_egress: '代理无 IPv6',
+  hook_skip_wow64: '未注入·32位',
+  hook_skip_restricted: '未注入·沙盒',
+  hook_skip_signed_only: '未注入·签名限制',
+  hook_skip_open_failed: '未注入·无权限',
+  hook_skip_failed: '注入失败',
 }
 
 export const MANUAL_LABEL = '手动'
@@ -95,8 +105,8 @@ export function hitInfo(c: ApiConnection, names: RuleNames): HitInfo {
 
   const source = d ? d.source : c.estimate?.source ?? null
   const ruleId = d ? d.rule_id : c.estimate?.rule_id ?? null
-  if (d && REASON_LABELS[d.reason]) {
-    info.label = REASON_LABELS[d.reason]!
+  if (reasonKey && REASON_LABELS[reasonKey]) {
+    info.label = REASON_LABELS[reasonKey]!
     info.kind = 'reason'
   } else if (source === 'manual') {
     info.label = MANUAL_LABEL
@@ -106,7 +116,7 @@ export function hitInfo(c: ApiConnection, names: RuleNames): HitInfo {
     info.kind = 'rule'
     info.inherited = source === 'tree'
   }
-  info.estimated = !d && c.decision_source === 'recomputed' && info.kind !== 'none'
+  info.estimated = !d && c.decision_source === 'recomputed' && info.kind !== 'none' && info.kind !== 'reason'
   if (d) info.atMs = d.at_ms
   // The hint matters where a rule / hijack was involved, or the process is
   // proxied now although this connection was decided direct. A plain direct

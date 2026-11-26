@@ -122,6 +122,50 @@ static void child_failed_enables_sweep_fallback() {
     CHECK(tr.is_done(parent));
 }
 
+static void status_tracking_and_counts() {
+    using clew::hook::inject_status;
+    inject_tracker tr;
+    const inject_tracker::key p1{101, 1};
+    const inject_tracker::key p2{102, 2};
+    const inject_tracker::key p3{103, 3};
+    const inject_tracker::key p4{104, 4};
+
+    CHECK(tr.publish_wanted({p1, p2, p3, p4}) == 1);
+    const auto b = tr.take_wanted();
+    tr.mark_swept(p1, b.gen, inject_status::injected);
+    tr.mark_swept(p2, b.gen, inject_status::restricted);
+    tr.mark_swept(p3, b.gen, inject_status::signed_only);
+    tr.mark_swept(p4, b.gen, inject_status::failed);
+
+    CHECK(tr.status_of(p1) == inject_status::injected);
+    CHECK(tr.status_of(p2) == inject_status::restricted);
+    CHECK(tr.status_of(p3) == inject_status::signed_only);
+    CHECK(tr.status_of(p4) == inject_status::failed);
+    CHECK(!tr.status_of({999, 9}).has_value());
+
+    const auto c = tr.count_statuses();
+    CHECK(c.injected == 1 && c.restricted == 1 && c.signed_only == 1 && c.failed == 1 &&
+          c.wow64 == 0 && c.open_failed == 0);
+
+    const auto snap = tr.snapshot_statuses();
+    CHECK(snap.size() == 4 && snap.at(p2) == inject_status::restricted);
+
+    CHECK(clew::hook::hook_skip_reason_name(inject_status::injected) == nullptr);
+    CHECK(clew::hook::hook_skip_reason_name(inject_status::pending) == nullptr);
+    CHECK(std::string(clew::hook::hook_skip_reason_name(inject_status::restricted)) == "hook_skip_restricted");
+    CHECK(std::string(clew::hook::hook_skip_reason_name(inject_status::signed_only)) == "hook_skip_signed_only");
+    CHECK(std::string(clew::hook::hook_skip_reason_name(inject_status::wow64)) == "hook_skip_wow64");
+    CHECK(std::string(clew::hook::hook_skip_reason_name(inject_status::open_failed)) == "hook_skip_open_failed");
+    CHECK(std::string(clew::hook::hook_skip_reason_name(inject_status::failed)) == "hook_skip_failed");
+
+    // Pruning a departed skipped process removes it from counts and snapshot.
+    CHECK(tr.publish_wanted({p1}) == 2);
+    const auto b2 = tr.take_wanted();
+    CHECK(tr.prune({p1}, b2.gen));
+    const auto c2 = tr.count_statuses();
+    CHECK(c2.injected == 1 && c2.restricted == 0 && c2.signed_only == 0 && c2.failed == 0);
+}
+
 int main() {
     const std::pair<const char*, void(*)()> cases[] = {
         {"a flow is taken once", taken_once},
@@ -131,6 +175,7 @@ int main() {
         {"wire layout is fixed", wire_layout},
         {"child registered during sweep is not pruned prematurely", child_survives_inflight_sweep},
         {"child_failed clears only child entries for sweep fallback", child_failed_enables_sweep_fallback},
+        {"inject_status tracking, snapshots, and skip reason mapping", status_tracking_and_counts},
     };
     int failures = 0;
     for (const auto& [name, test] : cases) {

@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include "domain/strand_bound.hpp"
+#include "hook/hook_status.hpp"
 
 namespace clew {
 
@@ -42,6 +43,11 @@ public:
     // Hook mode's IPv4 loopback relay port (0 when WinDivert is active).
     void set_hook_relay_port(uint16_t port) noexcept {
         hook_relay_port_.store(port, std::memory_order_relaxed);
+    }
+
+    // Optional provider for Hook mode per-process injection outcomes.
+    void set_hook_status_provider(hook::status_provider provider) {
+        hook_status_provider_ = std::move(provider);
     }
 
     // GET /api/tcp?pid=X — TCP table with hijack status.
@@ -67,6 +73,7 @@ private:
     const UdpSessionTable* udp_sessions_;
     const DecisionLog*     decisions_;
     std::atomic<uint16_t>  hook_relay_port_{0};
+    hook::status_provider  hook_status_provider_;
 };
 
 } // namespace clew

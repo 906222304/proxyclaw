@@ -43,6 +43,7 @@
 #endif
 
 #include "domain/tree_change_receiver.hpp"
+#include "hook/hook_status.hpp"
 
 namespace clew {
 
@@ -63,6 +64,12 @@ public:
     // Wired from app.cpp once the WebView2 host (which implements the sink)
     // has been created. Setting to nullptr is safe — push() short-circuits.
     void set_sink(frontend_push_sink* sink) noexcept { sink_.store(sink); }
+
+    // Optional provider for Hook mode per-process injection status.
+    // Must be called before traffic layers / sweeps start.
+    void set_hook_status_provider(hook::status_provider provider) {
+        hook_status_provider_ = std::move(provider);
+    }
 
     // Visibility hand-off from webview_app::set_visible. Hidden -> we drop
     // on_tree_changed work entirely; becoming visible queues a fresh replay.
@@ -94,6 +101,7 @@ private:
 #endif
 
     std::atomic<frontend_push_sink*>                sink_{nullptr};
+    hook::status_provider                           hook_status_provider_;
     // Guarded by a mutex instead of atomic<shared_ptr<T>> (not in libc++,
     // which the Zig test builds use) or the deprecated atomic_load/store
     // free functions. Held only for a pointer copy.

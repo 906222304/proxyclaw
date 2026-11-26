@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "domain/strand_bound.hpp"
+#include "hook/hook_status.hpp"
 
 namespace clew {
 
@@ -25,6 +26,10 @@ public:
 
     process_tree_service(const process_tree_service&)            = delete;
     process_tree_service& operator=(const process_tree_service&) = delete;
+
+    void set_hook_status_provider(hook::status_provider provider) {
+        hook_status_provider_ = std::move(provider);
+    }
 
     // /api/processes/:pid
     [[nodiscard]] nlohmann::json find_process(std::uint32_t pid) const;
@@ -50,6 +55,7 @@ public:
 
 private:
     strand_bound_manager& exec_;
+    hook::status_provider hook_status_provider_;
 };
 
 } // namespace clew

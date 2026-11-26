@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { revealFile } from '@/api/client'
 import { useExcludeProcess, useRestoreProcess } from '@/api/mutations'
 import { autoRulesQuery } from '@/api/queries'
-import type { ProcessInfo } from '@/api/types'
+import type { HookStatus, ProcessInfo } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { MoreMenu, type MenuItem } from '@/components/ui/menu'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -13,6 +13,81 @@ import { excludeActionFor, hijackKind, type ExcludeAction } from '@/lib/exclusio
 import { dirOf, exeFromCmdline } from '@/lib/process'
 import { pushError, pushSuccess } from '@/lib/toast'
 import { cn } from '@/lib/utils'
+
+export interface HookSkipPresentation {
+  label: string
+  tooltip: string
+  tone: 'warning' | 'error'
+}
+
+const HOOK_SKIP_META: Partial<Record<HookStatus, HookSkipPresentation>> = {
+  wow64: {
+    label: '未注入：32位',
+    tooltip: 'Hook 模式未注入：32 位进程（缺少 32 位 DLL），其连接保持直连',
+    tone: 'warning',
+  },
+  restricted: {
+    label: '未注入：沙盒',
+    tooltip: 'Hook 模式未注入：AppContainer / 低完整性沙盒进程，其连接保持直连',
+    tone: 'warning',
+  },
+  signed_only: {
+    label: '未注入：仅微软签名',
+    tooltip: 'Hook 模式未注入：进程仅允许加载微软/商店签名模块，其连接保持直连',
+    tone: 'warning',
+  },
+  open_failed: {
+    label: '未注入：权限不足',
+    tooltip: 'Hook 模式未注入：受保护进程或权限不足，无法打开进程，其连接保持直连',
+    tone: 'error',
+  },
+  failed: {
+    label: '注入失败',
+    tooltip: 'Hook 模式注入失败：远程加载 DLL 失败或超时，其连接保持直连',
+    tone: 'error',
+  },
+}
+
+export function hookSkipInfo(status?: HookStatus): HookSkipPresentation | null {
+  return status ? HOOK_SKIP_META[status] ?? null : null
+}
+
+/** Warning/error badge shown on a proxied process that Hook mode could not inject. */
+export function HookSkipBadge({ status, className }: { status?: HookStatus; className?: string }) {
+  const info = hookSkipInfo(status)
+  if (!info) return null
+  return (
+    <Tooltip content={info.tooltip}>
+      <span
+        data-testid="hook-skip-badge"
+        className={cn(
+          'shrink-0 rounded border px-1 text-2xs leading-4',
+          info.tone === 'error'
+            ? 'border-destructive/30 bg-destructive-soft text-destructive'
+            : 'border-warning/30 bg-warning-soft text-warning',
+          className,
+        )}
+      >
+        {info.label}
+      </span>
+    </Tooltip>
+  )
+}
+
+/** Compact tree-row dot for a proxied process skipped/failed by Hook injection. */
+export function HookSkipDot({ status }: { status?: HookStatus }) {
+  const info = hookSkipInfo(status)
+  if (!info) return null
+  return (
+    <Tooltip content={info.tooltip}>
+      <span
+        data-testid="hook-skip-dot"
+        aria-label={info.label}
+        className={cn('size-1.5 shrink-0 rounded-full', info.tone === 'error' ? 'bg-destructive' : 'bg-warning')}
+      />
+    </Tooltip>
+  )
+}
 
 /** Split a process into its directory, exe name and arguments. */
 export function describeProcess(node: ProcessInfo) {
@@ -157,7 +232,9 @@ export function ProcessContextHeader({ process, onCreateRule }: {
         <div className="group/path min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-sm font-medium">{process.name}</span>
-            <HijackDot source={process.hijack_source} />
+            {process.hijacked && hookSkipInfo(process.hook_status)
+              ? <HookSkipBadge status={process.hook_status} />
+              : <HijackDot source={process.hijack_source} />}
             {action?.kind === 'restore' && <ExcludedBadge />}
           </div>
           <div className="relative flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">

@@ -136,4 +136,38 @@ describe('EngineStatusCard and config import', () => {
     expect(putCalls).toHaveLength(1)
     expect(putCalls[0]).toEqual({ url: '/api/config', body: imported })
   })
+
+  it('shows Hook mode injected and skip-reason breakdown badges', async () => {
+    routes = {
+      '/api/config': { ...baseConfig, interception: { mode: 'hook' } },
+      '/api/autostart': { enabled: false, start_minimized: false, location_trusted: true },
+      '/api/stats': {
+        hijacked_pids: 5,
+        auto_rules_count: 1,
+        tree_ready: true,
+        process_count: 80,
+        dns: { state: 'off' },
+        interception: {
+          mode: 'hook',
+          active: true,
+          hook: {
+            injected: 3,
+            live_injected: 2,
+            inject_skipped: 2,
+            inject_failed: 1,
+            skip_reasons: { wow64: 0, restricted: 1, signed_only: 1, open_failed: 0, failed: 1 },
+          },
+        },
+        decisions: { written: 12, dropped: 0, capacity: 4096 },
+      },
+    }
+    await render()
+
+    const summary = host.querySelector('[data-testid="engine-hook-summary"]')
+    expect(summary?.textContent).toContain('已注入 2')
+    expect(summary?.textContent).toContain('沙盒跳过 1')
+    expect(summary?.textContent).toContain('仅签名跳过 1')
+    expect(summary?.textContent).toContain('注入失败 1')
+    expect(summary?.textContent).not.toContain('32位跳过')
+  })
 })

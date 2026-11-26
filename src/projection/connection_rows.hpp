@@ -67,6 +67,11 @@ struct connection_facts {
     // rules (null = no conflict). Computed once per distinct PID on the
     // strand and shared by all of its rows.
     std::shared_ptr<const rule_conflict> conflict;
+    // v0.17 #3: in Hook mode, when a proxied process could not be injected
+    // (wow64, restricted, signed_only, open_failed, failed), its unrecorded
+    // connections report IGNORED with this `hook_skip_*` route_reason instead
+    // of guessing PROXIED from the rule.
+    const char* hook_skip_reason{nullptr};
 };
 
 // A record written by a layer that knows the PID must name this row's PID;

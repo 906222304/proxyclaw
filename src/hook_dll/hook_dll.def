@@ -1,4 +1,6 @@
 LIBRARY proxyclaw_hook64
 EXPORTS
-    ; Detours requires ordinal 1 in a DLL added to a process's import table.
-    proxyclaw_hook_marker @1
+    ; Detours requires ordinal 1 in a DLL added to a process's import table,
+    ; and rundll32.exe invokes #1 for cross-architecture (x64 <-> WOW64)
+    ; child injection via DetourProcessViaHelperW.
+    DetourFinishHelperProcess @1

@@ -57,6 +57,39 @@ if(MSVC)
     set(PROXYCLAW_MSVC_WARNINGS /W4 /external:anglebrackets /external:W0)
 endif()
 
+# Option to build only the 32-bit (x86) Hook DLL + e2e probe (-A Win32).
+# Keeps the x86 build completely independent of x64 vcpkg packages.
+option(PROXYCLAW_HOOK32_ONLY "Build only x86 proxyclaw_hook32.dll and hook32_probe.exe" OFF)
+set(PROXYCLAW_DETOURS_DIR "" CACHE PATH "Microsoft Detours source tree (contains src/detours.h)")
+if(PROXYCLAW_HOOK32_ONLY)
+    if(NOT (WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4))
+        message(FATAL_ERROR "PROXYCLAW_HOOK32_ONLY requires a 32-bit (Win32) MSVC build")
+    endif()
+    if(NOT EXISTS "${PROXYCLAW_DETOURS_DIR}/src/detours.h")
+        message(FATAL_ERROR "PROXYCLAW_DETOURS_DIR must point to a Microsoft Detours source tree")
+    endif()
+    set(DETOURS_SRC "${PROXYCLAW_DETOURS_DIR}/src")
+    add_library(detours STATIC
+        ${DETOURS_SRC}/detours.cpp ${DETOURS_SRC}/modules.cpp ${DETOURS_SRC}/disasm.cpp
+        ${DETOURS_SRC}/image.cpp ${DETOURS_SRC}/creatwth.cpp ${DETOURS_SRC}/disolx86.cpp
+        ${DETOURS_SRC}/disolx64.cpp ${DETOURS_SRC}/disolia64.cpp ${DETOURS_SRC}/disolarm.cpp
+        ${DETOURS_SRC}/disolarm64.cpp)
+    target_include_directories(detours SYSTEM PUBLIC ${DETOURS_SRC})
+    target_compile_definitions(detours PRIVATE DETOUR_DEBUG=0)
+    target_compile_options(detours PRIVATE /W3 /wd4091)
+
+    add_library(proxyclaw_hook32 SHARED src/hook_dll/hook_dll.cpp src/hook_dll/hook_dll32.def)
+    target_include_directories(proxyclaw_hook32 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(proxyclaw_hook32 PRIVATE detours ws2_32)
+    target_compile_options(proxyclaw_hook32 PRIVATE ${PROXYCLAW_MSVC_WARNINGS} /EHsc)
+
+    add_executable(hook32_probe tests/hook32_probe.cpp)
+    target_link_libraries(hook32_probe PRIVATE ws2_32)
+    target_compile_options(hook32_probe PRIVATE ${PROXYCLAW_MSVC_WARNINGS} /EHsc)
+    message(STATUS "32-bit Hook-mode DLL enabled (Detours at ${PROXYCLAW_DETOURS_DIR})")
+    return()
+endif()
+
 # Option to enable WebView2 GUI support
 option(PROXYCLAW_ENABLE_WEBVIEW2 "Enable WebView2 GUI support" OFF)
 set(PROXYCLAW_WINDIVERT_DIR "${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64" CACHE PATH

@@ -1,12 +1,15 @@
-// Hook mode: flow table, inject tracker, and the pipe wire format.
+// Hook mode: flow table, inject tracker, PE32 export lookup, and wire format.
 #include "hook/hook_flow_table.hpp"
 #include "hook/hook_inject_tracker.hpp"
 #include "hook/hook_protocol.hpp"
+#include "hook/pe32_export.hpp"
 
 #include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <set>
 #include <stdexcept>
+#include <vector>
 
 using namespace std::chrono_literals;
 using clew::hook::flow;
@@ -166,6 +169,80 @@ static void status_tracking_and_counts() {
     CHECK(c2.injected == 1 && c2.restricted == 0 && c2.signed_only == 0 && c2.failed == 0);
 }
 
+static void wr16(std::vector<uint8_t>& buf, uint32_t off, uint16_t v) {
+    buf[off] = static_cast<uint8_t>(v & 0xFFu);
+    buf[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+}
+
+static void wr32(std::vector<uint8_t>& buf, uint32_t off, uint32_t v) {
+    buf[off]     = static_cast<uint8_t>(v & 0xFFu);
+    buf[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+    buf[off + 2] = static_cast<uint8_t>((v >> 16) & 0xFFu);
+    buf[off + 3] = static_cast<uint8_t>((v >> 24) & 0xFFu);
+}
+
+static void pe32_export_lookup() {
+    // Minimal synthetic mapped PE32 image with 3 sorted exports (including 1 forwarded).
+    std::vector<uint8_t> img(0x500, 0);
+    img[0] = 'M';
+    img[1] = 'Z';
+    const uint32_t lfanew = 0x80;
+    wr32(img, 0x3C, lfanew);
+    wr32(img, lfanew, 0x00004550u);        // "PE\0\0"
+    wr16(img, lfanew + 4, 0x014Cu);        // i386
+    wr16(img, lfanew + 20, 0xE0u);         // SizeOfOptionalHeader
+    wr16(img, lfanew + 24, 0x010Bu);       // PE32 optional magic
+    wr32(img, lfanew + 24 + 92, 16u);      // NumberOfRvaAndSizes
+    const uint32_t exp_rva = 0x200;
+    const uint32_t exp_size = 0x100;
+    wr32(img, lfanew + 24 + 96, exp_rva);
+    wr32(img, lfanew + 24 + 100, exp_size);
+
+    const uint32_t funcs_rva = 0x240;
+    const uint32_t names_rva = 0x260;
+    const uint32_t ords_rva  = 0x280;
+    wr32(img, exp_rva + 20, 3u);           // NumberOfFunctions
+    wr32(img, exp_rva + 24, 3u);           // NumberOfNames
+    wr32(img, exp_rva + 28, funcs_rva);
+    wr32(img, exp_rva + 32, names_rva);
+    wr32(img, exp_rva + 36, ords_rva);
+
+    // Functions: ord 0 -> Forwarded (inside export dir), ord 1 -> 0x12340, ord 2 -> 0x56780.
+    wr32(img, funcs_rva + 0, exp_rva + 0xE0);   // forwarded target inside [exp_rva, exp_rva+exp_size)
+    wr32(img, funcs_rva + 4, 0x12340u);
+    wr32(img, funcs_rva + 8, 0x56780u);
+
+    // Place third name right at end of buffer to exercise page-boundary byte-by-byte cstr fallback.
+    const char* n0 = "ForwardedFn";
+    const char* n1 = "LoadLibraryA";
+    const char* n2 = "LoadLibraryW";
+    const uint32_t s0 = 0x2A0;
+    const uint32_t s1 = 0x2C0;
+    const uint32_t s2 = static_cast<uint32_t>(img.size() - (std::strlen(n2) + 1));
+    std::memcpy(img.data() + s0, n0, std::strlen(n0) + 1);
+    std::memcpy(img.data() + s1, n1, std::strlen(n1) + 1);
+    std::memcpy(img.data() + s2, n2, std::strlen(n2) + 1);
+
+    wr32(img, names_rva + 0, s0); wr16(img, ords_rva + 0, 0);
+    wr32(img, names_rva + 4, s1); wr16(img, ords_rva + 2, 1);
+    wr32(img, names_rva + 8, s2); wr16(img, ords_rva + 4, 2);
+
+    auto reader = [&](uint32_t rva, void* dst, std::size_t len) -> bool {
+        if (static_cast<std::size_t>(rva) + len > img.size()) return false;
+        std::memcpy(dst, img.data() + rva, len);
+        return true;
+    };
+
+    CHECK(clew::hook::pe32::find_export_rva(reader, "LoadLibraryA") == 0x12340u);
+    CHECK(clew::hook::pe32::find_export_rva(reader, "LoadLibraryW") == 0x56780u);
+    CHECK(!clew::hook::pe32::find_export_rva(reader, "ForwardedFn").has_value());
+    CHECK(!clew::hook::pe32::find_export_rva(reader, "MissingSymbol").has_value());
+
+    // PE32+ (x64) optional header magic must be rejected.
+    wr16(img, lfanew + 24, 0x020Bu);
+    CHECK(!clew::hook::pe32::find_export_rva(reader, "LoadLibraryW").has_value());
+}
+
 int main() {
     const std::pair<const char*, void(*)()> cases[] = {
         {"a flow is taken once", taken_once},
@@ -176,6 +253,7 @@ int main() {
         {"child registered during sweep is not pruned prematurely", child_survives_inflight_sweep},
         {"child_failed clears only child entries for sweep fallback", child_failed_enables_sweep_fallback},
         {"inject_status tracking, snapshots, and skip reason mapping", status_tracking_and_counts},
+        {"PE32 export lookup resolves x86 symbols and rejects forwarded/PE64", pe32_export_lookup},
     };
     int failures = 0;
     for (const auto& [name, test] : cases) {

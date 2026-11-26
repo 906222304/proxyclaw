@@ -107,6 +107,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build 32-bit Hook DLL (WOW64) and e2e probe
+        shell: pwsh
+        run: |
+          cmake -S . -B build-hook32 -G "Visual Studio 18 2026" -A Win32 `
+            -DPROXYCLAW_HOOK32_ONLY=ON `
+            -DPROXYCLAW_DETOURS_DIR="$PWD/build/release-deps/Detours-1dbd4ea281d73d478aa8d09a8b83fbd265f715f7" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-hook32 --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item build-hook32/Release/proxyclaw_hook32.dll build/Release/proxyclaw_hook32.dll -Force
+          Copy-Item build-hook32/Release/hook32_probe.exe build/Release/hook32_probe.exe -Force
       - name: Loopback network tests (proxy health, DNS forwarder)
         run: |
           python tests/run_proxy_health_tests.py --exe build/Release/proxy_health_harness.exe
@@ -133,11 +145,13 @@ jobs:
             dist/*.zip.sha256
           if-no-files-found: error
           retention-days: 14
-      - name: Upload PDB for e2e crash-dump symbolization
+      - name: Upload PDB and 32-bit e2e probe
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: build-pdb
-          path: build/Release/proxyclaw.pdb
+          path: |
+            build/Release/proxyclaw.pdb
+            build/Release/hook32_probe.exe
           if-no-files-found: error
           retention-days: 3
 
@@ -160,7 +174,7 @@ jobs:
         with:
           name: windows-x64
           path: dist
-      - name: Download PDB
+      - name: Download PDB and 32-bit e2e probe
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: build-pdb
@@ -189,7 +203,7 @@ jobs:
       - name: Live hook-mode test (DLL injection, no driver)
         shell: pwsh
         run: |
-          python tests/e2e_hook_mode.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe"
+          python tests/e2e_hook_mode.py --exe "dist/$env:PACKAGE_NAME/proxyclaw.exe" --probe32 build/Release/hook32_probe.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Real-window WebView2 screenshot test (packaged app over CDP)
         shell: pwsh

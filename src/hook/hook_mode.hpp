@@ -67,9 +67,11 @@ public:
     mode(const mode&) = delete;
     mode& operator=(const mode&) = delete;
 
-    // False when the DLL is missing or the control pipe cannot be created;
-    // nothing is intercepted then.
-    bool start(const std::filesystem::path& dll);
+    // False when the 64-bit DLL is missing or the control pipe cannot be
+    // created; nothing is intercepted then. `dll32` is optional (missing
+    // proxyclaw_hook32.dll degrades gracefully to skipping 32-bit processes).
+    bool start(const std::filesystem::path& dll64,
+               const std::filesystem::path& dll32 = {});
     void stop();
 
     uint16_t relay_port_v4() const noexcept { return port_v4_.load(std::memory_order_relaxed); }
@@ -98,6 +100,7 @@ private:
     void  notify_status_changed();
 
     void schedule_sweep();                                    // strand
+    void publish_wanted_now();                                // strand
     void injector_loop(std::stop_token st);
 
     asio::io_context& ioc_;
@@ -111,6 +114,7 @@ private:
     const DWORD self_pid_;
 
     std::wstring dll_path_;
+    std::wstring dll32_path_;
     flow_table flows_;
     acceptor acceptor_v4_;
     acceptor acceptor_v6_;

@@ -70,9 +70,7 @@ bool g_connectex_hooked = false;   // under g_connectex_lock
 
 bool g_installed = false;
 char g_dll_ansi[MAX_PATH * 2] = {};     // own DLL path for DetourUpdateProcessWithDll (LPCSTR)
-#ifdef _WIN64
-char g_dll32_ansi[MAX_PATH * 2] = {};   // sibling proxyclaw_hook32.dll for x64 -> WOW64 children
-#endif
+bool g_sibling_dll_exists = false;      // sibling 32/64-bit DLL exists for DetourProcessViaHelperW
 thread_local bool t_in_create = false;
 
 // --- Original destinations of redirected sockets (getpeername) -------------
@@ -381,12 +379,9 @@ void carry_into_child(const PROCESS_INFORMATION& pi) {
 
     const bool child_wow64 = process_is_wow64(pi.hProcess);
 #ifdef _WIN64
-    const char* dll = child_wow64 ? g_dll32_ansi : g_dll_ansi;
-    if (!dll[0]) return;
+    const bool same_arch = !child_wow64;
 #else
-    // A 32-bit parent can patch 32-bit children directly; for a 64-bit child
-    // ask the host so it registers the child, then trigger immediate sweep.
-    const char* dll = child_wow64 ? g_dll_ansi : nullptr;
+    const bool same_arch = child_wow64;
 #endif
 
     request req{};
@@ -395,13 +390,19 @@ void carry_into_child(const PROCESS_INFORMATION& pi) {
     reply rep{};
     if (!ask_host(req, rep) || static_cast<verdict>(rep.verdict) != verdict::proxy) return;
 
-    if (!dll) {
-        req.type = static_cast<uint32_t>(msg_type::child_failed);
-        ask_host(req, rep);
-        return;
+    bool injected = false;
+    if (same_arch) {
+        LPCSTR dlls[1] = {g_dll_ansi};
+        injected = DetourUpdateProcessWithDll(pi.hProcess, dlls, 1) != FALSE;
+    } else if (g_sibling_dll_exists) {
+        // Cross-arch child (x64 -> WOW64 or WOW64 -> x64): Detours rejects
+        // cross-bitness import-table edits in-process, so hand off to the
+        // matching-bitness rundll32.exe helper (calling DetourFinishHelperProcess
+        // at ordinal #1 of the sibling 32/64-bit DLL). t_in_create is already
+        // true here so CreateProcessW inside the helper does not recurse.
+        injected = DetourProcessViaHelperW(pi.dwProcessId, g_dll_ansi, &CreateProcessW) != FALSE;
     }
-    LPCSTR dlls[1] = {dll};
-    if (!DetourUpdateProcessWithDll(pi.hProcess, dlls, 1)) {
+    if (!injected) {
         req.type = static_cast<uint32_t>(msg_type::child_failed);
         ask_host(req, rep);
     }
@@ -453,21 +454,25 @@ void remember_own_path(HMODULE self) {
     wchar_t wide[MAX_PATH] = {};
     if (!GetModuleFileNameW(self, wide, MAX_PATH)) return;
     wide_path_to_ansi(wide, g_dll_ansi, static_cast<int>(sizeof(g_dll_ansi)));
+
+    // Check whether the opposite-arch sibling DLL sits next to us so
+    // DetourProcessViaHelperW can perform cross-arch child injection.
 #ifdef _WIN64
-    // Locate sibling proxyclaw_hook32.dll next to proxyclaw_hook64.dll.
+    const wchar_t* sibling_name = kDllName32;
+#else
+    const wchar_t* sibling_name = kDllName64;
+#endif
     wchar_t* slash = std::wcsrchr(wide, L'\\');
     if (slash) {
         const size_t dir_len = static_cast<size_t>(slash - wide) + 1;
-        const size_t name_len = std::wcslen(kDllName32);
+        const size_t name_len = std::wcslen(sibling_name);
         if (dir_len + name_len < MAX_PATH) {
-            std::wmemcpy(slash + 1, kDllName32, name_len + 1);
+            std::wmemcpy(slash + 1, sibling_name, name_len + 1);
             const DWORD attrs = GetFileAttributesW(wide);
-            if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-                wide_path_to_ansi(wide, g_dll32_ansi, static_cast<int>(sizeof(g_dll32_ansi)));
-            }
+            g_sibling_dll_exists =
+                attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
         }
     }
-#endif
 }
 
 void install(HMODULE self) {
@@ -503,11 +508,6 @@ void install(HMODULE self) {
 }
 
 } // namespace
-
-// Detours requires an export with ordinal 1 in any DLL it adds to a
-// process's import table (DetourUpdateProcessWithDll). __cdecl keeps the
-// .def symbol name undecorated on both x86 and x64.
-extern "C" void __cdecl proxyclaw_hook_marker() {}
 
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
     if (DetourIsHelperProcess()) return TRUE;

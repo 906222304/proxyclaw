@@ -53,6 +53,7 @@ import re
 import json
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,12 @@ import requests
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import api_token  # noqa: F401  (adds the API session token; see tests/api_token.py)
+from compare_stress import (  # noqa: E402
+    diff_counters,
+    diff_latency_hist,
+    format_comparison,
+    summarize_rss_vs_processes,
+)
 
 
 # ---------------------------------------------------------------- paths/const
@@ -253,13 +260,172 @@ LOAD_PATHS = ["/stats", "/connections", "/tcp", "/udp", "/hijack", "/auto-rules"
               "/proxy-groups", "/config"]
 
 
-def late_rejected_proxied() -> int | None:
+BENCH_CONN_EXE = "pc-bench-conn.exe"
+BENCH_CONN_SCRIPT = r"""
+import socket, subprocess, sys, time
+
+def one_connect(host, port):
+    s = socket.create_connection((host, port), timeout=5)
+    try:
+        s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        data = s.recv(64)
+        return data.startswith(b"HTTP/")
+    finally:
+        s.close()
+
+if len(sys.argv) > 1 and sys.argv[1] == "--once":
+    try:
+        sys.exit(0 if one_connect("1.1.1.1", 80) else 2)
+    except OSError:
+        sys.exit(3)
+
+i = 0
+while True:
+    try:
+        one_connect("1.0.0.1", 80)
+    except OSError:
+        pass
+    i += 1
+    if i % 10 == 0:
+        try:
+            subprocess.run([sys.executable, __file__, "--once"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=5)
+        except Exception:
+            pass
+    time.sleep(0.04)
+"""
+
+
+def fetch_stats_snapshot() -> dict | None:
+    try:
+        r = requests.get(f"{BASE}/stats", timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def late_rejected_proxied(stats_obj: dict | None = None) -> int | None:
     """Proxied decisions that lost the race to the SYN watchdog (missed proxies)."""
     try:
-        stats = requests.get(f"{BASE}/stats", timeout=5).json()
-        return int(stats["tcp_syn_parking"]["socket"]["late_rejected_proxied"])
+        s = stats_obj if stats_obj is not None else fetch_stats_snapshot()
+        return int(s["tcp_syn_parking"]["socket"]["late_rejected_proxied"])
     except Exception:  # noqa: BLE001
         return None
+
+
+class BenchSocks5:
+    """Minimal local SOCKS5 stub responding immediately to CONNECT (no internet)."""
+
+    def __init__(self) -> None:
+        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(128)
+        self._srv.settimeout(0.5)
+        self.port = self._srv.getsockname()[1]
+        self._stop = threading.Event()
+        self.handled = 0
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._thread.start()
+
+    def _accept_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    @staticmethod
+    def _recv_exact(conn: socket.socket, n: int) -> bytes:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = conn.recv(n - len(buf))
+            if not chunk:
+                raise EOFError
+            buf.extend(chunk)
+        return bytes(buf)
+
+    def _serve(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(3.0)
+            hdr = self._recv_exact(conn, 2)
+            if hdr[0] != 5:
+                return
+            self._recv_exact(conn, hdr[1])
+            conn.sendall(b"\x05\x00")
+            req = self._recv_exact(conn, 4)
+            atyp = req[3]
+            if atyp == 1:
+                self._recv_exact(conn, 4 + 2)
+            elif atyp == 4:
+                self._recv_exact(conn, 16 + 2)
+            elif atyp == 3:
+                ln = self._recv_exact(conn, 1)[0]
+                self._recv_exact(conn, ln + 2)
+            else:
+                return
+            conn.sendall(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
+            with self._lock:
+                self.handled += 1
+            with contextlib.suppress(OSError):
+                conn.recv(256)
+                conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                conn.close()
+
+    def close(self) -> None:
+        self._stop.set()
+        with contextlib.suppress(OSError):
+            self._srv.close()
+        self._thread.join(timeout=3)
+
+
+class ConnectProbe:
+    """Drives real outbound proxied TCP CONNECTs (sustained + fresh children)."""
+
+    def __init__(self, work: pathlib.Path) -> None:
+        self._work = work
+        self._script = work / "bench_conn.py"
+        self._script.write_text(BENCH_CONN_SCRIPT, encoding="utf-8")
+        py_dir = pathlib.Path(sys.executable).resolve().parent
+        self._exe = py_dir / BENCH_CONN_EXE
+        shutil.copy2(sys.executable, self._exe)
+        self._proc: subprocess.Popen | None = None
+
+    def start(self) -> None:
+        self._proc = subprocess.Popen(
+            [str(self._exe), str(self._script)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+    def stop(self) -> None:
+        if self._proc is not None:
+            with contextlib.suppress(Exception):
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._proc.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+            with contextlib.suppress(Exception):
+                self._proc.wait(timeout=3)
+            self._proc = None
+        for _ in range(10):
+            try:
+                self._exe.unlink(missing_ok=True)
+                break
+            except OSError:
+                time.sleep(0.2)
 
 
 def pct_ms(values_us: list[float], p: float) -> float | None:
@@ -320,15 +486,29 @@ class _PMC(ctypes.Structure):
 
 
 class ResourceSampler:
-    """Once a second: proxyclaw.exe working set, private bytes, handle count."""
+    """Once a second: proxyclaw.exe working set, private bytes, handles, process count."""
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
-        self.samples: list[tuple[int, int, int]] = []  # (ws, private, handles)
+        self.samples: list[tuple[int, int, int, int | None]] = []  # (ws, private, handles, proc_count)
         self.stop = threading.Event()
+        self._lock = threading.Lock()
+        self._sess = requests.Session()
+        self._sess.trust_env = False
         self.thread = threading.Thread(target=self._run, daemon=True)
 
-    def _sample(self) -> tuple[int, int, int] | None:
+    def _query_process_count(self) -> int | None:
+        try:
+            r = self._sess.get(f"{BASE}/stats", timeout=1.0)
+            if r.status_code == 200:
+                pc = r.json().get("process_count")
+                if pc is not None:
+                    return int(pc)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _sample(self) -> tuple[int, int, int, int | None] | None:
         k32 = ctypes.windll.kernel32
         h = k32.OpenProcess(0x1000 | 0x0010, False, self.pid)  # QUERY_LIMITED | VM_READ
         if not h:
@@ -340,35 +520,44 @@ class ResourceSampler:
                 return None
             hc = wintypes.DWORD()
             k32.GetProcessHandleCount(h, ctypes.byref(hc))
-            return pmc.WorkingSetSize, pmc.PagefileUsage, hc.value
+            pc = self._query_process_count()
+            return pmc.WorkingSetSize, pmc.PagefileUsage, hc.value, pc
         finally:
             k32.CloseHandle(h)
 
+    def sample_once(self) -> None:
+        s = self._sample()
+        if s:
+            with self._lock:
+                self.samples.append(s)
+
     def _run(self) -> None:
         while not self.stop.is_set():
-            s = self._sample()
-            if s:
-                self.samples.append(s)
+            self.sample_once()
             self.stop.wait(1.0)
 
     def start(self) -> None:
         self.thread.start()
 
-    def finish(self) -> dict:
+    def finish(self) -> tuple[dict, dict]:
         self.stop.set()
         self.thread.join(timeout=5)
-        if not self.samples:
-            return {}
+        with self._lock:
+            pts = list(self.samples)
+        if not pts:
+            return {}, {}
         mb = 1024 * 1024
-        ws = [x[0] for x in self.samples]
-        pv = [x[1] for x in self.samples]
-        hd = [x[2] for x in self.samples]
-        return {"samples": len(self.samples),
-                "working_set_mb": {"start": round(ws[0] / mb, 1), "end": round(ws[-1] / mb, 1),
-                                   "peak": round(max(ws) / mb, 1)},
-                "private_mb": {"start": round(pv[0] / mb, 1), "end": round(pv[-1] / mb, 1),
-                               "peak": round(max(pv) / mb, 1)},
-                "handles": {"start": hd[0], "end": hd[-1], "peak": max(hd)}}
+        ws = [x[0] for x in pts]
+        pv = [x[1] for x in pts]
+        hd = [x[2] for x in pts]
+        summary = {"samples": len(pts),
+                   "working_set_mb": {"start": round(ws[0] / mb, 1), "end": round(ws[-1] / mb, 1),
+                                      "peak": round(max(ws) / mb, 1)},
+                   "private_mb": {"start": round(pv[0] / mb, 1), "end": round(pv[-1] / mb, 1),
+                                  "peak": round(max(pv) / mb, 1)},
+                   "handles": {"start": hd[0], "end": hd[-1], "peak": max(hd)}}
+        rss_vs_proc = summarize_rss_vs_processes(pts)
+        return summary, rss_vs_proc
 
 
 def find_proxyclaw_pid() -> int | None:
@@ -381,15 +570,28 @@ def find_proxyclaw_pid() -> int | None:
     return None
 
 
-def launch_proxyclaw(exe: pathlib.Path) -> tuple[subprocess.Popen, pathlib.Path]:
+def launch_proxyclaw(exe: pathlib.Path, socks_port: int = 1) -> tuple[subprocess.Popen, pathlib.Path]:
     """Start proxyclaw.exe with a throwaway debug config; wait for the API."""
     work = pathlib.Path(tempfile.mkdtemp(prefix="pc_stress_"))
+    rule = {
+        "id": "bench_conn",
+        "name": "bench connect probe",
+        "enabled": True,
+        "process_name": BENCH_CONN_EXE,
+        "cmdline_pattern": "",
+        "image_path_pattern": "",
+        "hack_tree": True,
+        "protocol": "tcp",
+        "proxy_group_id": 0,
+        "dst_filter": {"include_cidrs": [], "exclude_cidrs": [],
+                       "include_ports": [], "exclude_ports": []},
+    }
     cfg = {"version": 2,
-           "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": 1},
+           "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": socks_port},
            "proxy_groups": [{"id": 0, "name": "default", "host": "127.0.0.1",
-                             "port": 1, "type": "socks5"}],
-           "next_group_id": 1, "auto_rules": [], "log_level": "debug",
-           "dns": {"enabled": False}}
+                             "port": socks_port, "type": "socks5"}],
+           "next_group_id": 1, "auto_rules": [rule] if socks_port > 1 else [],
+           "log_level": "debug", "dns": {"enabled": False}}
     cfg_path = work / "proxyclaw.json"
     cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
@@ -601,6 +803,10 @@ def main() -> int:
                    help="threads of concurrent GET load during measurement (default 0, --ci 4)")
     p.add_argument("--summary-json", type=pathlib.Path, default=None,
                    help="write a machine-readable summary here")
+    p.add_argument("--compare", type=pathlib.Path, default=None,
+                   help="compare this run's summary against a baseline stress-summary.json")
+    p.add_argument("--no-connect-probes", action="store_true",
+                   help="--exe: disable the local SOCKS5 TCP CONNECT probe worker")
     args = p.parse_args()
 
     if args.ci:
@@ -614,17 +820,21 @@ def main() -> int:
         if args.http_workers is None: args.http_workers = 4
     workers = args.http_workers or 0
 
-    proc = work = None
+    proc = work = socks = None
     if args.exe is not None:
         if not ctypes.windll.shell32.IsUserAnAdmin():
             print("SKIP: --exe needs an elevated shell (WinDivert)")
             return 2
         exe = args.exe.resolve()
         LOG_PATH = exe.parent / "proxyclaw.log"
-        proc, work = launch_proxyclaw(exe)
+        if not args.no_connect_probes:
+            socks = BenchSocks5()
+        proc, work = launch_proxyclaw(exe, socks.port if socks else 1)
     try:
-        return _run(args, workers, proc)
+        return _run(args, workers, proc, work, socks)
     finally:
+        if socks is not None:
+            socks.close()
         if proc is not None:
             proc.terminate()
             try:
@@ -634,7 +844,8 @@ def main() -> int:
             shutil.rmtree(work, ignore_errors=True)
 
 
-def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
+def _run(args, workers: int, proc: subprocess.Popen | None,
+         work: pathlib.Path | None, socks: BenchSocks5 | None) -> int:
     if not LOG_PATH.exists():
         print(f"ERROR: {LOG_PATH} not found. Start proxyclaw.exe first.", file=sys.stderr)
         return 1
@@ -669,6 +880,8 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
     pc_pid = proc.pid if proc is not None else find_proxyclaw_pid()
     sampler = ResourceSampler(pc_pid) if pc_pid else None
     if sampler:
+        # Capture idle low-process-count RSS before stress_etw spawns churn.
+        sampler.sample_once()
         sampler.start()
 
     stress = None
@@ -688,7 +901,20 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
         print(f"==> warmup {args.warmup_secs}s ...")
         time.sleep(args.warmup_secs)
 
-    late_before = late_rejected_proxied()
+    stats_before = fetch_stats_snapshot()
+    late_before = late_rejected_proxied(stats_before)
+    socks_before = socks.handled if socks else 0
+
+    conn_probe: ConnectProbe | None = None
+    if socks is not None and work is not None and not args.no_connect_probes:
+        try:
+            conn_probe = ConnectProbe(work)
+            conn_probe.start()
+            print(f"==> TCP connect probe running against local SOCKS5 127.0.0.1:{socks.port}")
+        except OSError as e:
+            print(f"WARN: connect probe disabled ({e})", file=sys.stderr)
+            conn_probe = None
+
     load = HttpLoad(workers) if workers > 0 else None
     if load:
         print(f"==> HTTP load: {workers} workers over {', '.join(LOAD_PATHS)}")
@@ -726,6 +952,8 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
     finally:
         if load:
             load.finish()
+        if conn_probe is not None:
+            conn_probe.stop()
         if stress is not None:
             try:
                 stress.send_signal(signal.CTRL_BREAK_EVENT)
@@ -740,8 +968,30 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
             helper.kill()
             helper.wait(timeout=2)
     elapsed = time.monotonic() - t_start
-    resources = sampler.finish() if sampler else {}
-    late_after = late_rejected_proxied()
+    resources, rss_vs_proc = sampler.finish() if sampler else ({}, {})
+    stats_after = fetch_stats_snapshot()
+    late_after = late_rejected_proxied(stats_after)
+    socks_handled = (socks.handled - socks_before) if socks else None
+
+    perf_before = (stats_before or {}).get("perf") or {}
+    perf_after  = (stats_after or {}).get("perf") or {}
+    dec_lat  = diff_latency_hist(perf_before.get("decision_latency_us"),
+                                 perf_after.get("decision_latency_us"))
+    disp_lat = diff_latency_hist(perf_before.get("dispatch_latency_us"),
+                                 perf_after.get("dispatch_latency_us"))
+    park_lat = diff_latency_hist(perf_before.get("park_latency_us"),
+                                 perf_after.get("park_latency_us"))
+    missed_keys = [
+        "late_rejected_proxied",
+        "released_by_watchdog",
+        "pool_exhausted",
+        "v6_watchdog",
+        "udp_park_watchdog",
+        "udp_park_full",
+    ]
+    missed = diff_counters(perf_before.get("missed_proxies"),
+                           perf_after.get("missed_proxies"),
+                           missed_keys)
 
     print()
     print("=" * 60)
@@ -772,19 +1022,25 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
         "scenario": args.scenario, "ci": bool(args.ci),
         "duration_s": round(elapsed, 1), "churn_target": target,
         "churn_life_s": [min_life, max_life], "http_workers": workers,
+        "io_workers": perf_after.get("io_workers"),
+        "connect_probes_proxied": socks_handled,
         "requests": requests_total, "errors": errors_total,
         "rps": round(requests_total / elapsed, 1) if elapsed else None,
         "latency_ms": {"p50": pct_ms(lat, 0.50), "p95": pct_ms(lat, 0.95),
                        "p99": pct_ms(lat, 0.99), "max": pct_ms(lat, 1.0), "n": len(lat)},
         "hijack_rtt_ms": {"p50": pct_ms(rtts, 0.50), "p95": pct_ms(rtts, 0.95),
                           "p99": pct_ms(rtts, 0.99), "n": len(rtts)},
+        "decision_latency_us": dec_lat,
+        "dispatch_latency_us": disp_lat,
+        "park_latency_us": park_lat,
+        "missed_proxies": missed,
+        "rss_vs_processes": rss_vs_proc,
         "trace_events": sum(len(ph["events"]) for ph in phases),
         "log_error_lines": err_lines,
         "proxyclaw": resources,
         "proxyclaw_crashed": crashed, "api_alive_after": alive,
         "error_samples": (load_errors + HIJACK_ERRORS)[:10],
-        # Reported, not gated (ROADMAP v0.14 acceptance: must not rise under
-        # UI-equivalent polling; compare across runs).
+        # Reported, not gated (ROADMAP v0.14/v0.18: compare across runs).
         "late_rejected_proxied": {
             "before": late_before, "after": late_after,
             "delta": (late_after - late_before)
@@ -797,12 +1053,30 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
     print("\n---- stress smoke summary ----")
     lm, hm = summary["latency_ms"], summary["hijack_rtt_ms"]
     print(f"duration={summary['duration_s']}s requests={requests_total} errors={errors_total} "
-          f"rps={summary['rps']}")
+          f"rps={summary['rps']} io_workers={summary['io_workers']} "
+          f"proxied_probes={socks_handled}")
     print(f"GET latency ms: p50={lm['p50']} p95={lm['p95']} p99={lm['p99']} max={lm['max']}")
     print(f"hijack/unhijack RTT ms: p50={hm['p50']} p95={hm['p95']} p99={hm['p99']} n={hm['n']}")
+    if dec_lat:
+        print(f"CONNECT->publish us: n={dec_lat['count']} p50={dec_lat['p50_us']} "
+              f"p95={dec_lat['p95_us']} p99={dec_lat['p99_us']} mean={dec_lat['mean_us']} "
+              f"cum_max={dec_lat['cum_max_us']}")
+    if disp_lat:
+        print(f"Recv->publish us:    n={disp_lat['count']} p50={disp_lat['p50_us']} "
+              f"p95={disp_lat['p95_us']} p99={disp_lat['p99_us']} mean={disp_lat['mean_us']}")
+    if park_lat:
+        print(f"SYN park wait us:    n={park_lat['count']} p50={park_lat['p50_us']} "
+              f"p95={park_lat['p95_us']} p99={park_lat['p99_us']} mean={park_lat['mean_us']}")
+    print(f"missed_proxies (delta): {missed}")
     if resources:
         print(f"proxyclaw.exe: working set MB {resources['working_set_mb']}, "
               f"private MB {resources['private_mb']}, handles {resources['handles']}")
+    if rss_vs_proc:
+        print(f"RSS vs processes: proc={rss_vs_proc['process_count']} "
+              f"ws_mb=[{rss_vs_proc['working_set_mb_at_min_proc']} -> "
+              f"{rss_vs_proc['working_set_mb_at_max_proc']}] "
+              f"ws_kb/proc={rss_vs_proc['ws_kb_per_process']} "
+              f"priv_kb/proc={rss_vs_proc['private_kb_per_process']}")
     print(f"log [E] lines in window: {err_lines}  crashed={crashed}  api_alive_after={alive}")
     lr = summary["late_rejected_proxied"]
     print(f"late_rejected_proxied: before={lr['before']} after={lr['after']} delta={lr['delta']}")
@@ -812,6 +1086,10 @@ def _run(args, workers: int, proc: subprocess.Popen | None) -> int:
     if args.summary_json:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)
         args.summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if args.compare and args.compare.exists():
+        print("\n---- comparison vs baseline ----")
+        base_summary = json.loads(args.compare.read_text(encoding="utf-8"))
+        print(format_comparison(base_summary, summary, args.compare.stem, "current"))
     return 0 if ok else 1
 
 

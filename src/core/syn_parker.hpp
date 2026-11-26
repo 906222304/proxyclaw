@@ -47,6 +47,7 @@
 #include <vector>
 
 #include "core/decision_log.hpp"
+#include "core/latency_histogram.hpp"
 #include "core/log.hpp"
 #include "core/port_tracker.hpp"
 #include "core/tcp_redirect.hpp"
@@ -91,6 +92,7 @@ struct syn_parking_counters {
     uint32_t pool_size            = 0;
     uint32_t watchdog_ms          = 0;
     bool     hires_timer          = false;
+    latency_snapshot park_latency{};
 };
 
 class syn_parker {
@@ -245,6 +247,7 @@ public:
         c.pool_size            = pool_size_;
         c.watchdog_ms          = static_cast<uint32_t>(watchdog_ms_);
         c.hires_timer          = hires_timer_.load();
+        c.park_latency         = park_latency_.snapshot();
         return c;
     }
 
@@ -292,6 +295,7 @@ private:
                           released_by_drain_{0}, ttl_stale_{0}, retransmit_passed_{0}, dup_syn_dropped_{0},
                           cas_lost_to_decision_{0}, pool_exhausted_{0}, oversize_{0},
                           gen_mismatch_{0}, send_failures_{0}, park_us_max_{0}, park_us_sum_{0};
+    latency_histogram     park_latency_;
 
     static void bump(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
@@ -302,7 +306,7 @@ private:
     }
 
     uint64_t ticks_to_us(int64_t ticks) const {
-        return static_cast<uint64_t>(ticks * 1'000'000 / tracker_.qpc_frequency());
+        return clew::ticks_to_us(ticks, tracker_.qpc_frequency());
     }
 
     // ---- pool --------------------------------------------------------------
@@ -456,6 +460,7 @@ private:
         const uint64_t park_us = ticks_to_us(now_qpc() - park);
         bump(counter);
         if (&counter == &released_by_decision_) {
+            park_latency_.record(park_us);
             park_us_sum_.fetch_add(park_us, std::memory_order_relaxed);
             uint64_t mx = park_us_max_.load(std::memory_order_relaxed);
             while (park_us > mx &&

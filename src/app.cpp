@@ -294,9 +294,36 @@ void app::sync_groups() {
 }
 
 nlohmann::json app::traffic_stats() const {
+    auto latency_to_json = [](const latency_snapshot& s) -> nlohmann::json {
+        return {
+            {"count",     s.count},
+            {"mean_us",   s.mean_us()},
+            {"p50_us",    s.quantile(0.50)},
+            {"p95_us",    s.quantile(0.95)},
+            {"p99_us",    s.quantile(0.99)},
+            {"max_us",    s.max_us},
+            {"bounds_us", latency_histogram::kBoundsUs},
+            {"buckets",   s.buckets},
+        };
+    };
+
     nlohmann::json j;
+    nlohmann::json perf;
+    perf["io_workers"] = num_workers_;
+    uint64_t late_proxied = 0;
+    uint64_t syn_watchdog = 0;
+    uint64_t syn_pool_exhausted = 0;
+    uint64_t v6_watchdog = 0;
+    uint64_t udp_park_watchdog = 0;
+    uint64_t udp_park_full = 0;
+
     if (wd_socket_) {
         const auto s = wd_socket_->snapshot();
+        late_proxied = s.late_rejected_proxied;
+        auto dec_json  = latency_to_json(s.decision_latency);
+        auto disp_json = latency_to_json(s.dispatch_latency);
+        perf["decision_latency_us"] = dec_json;
+        perf["dispatch_latency_us"] = disp_json;
         j["socket"] = {
             {"connect_events",        s.connect_events},
             {"close_events",          s.close_events},
@@ -310,14 +337,24 @@ nlohmann::json app::traffic_stats() const {
             {"ipv6_unmanaged",        s.ipv6_unmanaged},
             {"ipv6_blocked",          s.ipv6_blocked},
             {"ipv6_proxied",          s.ipv6_proxied},
+            {"decision_latency_us",   std::move(dec_json)},
+            {"dispatch_latency_us",   std::move(disp_json)},
         };
     }
     if (wd_socket_udp_) {
+        udp_park_watchdog = wd_network_udp_ ? wd_network_udp_->released_by_watchdog() : 0;
+        udp_park_full     = wd_network_udp_ ? wd_network_udp_->park_full() : 0;
         j["udp_socket"] = {{"ipv6_unmanaged", wd_socket_udp_->ipv6_unmanaged_count()},
                            {"ipv6_blocked",
                             wd_network_udp_ ? wd_network_udp_->ipv6_blocked_count() : 0},
                            {"ipv6_proxied",
-                            wd_network_udp_ ? wd_network_udp_->ipv6_proxied_count() : 0}};
+                            wd_network_udp_ ? wd_network_udp_->ipv6_proxied_count() : 0},
+                           {"parked",
+                            wd_network_udp_ ? wd_network_udp_->park_count() : 0},
+                           {"park_decision",
+                            wd_network_udp_ ? wd_network_udp_->released_by_decision() : 0},
+                           {"park_watchdog", udp_park_watchdog},
+                           {"park_full", udp_park_full}};
     }
     // DNS proxy: off / starting / running / stopping / failed (+ reason).
     j["dns"] = dns_mgr_.status().to_json();
@@ -353,12 +390,13 @@ nlohmann::json app::traffic_stats() const {
     }
     j["ipv6"]["egress"] = std::move(egress);
     if (wd_network_v6_) {
+        v6_watchdog = wd_network_v6_->released_by_watchdog();
         j["ipv6"]["syn_proxied"]   = wd_network_v6_->proxied();
         j["ipv6"]["nat"]           = wd_network_v6_->nat_count();
         j["ipv6"]["syn_blocked"]   = wd_network_v6_->blocked();
         j["ipv6"]["syn_allowed"]   = wd_network_v6_->allowed();
         j["ipv6"]["syn_parked"]    = wd_network_v6_->parked();
-        j["ipv6"]["syn_watchdog"]  = wd_network_v6_->released_by_watchdog();
+        j["ipv6"]["syn_watchdog"]  = v6_watchdog;
     }
     if (decision_log_) {
         const auto d = decision_log_->snapshot();
@@ -366,6 +404,10 @@ nlohmann::json app::traffic_stats() const {
     }
     if (parker_) {
         const auto c = parker_->snapshot();
+        syn_watchdog = c.released_by_watchdog;
+        syn_pool_exhausted = c.pool_exhausted;
+        auto park_json = latency_to_json(c.park_latency);
+        perf["park_latency_us"] = park_json;
         j["parking"] = {
             {"enabled",              true},
             {"watchdog_ms",          c.watchdog_ms},
@@ -387,10 +429,20 @@ nlohmann::json app::traffic_stats() const {
             {"pool_peak",            c.pool_peak},
             {"park_us_max",          c.park_us_max},
             {"park_us_mean",         c.released_by_decision ? c.park_us_sum / c.released_by_decision : 0},
+            {"park_latency_us",      std::move(park_json)},
         };
     } else {
         j["parking"] = {{"enabled", false}};
     }
+    perf["missed_proxies"] = {
+        {"late_rejected_proxied", late_proxied},
+        {"released_by_watchdog",  syn_watchdog},
+        {"pool_exhausted",        syn_pool_exhausted},
+        {"v6_watchdog",           v6_watchdog},
+        {"udp_park_watchdog",     udp_park_watchdog},
+        {"udp_park_full",         udp_park_full},
+    };
+    j["perf"] = std::move(perf);
     return j;
 }
 

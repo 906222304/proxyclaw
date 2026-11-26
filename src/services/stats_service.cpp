@@ -24,6 +24,7 @@ nlohmann::json stats_service::get_stats() const {
         // process list (see process_tree_manager::schedule_rundown_grace).
         out["tree_ready"]       = m.is_tree_ready();
         out["process_count"]    = m.tree().alive_count();
+        out["tree_entries"]     = m.tree().entries().size();
         // Routing configuration version stamped into each decision record.
         out["config_version"]   = m.rules().config_version();
         return out;
@@ -55,6 +56,7 @@ nlohmann::json stats_service::get_stats() const {
         if (t.contains("dns")) j["dns"] = t["dns"];
         if (t.contains("interception")) j["interception"] = t["interception"];
         if (t.contains("decisions")) j["decisions"] = t["decisions"];
+        if (t.contains("perf")) j["perf"] = t["perf"];
         j["tcp_syn_parking"] = std::move(t);
     }
     return j;

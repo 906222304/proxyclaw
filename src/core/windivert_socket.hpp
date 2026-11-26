@@ -68,6 +68,7 @@
 #include "core/ip_family.hpp"
 #include "core/ipv6_flow_table.hpp"
 #include "core/ipv6_gate.hpp"
+#include "core/latency_histogram.hpp"
 #include "core/port_tracker.hpp"
 #include "core/syn_parker.hpp"
 #include "rules/rule_engine_v3.hpp"
@@ -201,13 +202,16 @@ public:
         uint64_t ipv6_unmanaged;       // IPv6 CONNECTs (all of them; name kept for the API)
         uint64_t ipv6_blocked;         // ...of which refused so a proxied process falls back to IPv4
         uint64_t ipv6_proxied;         // ...of which handed to the IPv6 acceptor (ipv6.mode = proxy)
+        latency_snapshot decision_latency; // kernel CONNECT -> decision publish (us)
+        latency_snapshot dispatch_latency; // WinDivertRecv -> decision publish (us)
     };
     counters snapshot() const {
         return {connect_count_.load(), close_count_.load(), match_count_.load(),
                 direct_count_.load(), self_direct_count_.load(), echo_count_.load(),
                 late_rejected_count_.load(), late_rejected_proxied_count_.load(),
                 close_while_pending_count_.load(), ipv6_unmanaged_count_.load(),
-                ipv6_blocked_count_.load(), ipv6_proxied_count_.load()};
+                ipv6_blocked_count_.load(), ipv6_proxied_count_.load(),
+                decision_latency_.snapshot(), dispatch_latency_.snapshot()};
     }
 
 private:
@@ -246,8 +250,20 @@ private:
     ipv6_egress* ipv6_egress_{nullptr};
     ipv6_listener ipv6_listener_;
     std::atomic<uint64_t> ipv6_proxied_count_{0};
+    latency_histogram decision_latency_;
+    latency_histogram dispatch_latency_;
 
     static void bump(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
+
+    void record_connect_latency(int64_t kernel_ts, int64_t recv_qpc) noexcept {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        const int64_t freq = tracker_.qpc_frequency();
+        decision_latency_.record(ticks_to_us(now.QuadPart - kernel_ts, freq));
+        if (recv_qpc > 0) {
+            dispatch_latency_.record(ticks_to_us(now.QuadPart - recv_qpc, freq));
+        }
+    }
 
     // ---- Asio IOCP async path ----
 
@@ -258,7 +274,7 @@ private:
             strand_,
             [this](std::error_code ec, std::size_t) {
                 if (!ec && running_) {
-                    on_socket_event(addr_);
+                    on_socket_event(addr_, 0);
                     async_recv();
                 }
             }
@@ -291,15 +307,17 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));  // no hot spin
                 continue;
             }
-            asio::post(strand_, [this, addr]() {
-                on_socket_event(addr);
+            LARGE_INTEGER recv_qpc{};
+            QueryPerformanceCounter(&recv_qpc);
+            asio::post(strand_, [this, addr, recv_qpc = recv_qpc.QuadPart]() {
+                on_socket_event(addr, recv_qpc);
             });
         }
     }
 
     // ---- Event handlers (run on strand) ----
 
-    void on_socket_event(const WINDIVERT_ADDRESS& addr) {
+    void on_socket_event(const WINDIVERT_ADDRESS& addr, int64_t recv_qpc) {
         // SNIFF mode: no WinDivertSend needed, event auto-passes
         // IPv6 is out of the decision path (header comment). Its CLOSE must
         // not touch the IPv4 slot that shares the port number either.
@@ -313,6 +331,7 @@ private:
                 v6_flow flow;
                 const v6_verdict v = decide_v6(rec.pid, addr, rec, flow);
                 if (ipv6_listener_) ipv6_listener_(port, v, v == v6_verdict::proxy ? &flow : nullptr);
+                record_connect_latency(addr.Timestamp, recv_qpc);
                 if (v == v6_verdict::proxy) {
                     bump(ipv6_proxied_count_);
                     PC_LOG_DEBUG("[WD-SOCKET] IPv6 Match PID={} port={} remote port={} group={}",
@@ -331,10 +350,10 @@ private:
         }
         if (addr.Event == WINDIVERT_EVENT_SOCKET_CLOSE) { on_close(addr); return; }
         if (addr.Event != WINDIVERT_EVENT_SOCKET_CONNECT) return;
-        on_connect(addr);
+        on_connect(addr, recv_qpc);
     }
 
-    void on_connect(const WINDIVERT_ADDRESS& addr) {
+    void on_connect(const WINDIVERT_ADDRESS& addr, int64_t recv_qpc) {
         bump(connect_count_);
 
         const DWORD    pid         = addr.Socket.ProcessId;
@@ -364,6 +383,7 @@ private:
                          remote_port, decision_reason_name(rec.reason));
             // Parking off: keep the pre-parking two-state table (item 14).
             if (!parker_) {
+                record_connect_latency(addr.Timestamp, recv_qpc);
                 record_decision(rec, addr);
                 return;
             }
@@ -372,6 +392,7 @@ private:
         const auto r = tracker_.publish(src_port, decision, te, addr.Timestamp);
         switch (r.outcome) {
         case publish_outcome::late_rejected:
+            record_connect_latency(addr.Timestamp, recv_qpc);
             bump(late_rejected_count_);
             // The flow already left direct: that is what the record says.
             // The rejected decision survives as source / rule / LATE_PROXIED.
@@ -396,6 +417,7 @@ private:
         }
         // After the publish (and the parked SYN's hand-off): off the
         // SYN's critical path.
+        record_connect_latency(addr.Timestamp, recv_qpc);
         record_decision(rec, addr);
 
         if (decision == slot_state::proxied) {

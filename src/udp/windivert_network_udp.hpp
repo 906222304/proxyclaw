@@ -169,10 +169,13 @@ public:
         for (auto& p : packets) dispatch_decided(release_policies_, p);
     }
 
-    uint64_t park_count() const { return park_count_; }
-    uint64_t handoff_count() const { return handoff_count_; }
-    uint64_t drop_count() const { return drop_count_; }
-    uint64_t pass_count() const { return pass_count_; }
+    uint64_t park_count() const { return park_count_.load(std::memory_order_relaxed); }
+    uint64_t released_by_decision() const { return released_decision_.load(std::memory_order_relaxed); }
+    uint64_t released_by_watchdog() const { return released_watchdog_.load(std::memory_order_relaxed); }
+    uint64_t park_full() const { return park_full_.load(std::memory_order_relaxed); }
+    uint64_t handoff_count() const { return handoff_count_.load(std::memory_order_relaxed); }
+    uint64_t drop_count() const { return drop_count_.load(std::memory_order_relaxed); }
+    uint64_t pass_count() const { return pass_count_.load(std::memory_order_relaxed); }
 
 private:
     UdpPortTracker& tracker_;

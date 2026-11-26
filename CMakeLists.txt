@@ -371,6 +371,9 @@ if(BUILD_TESTING AND WIN32)
     # v0.14 #2: per-connection decision record (ring + per-port index).
     proxyclaw_unit_test(decision_log_tests
         SOURCES tests/test_decision_log.cpp)
+    # v0.18 #1: lock-free decision and SYN-park latency histogram.
+    proxyclaw_unit_test(latency_histogram_tests
+        SOURCES tests/test_latency_histogram.cpp)
     # v0.14 #3: connection row + strand facts -> /api/tcp, /api/udp JSON.
     proxyclaw_unit_test(connection_rows_tests
         SOURCES tests/test_connection_rows.cpp src/projection/connection_rows.cpp

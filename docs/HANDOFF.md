@@ -16,11 +16,11 @@
 
 ## 进行中的 PR
 
-| PR | 分支 | 状态 | 说明 |
-|----|------|------|------|
-| #15 | `docs/wfp-driver-design` | draft，仅文档 | WFP 驱动设计草案。不代表决定要做；EV 证书和签名成本待定 |
+当前无阻塞中的功能 Draft PR。
 
-已关闭放弃：PR #14（`feat/tree-a11y`，进程树键盘 / ARIA 收益不大，已从路线图移除）。
+已关闭放弃：
+- PR #14（`feat/tree-a11y`，进程树键盘 / ARIA 收益不大，已从路线图移除）。
+- PR #15（`docs/wfp-driver-design`，已确定采用「WinDivert 默认 + Hook 无驱动替代」双路线，自研 WFP 驱动留在暂不计划）。
 
 ## Hook 模式（v0.15.0 起，v0.15.2 修复加固）
 
@@ -50,8 +50,8 @@
 
 - 覆盖：TCP（IPv4 与 IPv6）。
 - 不覆盖：
-  - UDP（直连）
-  - 上面列出的会被跳过的进程、显式绑定非回环网卡 IP 的 socket
+  - UDP（直连；已排入 v0.17 #1）
+  - 上面列出的会被跳过的进程（32 位已排入 v0.17 #2；跳过原因标注排入 v0.17 #3）、显式绑定非回环网卡 IP 的 socket
   - 直接走 syscall 的程序
   - 注入完成前已经建立的连接
 
@@ -64,13 +64,12 @@
 
 - 尚未在装有 ESET 等安全软件的真机上验证，注入可能被拦截或报毒。
 - 设计参考了 ProxyLane（MIT），已写入 `THIRD_PARTY_NOTICES.md`，没有复制它的代码。
-- 可能的后续：UDP 支持、32 位注入（`proxyclaw_hook32.dll`）、运行中切换模式而不用重启。
+- 已排入 v0.17：UDP 代理、32 位注入（`proxyclaw_hook32.dll`）、跳过/失败原因可观测性。运行中免重启热切换已移入暂不计划。
 
 ## 其他未决事项
 
-- **0xD1 蓝屏**：用户机器上 `NETIO.SYS` 出现 0xD1，栈上有 ESET 的 `epfwwfp.sys`，没有 WinDivert 帧。初步判断是 ESET 与 WinDivert 的 WFP 冲突，Hook 模式不加载驱动，可作为这类机器的绕行方案。
-- **WFP 驱动方向**：Draft PR #15 仅为设计草案，尚未立项。
-- **ROADMAP 剩余项**：v0.15 全部五项（#1–#5）已完成；下一阶段见 `docs/ROADMAP.md`「之后：先有基准，再谈性能与部署」。
+- **0xD1 蓝屏**：用户机器上 `NETIO.SYS` 出现 0xD1，栈上有 ESET 的 `epfwwfp.sys`，没有 WinDivert 帧。初步判断是 ESET 与 WinDivert 的 WFP 冲突，Hook 模式不加载驱动，作为官方无驱动替代路线持续补齐（v0.17）。
+- **ROADMAP 下一阶段**：见 `docs/ROADMAP.md`——**v0.17**（Hook UDP / 32 位注入 / 跳过可观测性 / SOCKS5 RFC 1929 账密认证）→ **v0.18**（性能基准 / 资源上限 / 进程信息缓存 / 诊断包一键导出），保持绿色便携包形态。
 - **已知 CI 抖动**：WebView2 截图步骤偶发 `#root` 超时，处理方法是重跑失败的 `e2e` job。
 
 ## 硬性规则

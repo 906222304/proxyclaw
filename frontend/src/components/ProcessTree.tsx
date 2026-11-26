@@ -7,7 +7,7 @@ import { activityQuery, autoRulesQuery, isActive, useProcessTree } from '@/api/q
 import type { ProcessInfo } from '@/api/types'
 import { ProcessIcon } from '@/components/ProcessIcon'
 import { Segmented } from '@/components/ui/misc'
-import { ExcludedDot, HijackDot } from '@/components/ProcessContextHeader'
+import { ExcludedDot, HijackDot, HookSkipDot, hookSkipInfo } from '@/components/ProcessContextHeader'
 import { SearchInput } from '@/components/ui/search-input'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
@@ -231,9 +231,11 @@ const TreeRow = memo(function TreeRow({ row, selected, active, activeSubtree, ma
         )} title={node.name}>
           {node.name}
         </span>
-        {node.hijacked && (manual || auto
-          ? <HijackDot source={node.hijack_source} />
-          : <span className="size-1.5 shrink-0 rounded-full bg-success" title="已代理" />)}
+        {node.hijacked && (hookSkipInfo(node.hook_status)
+          ? <HookSkipDot status={node.hook_status} />
+          : (manual || auto
+            ? <HijackDot source={node.hijack_source} />
+            : <span className="size-1.5 shrink-0 rounded-full bg-success" title="已代理" />))}
         {excluded && <ExcludedDot />}
         {/* The hover-only action button sits on top of the PID (which fades out)
             instead of taking width, so hovering never squeezes the name. */}

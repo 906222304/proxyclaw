@@ -122,8 +122,9 @@ struct facts_snapshot {
 // rules the data path uses).
 class fact_collector {
 public:
-    explicit fact_collector(const domain::process_tree_manager& m)
-        : tree_(m.tree()), rules_(m.rules()) {}
+    explicit fact_collector(const domain::process_tree_manager& m,
+                            const hook::status_map* hook_statuses = nullptr)
+        : tree_(m.tree()), rules_(m.rules()), hook_statuses_(hook_statuses) {}
 
     std::vector<connection_facts> collect(const std::vector<connection_row>& rows, bool is_udp) {
         std::vector<connection_facts> out(rows.size());
@@ -141,8 +142,15 @@ public:
             if (row.record) {
                 f.rule_id = rule_id(row.record->policy_id);
             } else if (needs_fallback(row, f.hijacked)) {
+                const auto& entry = tree_.at(idx);
+                if (hook_statuses_) {
+                    if (const auto it = hook_statuses_->find(hook::process_key{entry.pid, entry.psn});
+                        it != hook_statuses_->end()) {
+                        f.hook_skip_reason = hook::hook_skip_reason_name(it->second);
+                    }
+                }
                 fallback(f, row, is_udp);
-                const auto origin = rules_.origin_of(tree_.at(idx));
+                const auto origin = rules_.origin_of(entry);
                 f.current_source  = origin.source;
                 f.current_rule_id = rule_id(origin.policy_id);
             }
@@ -189,6 +197,7 @@ private:
 
     const flat_tree&                                tree_;
     const rule_engine_v3&                           rules_;
+    const hook::status_map*                         hook_statuses_{nullptr};
     std::vector<std::pair<uint32_t, std::string>>   rule_ids_;
     std::unordered_map<uint32_t, std::shared_ptr<const rule_conflict>> conflicts_;
 };
@@ -245,20 +254,26 @@ static DWORD to_filter(std::optional<std::uint32_t> pid_filter) {
 nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_filter) const {
     const DWORD filter_pid = to_filter(pid_filter);
     const uint16_t hook_port = hook_relay_port_.load(std::memory_order_relaxed);
+    std::optional<hook::status_map> hook_statuses;
+    if (hook_status_provider_) hook_statuses = hook_status_provider_();
+    const auto* hs = hook_statuses ? &*hook_statuses : nullptr;
     const auto rows = tcp_rows(tcp_table::get_connections(filter_pid), filter_pid, decisions_,
                                hook_port);
-    auto facts = exec_.query([&rows](const domain::process_tree_manager& m) {
-        return fact_collector(m).collect(rows, /*is_udp=*/false);
+    auto facts = exec_.query([&rows, hs](const domain::process_tree_manager& m) {
+        return fact_collector(m, hs).collect(rows, /*is_udp=*/false);
     });
     return rows_to_json(rows, facts, /*is_udp=*/false);
 }
 
 nlohmann::json connection_service::list_udp(std::optional<std::uint32_t> pid_filter) const {
     const DWORD filter_pid = to_filter(pid_filter);
+    std::optional<hook::status_map> hook_statuses;
+    if (hook_status_provider_) hook_statuses = hook_status_provider_();
+    const auto* hs = hook_statuses ? &*hook_statuses : nullptr;
     const auto rows = udp_rows(udp_table::get_endpoints(filter_pid), filter_pid,
                                udp_tracker_, udp_sessions_, decisions_);
-    auto facts = exec_.query([&rows](const domain::process_tree_manager& m) {
-        return fact_collector(m).collect(rows, /*is_udp=*/true);
+    auto facts = exec_.query([&rows, hs](const domain::process_tree_manager& m) {
+        return fact_collector(m, hs).collect(rows, /*is_udp=*/true);
     });
     return rows_to_json(rows, facts, /*is_udp=*/true);
 }
@@ -266,6 +281,9 @@ nlohmann::json connection_service::list_udp(std::optional<std::uint32_t> pid_fil
 nlohmann::json connection_service::list_all(std::optional<std::uint32_t> pid_filter) const {
     const DWORD filter_pid = to_filter(pid_filter);
     const uint16_t hook_port = hook_relay_port_.load(std::memory_order_relaxed);
+    std::optional<hook::status_map> hook_statuses;
+    if (hook_status_provider_) hook_statuses = hook_status_provider_();
+    const auto* hs = hook_statuses ? &*hook_statuses : nullptr;
     // Full tables once: the rows honour the filter, active_pids never does.
     const auto all_tcp = tcp_table::get_connections(NO_PID_FILTER);
     const auto all_udp = udp_table::get_endpoints(NO_PID_FILTER);
@@ -273,8 +291,8 @@ nlohmann::json connection_service::list_all(std::optional<std::uint32_t> pid_fil
     const auto udp = udp_rows(all_udp, filter_pid, udp_tracker_, udp_sessions_, decisions_);
 
     // One strand hop for both transports.
-    auto facts = exec_.query([&tcp, &udp](const domain::process_tree_manager& m) {
-        fact_collector collect(m);
+    auto facts = exec_.query([&tcp, &udp, hs](const domain::process_tree_manager& m) {
+        fact_collector collect(m, hs);
         facts_snapshot s;
         s.tcp = collect.collect(tcp, /*is_udp=*/false);
         s.udp = collect.collect(udp, /*is_udp=*/true);

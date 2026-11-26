@@ -234,6 +234,7 @@ reply mode::decide_child(DWORD parent, DWORD child) {
         tracker_.mark_child({child, tree.at(idx).psn});
     }
     n_child_inject_.fetch_add(1);
+    notify_status_changed();
     PC_LOG_DEBUG("[HOOK] child PID={} of PID={} gets the DLL", child, parent);
     return make_reply(verdict::proxy);
 }
@@ -250,6 +251,7 @@ reply mode::on_child_failed(DWORD parent, DWORD child) {
     if (cleared) {
         n_child_inject_.fetch_sub(1);
         n_child_skip_.fetch_add(1);
+        notify_status_changed();
         PC_LOG_WARN("[HOOK] child PID={} of PID={}: import-table injection failed; will retry on sweep",
                     child, parent);
     }
@@ -308,6 +310,7 @@ void mode::injector_loop(std::stop_token st) {
             batch = tracker_.take_wanted();
         }
         std::set<key> live(batch.wanted.begin(), batch.wanted.end());
+        bool changed = false;
         for (const auto& k : batch.wanted) {
             if (st.stop_requested()) return;
             {
@@ -315,10 +318,22 @@ void mode::injector_loop(std::stop_token st) {
                 if (tracker_.is_done(k)) continue;
             }
             const auto r = inject_into(k.first, dll_path_);
+            const auto status = [](inject_result res) noexcept {
+                switch (res) {
+                case inject_result::ok:          return inject_status::injected;
+                case inject_result::wow64:       return inject_status::wow64;
+                case inject_result::restricted:  return inject_status::restricted;
+                case inject_result::signed_only: return inject_status::signed_only;
+                case inject_result::open_failed: return inject_status::open_failed;
+                case inject_result::failed:      return inject_status::failed;
+                }
+                return inject_status::failed;
+            }(r);
             {
                 std::lock_guard lock(inj_mu_);
-                tracker_.mark_swept(k, batch.gen);
+                tracker_.mark_swept(k, batch.gen, status);
             }
+            changed = true;
             switch (r) {
             case inject_result::ok:
                 n_inject_ok_.fetch_add(1);
@@ -339,13 +354,33 @@ void mode::injector_loop(std::stop_token st) {
         }
         // Forget processes that exited or stopped being proxied (never pruning
         // children registered after this sweep snapshot was captured).
-        std::lock_guard lock(inj_mu_);
-        tracker_.prune(live, batch.gen);
+        {
+            std::lock_guard lock(inj_mu_);
+            if (tracker_.prune(live, batch.gen)) changed = true;
+        }
+        if (changed) notify_status_changed();
     }
+}
+
+void mode::notify_status_changed() {
+    if (!running_ || !on_status_changed_) return;
+    asio::post(strand_, [this] {
+        if (running_ && on_status_changed_) on_status_changed_();
+    });
+}
+
+status_map mode::status_snapshot() const {
+    std::lock_guard lock(inj_mu_);
+    return tracker_.snapshot_statuses();
 }
 
 nlohmann::json mode::stats() const {
     const auto f = flows_.snapshot();
+    status_counts live_counts{};
+    {
+        std::lock_guard lock(inj_mu_);
+        live_counts = tracker_.count_statuses();
+    }
     return {
         {"relay_port", relay_port_v4()},
         {"relay_port_v6", relay_port_v6()},
@@ -364,6 +399,14 @@ nlohmann::json mode::stats() const {
         {"relay_unmatched", acceptor_v4_.unmatched() + acceptor_v6_.unmatched()},
         {"flows_pending", f.pending},
         {"flows_expired", f.expired},
+        {"live_injected", live_counts.injected},
+        {"skip_reasons", {
+            {"wow64", live_counts.wow64},
+            {"restricted", live_counts.restricted},
+            {"signed_only", live_counts.signed_only},
+            {"open_failed", live_counts.open_failed},
+            {"failed", live_counts.failed},
+        }},
     };
 }
 

@@ -393,6 +393,26 @@ void test_resolve_tcp_decision_hook_mode() {
     check(!listener.record.has_value(), "listening socket ignored");
 }
 
+void test_hook_skip_reason_overrides_fallback() {
+    auto row = tcp_row(77);
+    auto f = alive(true, "StoreApp.exe");
+    f.fallback_proxied = true;
+    f.fallback_reason  = "none";
+    f.hook_skip_reason = "hook_skip_restricted";
+    f.current_source   = decision_source::rule;
+    f.current_rule_id  = "rule-store";
+
+    const json c = tcp_row_to_json(row, f);
+    check(c["proxy_status"] == "IGNORED", "uninjected hook row must be IGNORED, not PROXIED");
+    check(c["route_reason"] == "hook_skip_restricted", "route_reason names hook skip reason");
+    check(c["decision_source"] == "recomputed", "recomputed row stays marked recomputed");
+
+    auto urow = udp_row(77, false);
+    const json uc = udp_row_to_json(urow, f);
+    check(uc["proxy_status"] == "IGNORED" && uc["route_reason"] == "hook_skip_restricted",
+          "UDP row also surfaces hook_skip_restricted");
+}
+
 } // namespace
 
 int main() {
@@ -405,6 +425,7 @@ int main() {
     test_record_fits_and_rows();
     test_conflict_and_estimate();
     test_resolve_tcp_decision_hook_mode();
+    test_hook_skip_reason_overrides_fallback();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

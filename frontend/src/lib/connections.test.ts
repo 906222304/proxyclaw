@@ -119,6 +119,27 @@ describe('hit info (v0.14 #4)', () => {
     }
   })
 
+  it('shows hook_skip_* reasons on recomputed rows without marking them estimated', () => {
+    for (const [reason, label] of [
+      ['hook_skip_restricted', '未注入·沙盒'],
+      ['hook_skip_signed_only', '未注入·签名限制'],
+      ['hook_skip_wow64', '未注入·32位'],
+      ['hook_skip_open_failed', '未注入·无权限'],
+      ['hook_skip_failed', '注入失败'],
+    ]) {
+      const info = hitInfo(conn({
+        proxy_status: 'IGNORED',
+        route_reason: reason,
+        decision: null,
+        decision_source: 'recomputed',
+        hijacked: true,
+        estimate: { source: 'rule', rule_id: 'r1' },
+      }), names)
+      expect(info).toMatchObject({ label, kind: 'reason', estimated: false })
+      expect(hitTooltip(info)).toContain('原因：Hook 模式')
+    }
+  })
+
   it('resolves conflicts to names, a manual winner and deleted rules', () => {
     const info = hitInfo(conn({ decision: d({}), conflict: { manual: false, winner: 'r1', shadowed_rule_ids: ['r2', 'gone'] } }), names)
     expect(info.conflict).toEqual({ winner: 'Chrome 代理', shadowed: ['开发工具', '已删除的规则'] })

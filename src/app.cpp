@@ -128,6 +128,13 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         // binds its [::1] relay in start_traffic_layers().
         hook_ = std::make_unique<hook::mode>(ioc_, strand_, tree_mgr_, tcp_groups_, ipv6_egress_,
                                              decision_log_.get(), ipv6_block_, ipv6_proxy_);
+        auto provider = [h = hook_.get()]() { return h->status_snapshot(); };
+        projection_.set_hook_status_provider(provider);
+        process_svc_.set_hook_status_provider(provider);
+        connection_svc_.set_hook_status_provider(std::move(provider));
+        hook_->set_on_status_changed([this]() {
+            projection_.on_tree_changed(push_urgency::batched);
+        });
     } else {
         redirect_port_ = acceptor_.start();
         PC_LOG_INFO("Acceptor listening on port {}", redirect_port_);

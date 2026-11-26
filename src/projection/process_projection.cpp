@@ -1,6 +1,7 @@
 #include "projection/process_projection.hpp"
 
 #include <chrono>
+#include <optional>
 #include <system_error>
 #include <utility>
 
@@ -79,7 +80,10 @@ void process_projection::replay_to_frontend() {
 }
 
 void process_projection::refresh_snapshot() {
-    auto json_str = process_tree_to_json_string(mgr_.tree(), mgr_.rules());
+    std::optional<hook::status_map> statuses;
+    if (hook_status_provider_) statuses = hook_status_provider_();
+    auto json_str = process_tree_to_json_string(
+        mgr_.tree(), mgr_.rules(), statuses ? &*statuses : nullptr);
     PC_LOG_DEBUG("[projection] snapshot: {} bytes, alive={}",
                  json_str.size(), mgr_.tree().alive_count());
     set_snapshot(std::make_shared<const std::string>(std::move(json_str)));

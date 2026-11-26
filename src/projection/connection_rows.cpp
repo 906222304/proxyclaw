@@ -10,6 +10,11 @@ namespace {
 // Rows without a decision record: the verdict the data path would reach
 // under the CURRENT rules, as computed on the strand.
 void set_fallback(nlohmann::json& c, const connection_facts& f) {
+    if (f.hook_skip_reason) {
+        c["proxy_status"] = "IGNORED";
+        c["route_reason"] = f.hook_skip_reason;
+        return;
+    }
     c["proxy_status"] = f.fallback_proxied ? "PROXIED" : "IGNORED";
     c["route_reason"] = f.fallback_reason ? f.fallback_reason : "none";
 }

@@ -76,6 +76,15 @@ def http(host, port=80, check_api=False):
             out["api_tcp"] = query_api_tcp(s.getsockname()[1], sys.argv[2])
         except Exception as e:
             out["api_tcp"] = {"error": repr(e)}
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:18080/api/processes/{os.getpid()}",
+                headers={"X-ProxyClaw-Token": sys.argv[2]},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                out["api_proc"] = json.loads(resp.read())
+        except Exception as e:
+            out["api_proc"] = {"error": repr(e)}
     s.sendall(b"GET / HTTP/1.0\r\nHost: " + host.encode() + b"\r\n\r\n")
     data = s.recv(16)
     s.close()
@@ -250,6 +259,10 @@ def main() -> int:
               and api_row.get("decision_source") == "recorded"
               and api_row.get("rule_id") == RULE["id"],
               api_row)
+        api_proc = out.get("api_proc") or {}
+        check("/api/processes/{pid} reports hook_status=injected",
+              api_proc.get("hijacked") is True and api_proc.get("hook_status") == "injected",
+              api_proc)
         check("ConnectEx proxied, peername original",
               out.get("connectex") == [["1.0.0.1", 80], True] and ("1.0.0.1", 80) in seen,
               out.get("connectex"))
@@ -276,9 +289,12 @@ def main() -> int:
               f"rc={res.returncode} http={res.stdout}")
 
         hook = api_get("/stats", token).get("interception", {}).get("hook", {})
-        check("stats: injected and children counted",
+        skip_reasons = hook.get("skip_reasons") or {}
+        check("stats: injected, children, and skip_reasons reported",
               hook.get("injected", 0) >= 1 and hook.get("children_injected", 0) >= 1
-              and hook.get("proxied", 0) >= 3, hook)
+              and hook.get("proxied", 0) >= 3
+              and set(skip_reasons.keys()) == {"wow64", "restricted", "signed_only", "open_failed", "failed"},
+              hook)
     finally:
         proc.terminate()
         try:

@@ -3,6 +3,8 @@ export type RuleProtocol = 'tcp' | 'udp' | 'both'
 /** 'auto:<rule id>' from current backends; bare 'auto' from older ones. */
 export type HijackSource = 'manual' | 'auto' | '' | `auto:${string}` | `tree:${string}`
 
+export type HookStatus = 'pending' | 'injected' | 'wow64' | 'restricted' | 'signed_only' | 'open_failed' | 'failed'
+
 export interface ProcessInfo {
   pid: number
   /** Boot-unique sequence number: (pid, psn) names one process across PID reuse. */
@@ -11,6 +13,8 @@ export interface ProcessInfo {
   name: string
   hijacked: boolean
   hijack_source?: HijackSource
+  /** Present in Hook mode for proxied processes: injection result or skip reason. */
+  hook_status?: HookStatus
   children?: ProcessInfo[]
   cmdline?: string
   image_path?: string
@@ -194,6 +198,23 @@ export interface WinDivertLayers {
   udp_network: boolean
 }
 
+export interface HookSkipReasons {
+  wow64: number
+  restricted: number
+  signed_only: number
+  open_failed: number
+  failed: number
+}
+
+export interface HookStats {
+  injected?: number
+  inject_skipped?: number
+  inject_failed?: number
+  children_injected?: number
+  live_injected?: number
+  skip_reasons?: HookSkipReasons
+}
+
 export interface InterceptionStatus {
   mode: 'windivert' | 'hook'
   active: boolean
@@ -201,6 +222,8 @@ export interface InterceptionStatus {
   error?: string
   /** Per-layer startup flags in WinDivert mode. */
   layers?: WinDivertLayers
+  /** Hook-mode injection counters and live skip breakdown. */
+  hook?: HookStats
 }
 
 export interface DecisionLogStats {

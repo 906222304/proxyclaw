@@ -31,6 +31,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -74,6 +75,16 @@ public:
     uint16_t relay_port_v4() const noexcept { return port_v4_.load(std::memory_order_relaxed); }
     uint16_t relay_port_v6() const noexcept { return port_v6_.load(std::memory_order_relaxed); }
 
+    // Thread-safe snapshot of tracked (pid, psn) -> inject_status for process
+    // tree and connection views.
+    status_map status_snapshot() const;
+
+    // Optional callback posted on the strand whenever injection outcomes change
+    // so process_projection pushes fresh hook_status badges promptly.
+    void set_on_status_changed(std::function<void()> cb) {
+        on_status_changed_ = std::move(cb);
+    }
+
     nlohmann::json stats() const;
 
 private:
@@ -84,6 +95,7 @@ private:
     reply decide_child(DWORD parent, DWORD child);            // strand
     reply on_child_failed(DWORD parent, DWORD child);         // strand
     void  record(const request& req, DWORD pid, DecisionRecord& rec);
+    void  notify_status_changed();
 
     void schedule_sweep();                                    // strand
     void injector_loop(std::stop_token st);
@@ -107,9 +119,10 @@ private:
     std::unique_ptr<pipe_server> pipe_;
     asio::steady_timer sweep_timer_;
     std::atomic<bool> running_{false};
+    std::function<void()> on_status_changed_;
 
     // Injector thread: the strand hands it the live proxied set each sweep.
-    std::mutex inj_mu_;
+    mutable std::mutex inj_mu_;
     std::condition_variable_any inj_cv_;
     inject_tracker tracker_;
     std::jthread injector_;

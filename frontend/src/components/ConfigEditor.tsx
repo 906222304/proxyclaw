@@ -471,6 +471,31 @@ function EngineStatusCard({ stats, dns }: { stats: Stats | undefined; dns: DnsSt
             )}
           </div>
         )}
+        {ic?.mode === 'hook' && ic.active && ic.hook && (() => {
+          const h = ic.hook!
+          const r = h.skip_reasons
+          const skipRows: { key: string; label: string; count: number; tone: 'amber' | 'red' }[] = [
+            { key: 'restricted', label: '沙盒跳过', count: r?.restricted ?? 0, tone: 'amber' },
+            { key: 'signed_only', label: '仅签名跳过', count: r?.signed_only ?? 0, tone: 'amber' },
+            { key: 'wow64', label: '32位跳过', count: r?.wow64 ?? 0, tone: 'amber' },
+            { key: 'open_failed', label: '权限不足', count: r?.open_failed ?? 0, tone: 'red' },
+            { key: 'failed', label: '注入失败', count: r?.failed ?? 0, tone: 'red' },
+          ]
+          const skipParts = skipRows.filter(item => item.count > 0)
+          return (
+            <div data-testid="engine-hook-summary" className="flex flex-wrap items-center gap-1.5 px-4 py-2 text-2xs">
+              <Badge tone="green" className="tabular">已注入 {h.live_injected ?? h.injected ?? 0}</Badge>
+              {skipParts.map(item => (
+                <Badge key={item.key} tone={item.tone} className="tabular">
+                  {item.label} {item.count}
+                </Badge>
+              ))}
+              {skipParts.length === 0 && (
+                <span className="text-muted-foreground">当前无跳过或注入失败的代理进程</span>
+              )}
+            </div>
+          )
+        })()}
         <Row
           title="进程树 (ETW)"
           description={stats

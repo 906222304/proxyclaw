@@ -262,7 +262,8 @@ struct ProxyTarget {
     std::string password;          // Optional auth
 
     bool operator==(const ProxyTarget& o) const {
-        return type == o.type && host == o.host && port == o.port;
+        return type == o.type && host == o.host && port == o.port &&
+               user == o.user && password == o.password;
     }
 
     std::string to_string() const {
@@ -283,13 +284,38 @@ struct ProxyGroup {
     uint16_t port = 7890;
     std::string type = "socks5";        // Only "socks5" for now
     std::string test_url = "http://www.gstatic.com/generate_204";
+    std::string user;                   // Optional RFC 1929 SOCKS5 username
+    std::string password;               // Optional RFC 1929 SOCKS5 password
 
     std::string to_string() const {
         return std::format("{}://{}:{}", type, host, port);
     }
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ProxyGroup, id, name, host, port, type, test_url)
+inline void to_json(nlohmann::json& j, const ProxyGroup& g) {
+    j = nlohmann::json{
+        {"id",       g.id},
+        {"name",     g.name},
+        {"host",     g.host},
+        {"port",     g.port},
+        {"type",     g.type},
+        {"test_url", g.test_url},
+    };
+    if (!g.user.empty())     j["user"]     = g.user;
+    if (!g.password.empty()) j["password"] = g.password;
+}
+
+inline void from_json(const nlohmann::json& j, ProxyGroup& g) {
+    ProxyGroup def;
+    g.id       = j.value("id", def.id);
+    g.name     = j.value("name", def.name);
+    g.host     = j.value("host", def.host);
+    g.port     = j.value("port", def.port);
+    g.type     = j.value("type", def.type);
+    g.test_url = j.value("test_url", def.test_url);
+    g.user     = j.contains("user") && j["user"].is_string() ? j["user"].get<std::string>() : std::string{};
+    g.password = j.contains("password") && j["password"].is_string() ? j["password"].get<std::string>() : std::string{};
+}
 
 // ============================================================
 // Traffic Filter - IP/port include/exclude

@@ -270,15 +270,13 @@ void app::sync_groups() {
     const ConfigV2 cfg = cfg_store_.get();
     ProxyGroupMap                                     tcp;
     std::unordered_map<uint32_t, UdpProxyGroupConfig> udp;
-    std::string endpoints;
     for (const auto& g : cfg.proxy_groups) {
-        tcp[g.id] = {g.host, g.port};
-        udp[g.id] = {g.host, g.port};
-        endpoints += std::format("{}={}:{};", g.id, g.host, g.port);
+        tcp[g.id] = {g.host, g.port, g.user, g.password};
+        udp[g.id] = {g.host, g.port, g.user, g.password};
     }
-    // A changed proxy may well reach IPv6: forget what the old ones taught.
-    if (endpoints != group_endpoints_) {
-        group_endpoints_ = std::move(endpoints);
+    // A changed proxy (or credentials) may well reach IPv6: forget what the old ones taught.
+    if (tcp != last_groups_) {
+        last_groups_ = tcp;
         ipv6_egress_.clear();
     }
     const auto n = tcp.size();
@@ -388,11 +386,13 @@ nlohmann::json app::traffic_stats() const {
     return j;
 }
 
-std::pair<std::string, uint16_t> app::pick_proxy_endpoint(const ConfigV2& v2) {
+ProxyGroupConfig app::pick_proxy_endpoint(const ConfigV2& v2) {
     if (!v2.proxy_groups.empty()) {
-        return {v2.proxy_groups[0].host, v2.proxy_groups[0].port};
+        const auto& g = v2.proxy_groups[0];
+        return {g.host, g.port, g.user, g.password};
     }
-    return {v2.default_proxy.host, v2.default_proxy.port};
+    return {v2.default_proxy.host, v2.default_proxy.port,
+            v2.default_proxy.user, v2.default_proxy.password};
 }
 
 void app::wire_observers() {
@@ -422,8 +422,8 @@ void app::wire_observers() {
                     PC_LOG_INFO("IPv6 mode: {}", ipv6_mode_name());
             }
             if (gui_) gui_->set_close_to_tray(cfg.ui.close_to_tray);
-            auto [ph, pp] = pick_proxy_endpoint(cfg);
-            dns_mgr_.request(cfg.dns, ph, pp);
+            const auto ep = pick_proxy_endpoint(cfg);
+            dns_mgr_.request(cfg.dns, ep.host, ep.port, {ep.user, ep.password});
         });
 }
 
@@ -517,8 +517,8 @@ void app::start_servers_and_workers() {
 
     {
         const ConfigV2 cfg = cfg_store_.get();
-        auto [ph, pp] = pick_proxy_endpoint(cfg);
-        dns_mgr_.request(cfg.dns, ph, pp);
+        const auto ep = pick_proxy_endpoint(cfg);
+        dns_mgr_.request(cfg.dns, ep.host, ep.port, {ep.user, ep.password});
     }
 
     tree_mgr_.start();

@@ -35,6 +35,7 @@
 #include "core/dns_forwarder.hpp"
 #include "core/system_dns.hpp"
 #include "core/log.hpp"
+#include "proxy/socks5_credentials.hpp"
 #include "proxy/tcp_dns_upstream.hpp"
 #include "transport/frontend_push_sink.hpp"
 
@@ -100,7 +101,8 @@ public:
 
     // Non-blocking apply: hand the config to the worker and return. Called
     // from the config observer (API thread) and at startup.
-    void request(const DnsConfig& cfg, const std::string& proxy_host, uint16_t proxy_port) {
+    void request(const DnsConfig& cfg, const std::string& proxy_host, uint16_t proxy_port,
+                 socks5_credentials proxy_creds = {}) {
         // Cheap and lock-free for readers; TCP :53 must follow the config at once.
         publish_tcp_dns_upstream(cfg);
         const bool want = cfg.enabled && cfg.mode == "forwarder";
@@ -120,7 +122,7 @@ public:
         {
             std::lock_guard lk(req_mu_);
             if (stopping_) return;
-            pending_ = request_t{cfg, proxy_host, proxy_port};
+            pending_ = request_t{cfg, proxy_host, proxy_port, std::move(proxy_creds)};
             if (!worker_.joinable())
                 worker_ = std::thread([this] { worker_loop(); });
         }
@@ -143,7 +145,8 @@ public:
     //   on → off:  stop forwarder + restore system DNS
     //   both on:   if upstream/listen changed → restore DNS, then restart
     void apply(const DnsConfig& cfg,
-               const std::string& proxy_host, uint16_t proxy_port) {
+               const std::string& proxy_host, uint16_t proxy_port,
+               const socks5_credentials& proxy_creds = {}) {
         const bool want_enabled = cfg.enabled && cfg.mode == "forwarder";
 
         if (cfg.enabled && cfg.mode != "forwarder") {
@@ -172,7 +175,8 @@ public:
             current_cfg_.listen_host != cfg.listen_host ||
             current_cfg_.listen_port != cfg.listen_port ||
             current_proxy_host_ != proxy_host ||
-            current_proxy_port_ != proxy_port;
+            current_proxy_port_ != proxy_port ||
+            current_proxy_creds_ != proxy_creds;
 
         if (forwarder_ && current_cfg_.enabled && !fwd_target_changed) {
             current_cfg_ = cfg;
@@ -191,7 +195,7 @@ public:
         stop_forwarder();
         current_cfg_ = cfg;
         current_cfg_.enabled = false;
-        if (!start_forwarder(cfg, proxy_host, proxy_port)) {
+        if (!start_forwarder(cfg, proxy_host, proxy_port, proxy_creds)) {
             fail("proxy_unreachable", cfg);
             return;
         }
@@ -227,6 +231,7 @@ private:
         DnsConfig cfg;
         std::string proxy_host;
         uint16_t proxy_port;
+        socks5_credentials proxy_creds;
     };
 
     void worker_loop() {
@@ -240,7 +245,7 @@ private:
                 pending_.reset();
             }
             try {
-                apply(r.cfg, r.proxy_host, r.proxy_port);
+                apply(r.cfg, r.proxy_host, r.proxy_port, r.proxy_creds);
             } catch (const std::exception& e) {
                 PC_LOG_ERROR("[DNS-MGR] apply failed: {}", e.what());
                 fail("proxy_unreachable", r.cfg);
@@ -298,23 +303,28 @@ private:
     DnsConfig current_cfg_{};
     std::string current_proxy_host_;
     uint16_t current_proxy_port_ = 0;
+    socks5_credentials current_proxy_creds_;
     bool system_dns_modified_ = false;
     std::vector<system_dns::InterfaceDnsState> saved_states_;
 
     bool start_forwarder(const DnsConfig& cfg,
-                         const std::string& proxy_host, uint16_t proxy_port) {
+                         const std::string& proxy_host, uint16_t proxy_port,
+                         const socks5_credentials& proxy_creds) {
         forwarder_ = std::make_unique<dns_forwarder>(
             ioc_, cfg.listen_host, cfg.listen_port,
             proxy_host, proxy_port,
-            cfg.upstream_host, cfg.upstream_port);
+            cfg.upstream_host, cfg.upstream_port,
+            proxy_creds);
         if (forwarder_->start()) {
-            PC_LOG_INFO("[DNS-MGR] Forwarder started{}: {}:{} -> SOCKS5 {}:{} -> {}:{}",
+            PC_LOG_INFO("[DNS-MGR] Forwarder started{}: {}:{} -> SOCKS5 {}:{}{} -> {}:{}",
                          forwarder_->tcp_only() ? " (TCP only)" : "",
                          cfg.listen_host, cfg.listen_port,
                          proxy_host, proxy_port,
+                         proxy_creds.empty() ? "" : " (auth)",
                          cfg.upstream_host, cfg.upstream_port);
             current_proxy_host_ = proxy_host;
             current_proxy_port_ = proxy_port;
+            current_proxy_creds_ = proxy_creds;
             return true;
         } else {
             PC_LOG_WARN("[DNS-MGR] Forwarder failed to start");

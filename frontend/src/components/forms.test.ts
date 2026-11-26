@@ -101,7 +101,7 @@ describe('settings helpers', () => {
 })
 
 describe('proxy group form validation', () => {
-  const base = { name: 'g', host: '127.0.0.1', port: '1080', test_url: '' }
+  const base = { name: 'g', host: '127.0.0.1', port: '1080', test_url: '', user: '', password: '' }
   const issues = (f: typeof base) => {
     const r = groupFormSchema.safeParse(f)
     return r.success ? [] : r.error.issues.map(i => `${String(i.path[0])}: ${i.message}`)
@@ -125,10 +125,13 @@ describe('proxy group form validation', () => {
     expect(issues({ ...base, host: 'proxy.example.com' })).toEqual([])
   })
 
-  it('normalises the host and sends a numeric port, socks5 only', () => {
+  it('validates optional RFC 1929 credentials (<= 255 UTF-8 bytes) and maps payload', () => {
     expect(normalizeProxyHost(' [::1] ')).toBe('::1')
-    expect(groupFormToPayload({ ...base, host: '[::1]', port: ' 1080 ' })).toEqual({
-      name: 'g', host: '::1', port: 1080, type: 'socks5', test_url: '',
+    expect(issues({ ...base, user: 'alice', password: 'secret' })).toEqual([])
+    expect(issues({ ...base, user: 'a'.repeat(256) }).some(m => m.startsWith('user:'))).toBe(true)
+    expect(issues({ ...base, password: '中'.repeat(86) }).some(m => m.startsWith('password:'))).toBe(true)
+    expect(groupFormToPayload({ ...base, host: '[::1]', port: ' 1080 ', user: 'alice', password: 'pw' })).toEqual({
+      name: 'g', host: '::1', port: 1080, type: 'socks5', test_url: '', user: 'alice', password: 'pw',
     })
   })
 })

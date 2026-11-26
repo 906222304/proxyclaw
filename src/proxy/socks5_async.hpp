@@ -14,6 +14,7 @@
 #include <format>
 #include <stdexcept>
 #include "core/log.hpp"
+#include "proxy/socks5_auth.hpp"
 
 namespace clew {
 
@@ -71,17 +72,14 @@ inline std::size_t socks5_connect_request(const socks5_dest& d, std::array<uint8
 // SOCKS5 handshake as a coroutine.
 // Establishes a SOCKS5 tunnel through `sock` to `dest`.
 inline asio::awaitable<void>
-socks5_handshake(tcp::socket& sock, const socks5_dest& dest)
+socks5_handshake(tcp::socket& sock, const socks5_dest& dest,
+                 const socks5_credentials& creds = {})
 {
-    // Phase 1: Greeting — no auth
-    std::array<uint8_t, 3> greeting = {0x05, 0x01, 0x00};  // VER=5, 1 method, NO_AUTH
-    co_await asio::async_write(sock, asio::buffer(greeting), asio::use_awaitable);
-
-    std::array<uint8_t, 2> greeting_reply{};
-    co_await asio::async_read(sock, asio::buffer(greeting_reply), asio::use_awaitable);
-
-    if (greeting_reply[0] != 0x05 || greeting_reply[1] != 0x00) {
-        throw socks5_protocol_error("SOCKS5 greeting failed: server rejected NO_AUTH");
+    // Phase 1: Greeting + optional RFC 1929 username/password auth
+    try {
+        co_await socks5_negotiate_auth(sock, creds);
+    } catch (const socks5_auth_error& e) {
+        throw socks5_protocol_error(e.what());
     }
 
     // Phase 2: CONNECT request
@@ -122,12 +120,13 @@ socks5_handshake(tcp::socket& sock, const socks5_dest& dest)
 
 // IPv4 destination in host byte order (WinDivert SOCKET layer native).
 inline asio::awaitable<void>
-socks5_handshake(tcp::socket& sock, uint32_t dest_ip_host, uint16_t dest_port)
+socks5_handshake(tcp::socket& sock, uint32_t dest_ip_host, uint16_t dest_port,
+                 const socks5_credentials& creds = {})
 {
     socks5_dest d;
     d.v4_host = dest_ip_host;
     d.port = dest_port;
-    co_await socks5_handshake(sock, d);
+    co_await socks5_handshake(sock, d, creds);
 }
 
 } // namespace clew

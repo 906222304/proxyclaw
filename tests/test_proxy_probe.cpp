@@ -7,6 +7,7 @@
 #endif
 #include <asio.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -29,13 +30,14 @@ void check(bool ok, const std::string& what) {
     if (!ok) { ++failures; std::cerr << "FAIL: " << what << "\n"; }
 }
 
-enum class mode { ok_http, ok_tls, need_auth, refused, silent, domain_bound };
+enum class mode { ok_http, ok_tls, need_auth, userpass, refused, silent, domain_bound };
 
 // One-connection-at-a-time fake proxy that also plays the target.
 class fake_proxy {
 public:
-    fake_proxy(mode m, bool v6 = false)
-        : acceptor_(ioc_, tcp::endpoint(v6 ? tcp::v6() : tcp::v4(), 0)), mode_(m) {
+    fake_proxy(mode m, bool v6 = false, std::string user = {}, std::string pass = {})
+        : acceptor_(ioc_, tcp::endpoint(v6 ? tcp::v6() : tcp::v4(), 0)),
+          mode_(m), expected_user_(std::move(user)), expected_pass_(std::move(pass)) {
         thread_ = std::thread([this] { serve(); });
     }
     ~fake_proxy() {
@@ -51,6 +53,8 @@ private:
     asio::io_context ioc_;
     tcp::acceptor acceptor_;
     mode mode_;
+    std::string expected_user_;
+    std::string expected_pass_;
     std::atomic<bool> stop_{false};
     std::thread thread_;
 
@@ -61,15 +65,41 @@ private:
         if (ec) return;
         try {
             if (mode_ == mode::silent) { std::this_thread::sleep_for(1500ms); return; }
-            std::uint8_t g[3];
-            asio::read(s, asio::buffer(g));
+            std::uint8_t gh[2];
+            asio::read(s, asio::buffer(gh));
+            std::vector<std::uint8_t> methods(gh[1]);
+            if (!methods.empty()) asio::read(s, asio::buffer(methods));
             if (mode_ == mode::need_auth) {
                 const std::uint8_t r[2] = {5, 0xFF};
                 asio::write(s, asio::buffer(r));
                 return;
             }
-            const std::uint8_t r[2] = {5, 0};
-            asio::write(s, asio::buffer(r));
+            if (mode_ == mode::userpass) {
+                const bool offered_userpass =
+                    std::find(methods.begin(), methods.end(), 0x02) != methods.end();
+                if (!offered_userpass) {
+                    const std::uint8_t r[2] = {5, 0xFF};
+                    asio::write(s, asio::buffer(r));
+                    return;
+                }
+                const std::uint8_t r[2] = {5, 0x02};
+                asio::write(s, asio::buffer(r));
+                std::uint8_t hdr[2];
+                asio::read(s, asio::buffer(hdr));
+                std::string u(hdr[1], '\0');
+                if (hdr[1]) asio::read(s, asio::buffer(u));
+                std::uint8_t plen = 0;
+                asio::read(s, asio::buffer(&plen, 1));
+                std::string p(plen, '\0');
+                if (plen) asio::read(s, asio::buffer(p));
+                const bool ok = (hdr[0] == 0x01 && u == expected_user_ && p == expected_pass_);
+                const std::uint8_t arep[2] = {0x01, static_cast<std::uint8_t>(ok ? 0x00 : 0x01)};
+                asio::write(s, asio::buffer(arep));
+                if (!ok) return;
+            } else {
+                const std::uint8_t r[2] = {5, 0};
+                asio::write(s, asio::buffer(r));
+            }
             std::uint8_t head[5];
             asio::read(s, asio::buffer(head));
             last_request.assign(head, head + 5);
@@ -214,6 +244,36 @@ void failures_name_their_stage() {
     }
 }
 
+void userpass_auth() {
+    {
+        fake_proxy p(mode::userpass, false, "alice", "s3cr3t");
+        auto r = probe::run("127.0.0.1", p.port(), http_target(), 3000ms, {"alice", "s3cr3t"});
+        check(r.ok && r.detail == "HTTP 204", "valid RFC 1929 creds pass: " + r.error);
+    }
+    {
+        fake_proxy p(mode::userpass, false, "alice", "s3cr3t");
+        auto r = probe::run("127.0.0.1", p.port(), http_target(), 3000ms, {"alice", "wrong_pw_123"});
+        check(!r.ok && r.failed_stage == "handshake" &&
+                  r.error.find("authentication") != std::string::npos,
+              "wrong password -> handshake: " + r.failed_stage + " " + r.error);
+        check(r.error.find("wrong_pw_123") == std::string::npos,
+              "password never leaked in error text: " + r.error);
+    }
+    {
+        fake_proxy p(mode::userpass, false, "alice", "s3cr3t");
+        auto r = probe::run("127.0.0.1", p.port(), http_target(), 3000ms);
+        check(!r.ok && r.failed_stage == "handshake" &&
+                  r.error.find("authentication") != std::string::npos,
+              "missing creds on auth server -> handshake: " + r.failed_stage + " " + r.error);
+    }
+    {
+        // Server chooses NO_AUTH even when client has credentials configured.
+        fake_proxy p(mode::ok_http);
+        auto r = probe::run("127.0.0.1", p.port(), http_target(), 3000ms, {"alice", "s3cr3t"});
+        check(r.ok && r.detail == "HTTP 204", "no-auth server accepts creds offer: " + r.error);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -224,6 +284,7 @@ int main() {
     domain_bound_reply_is_fully_read();
     tls_target();
     failures_name_their_stage();
+    userpass_auth();
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "proxy_probe_tests: all passed\n";
     return 0;

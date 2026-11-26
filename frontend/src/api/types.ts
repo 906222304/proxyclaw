@@ -65,6 +65,8 @@ export interface ProxyGroup {
   port: number
   type: ProxyProtocol
   test_url: string
+  user?: string
+  password?: string
 }
 
 export interface GroupInUseError {

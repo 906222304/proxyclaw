@@ -42,10 +42,11 @@ SYSTEM_CURL = pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Syste
 class Socks5Server:
     """Minimal SOCKS5 CONNECT relay that records every requested destination."""
 
-    def __init__(self) -> None:
+    def __init__(self, auth: tuple[str, str] | None = None) -> None:
         self.lock = threading.Lock()
         self.seen: list[tuple[str, int]] = []
         self.seen_udp: list[tuple[str, int]] = []
+        self.auth = auth
         # When set, IPv6 (ATYP 4) CONNECTs are refused with this REP: a proxy
         # without IPv6 egress (ipv6.mode = proxy fallback, ipv6_egress.hpp).
         self.v6_rep: int | None = None
@@ -82,8 +83,22 @@ class Socks5Server:
         conn.settimeout(15)
         try:
             ver, nmethods = self._exact(conn, 2)
-            self._exact(conn, nmethods)
-            conn.sendall(b"\x05\x00")
+            methods = self._exact(conn, nmethods)
+            if self.auth is not None:
+                if 2 not in methods:
+                    conn.sendall(b"\x05\xff")
+                    return
+                conn.sendall(b"\x05\x02")
+                aver, ulen = self._exact(conn, 2)
+                user = self._exact(conn, ulen).decode("utf-8", errors="replace")
+                plen = self._exact(conn, 1)[0]
+                pw = self._exact(conn, plen).decode("utf-8", errors="replace")
+                if aver != 1 or (user, pw) != self.auth:
+                    conn.sendall(b"\x01\x01")
+                    return
+                conn.sendall(b"\x01\x00")
+            else:
+                conn.sendall(b"\x05\x00")
             ver, cmd, _, atyp = self._exact(conn, 4)
             if atyp == 1:
                 host = socket.inet_ntoa(self._exact(conn, 4))
@@ -723,7 +738,14 @@ SPEED_CASES = [
     (0, True, None, "HTTP "),
     (1, True, None, "TLS"),
     (2, False, "connect", None),
+    (3, True, None, "HTTP "),
+    (4, False, "handshake", None),
 ]
+
+AUTH_USER = "pc_e2e_user"
+AUTH_PASS = "pc_e2e_secret_98765"
+AUTH_RULE = {**rule("auth", "both"), "proxy_group_id": 3}
+AUTH_CHECKS = 3  # TCP via auth proxy, UDP via auth proxy, password absent from log
 
 
 # UDP port per family (#5): a proxied IPv4 socket keeps its decision while an
@@ -929,6 +951,7 @@ def main() -> int:
     exe = args.exe.resolve()
     work = pathlib.Path(tempfile.mkdtemp(prefix="pc_e2e_rules_"))
     socks = Socks5Server()
+    auth_socks = Socks5Server(auth=(AUTH_USER, AUTH_PASS))
     token = secrets.token_hex(32)
 
     config = {
@@ -942,10 +965,17 @@ def main() -> int:
              "type": "socks5", "test_url": "https://1.1.1.1/"},
             {"id": 2, "name": "dead", "host": "127.0.0.1", "port": 1,
              "type": "socks5", "test_url": "http://1.1.1.1/"},
+            # RFC 1929 authenticated proxy: valid credentials (id 3) and wrong password (id 4)
+            {"id": 3, "name": "authed", "host": "127.0.0.1", "port": auth_socks.port,
+             "type": "socks5", "test_url": "http://1.1.1.1/",
+             "user": AUTH_USER, "password": AUTH_PASS},
+            {"id": 4, "name": "badauth", "host": "127.0.0.1", "port": auth_socks.port,
+             "type": "socks5", "test_url": "http://1.1.1.1/",
+             "user": AUTH_USER, "password": "wrong_password"},
         ],
-        "next_group_id": 3,
+        "next_group_id": 5,
         "auto_rules": [c[0] for c in CASES] + [c[0] for c in UDP_CASES] + [c[0] for c in V6_CASES]
-                      + [DECISION_RULE, DECISION_SHADOW, UDP_FAMILY_RULE, CHILD_EXCL_RULE],
+                      + [DECISION_RULE, DECISION_SHADOW, UDP_FAMILY_RULE, CHILD_EXCL_RULE, AUTH_RULE],
         "log_level": "debug",
         "dns": {"enabled": False},
     }
@@ -957,6 +987,8 @@ def main() -> int:
         dst = work / r["process_name"]
         shutil.copy2(SYSTEM_CURL, dst)
         probes[r["id"]] = dst
+    auth_curl = work / AUTH_RULE["process_name"]
+    shutil.copy2(SYSTEM_CURL, auth_curl)
 
     # python.exe finds its DLL next to itself, so the renamed copy lives in
     # the interpreter's own directory.
@@ -996,6 +1028,9 @@ def main() -> int:
     shutil.copy2(SYSTEM_CURL, child_sibling_curl)
     child_leaf_curl = work / "pc_tree_leaf.exe"
     shutil.copy2(SYSTEM_CURL, child_leaf_curl)
+    auth_py_probe = py_dir / AUTH_RULE["process_name"]
+    shutil.copy2(sys.executable, auth_py_probe)
+    udp_probes[AUTH_RULE["id"]] = auth_py_probe
 
     env = dict(os.environ, PROXYCLAW_API_TOKEN=token)
     proc = subprocess.Popen([str(exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
@@ -1010,7 +1045,7 @@ def main() -> int:
                 rules = api_get("/auto-rules", token)
                 # tree_ready: initial process rundown verified (builds
                 # without the flag are not waited on).
-                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 4
+                if (len(rules) >= len(CASES) + len(UDP_CASES) + len(V6_CASES) + 5
                         and api_get("/stats", token).get("tree_ready", True)):
                     break
             except Exception:
@@ -1053,6 +1088,29 @@ def main() -> int:
             if not ok:
                 failures.append(f"speedtest g{gid}")
 
+        # RFC 1929 authenticated SOCKS5 TCP + UDP relay checks.
+        auth_socks.take()
+        res = subprocess.run(
+            [str(auth_curl), "-s", "-k", "-o", os.devnull, "-w", "%{http_code}",
+             "--noproxy", "*", "--connect-timeout", "10", "-m", "20", "http://1.1.1.1/"],
+            capture_output=True, text=True,
+        )
+        time.sleep(0.3)
+        seen_auth = auth_socks.take()
+        _check(failures, "e2e_auth tcp",
+               res.returncode == 0 and ("1.1.1.1", 80) in seen_auth,
+               {"rc": res.returncode, "http": res.stdout, "seen": seen_auth})
+
+        auth_socks.take_udp()
+        res = subprocess.run([str(auth_py_probe), str(udp_script), "1.1.1.1"],
+                             capture_output=True, text=True, timeout=30)
+        time.sleep(0.3)
+        relayed_auth = {host for host, port in auth_socks.take_udp() if port == 53}
+        _check(failures, "e2e_auth udp",
+               res.returncode == 0 and relayed_auth == {"1.1.1.1"},
+               {"rc": res.returncode, "relayed": sorted(relayed_auth),
+                "stdout": res.stdout.strip(), "stderr": res.stderr.strip()[-160:]})
+
         for r, servers, expect_relayed in UDP_CASES:
             socks.take_udp()
             res = subprocess.run([str(udp_probes[r["id"]]), str(udp_script), *servers],
@@ -1086,11 +1144,15 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             proc.kill()
         log = exe.parent / "proxyclaw.log"
+        log_text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        _check(failures, "e2e_auth password not logged",
+               AUTH_PASS not in log_text and "wrong_password" not in log_text,
+               {"log_exists": log.exists()})
         if failures and log.exists():
             print("---- proxyclaw.log (WD-SOCKET / RULE lines, last 80) ----")
-            lines = [l for l in log.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = [l for l in log_text.splitlines()
                      if "WD-SOCKET" in l or "[RULE]" in l or "[E]" in l or "UDP" in l
-                     or "V6" in l or "IPv6" in l]
+                     or "V6" in l or "IPv6" in l or "SOCKS5" in l]
             print("\n".join(lines[-80:]))
         for path in udp_probes.values():
             path.unlink(missing_ok=True)
@@ -1098,7 +1160,7 @@ def main() -> int:
             shutil.rmtree(work, ignore_errors=True)
 
     total = (sum(len(c[1]) for c in CASES) + len(UDP_CASES) + len(V6_CASES) + 2 + len(SPEED_CASES)
-             + DECISION_CHECKS + UDP_FAMILY_CHECKS + CHILD_EXCL_CHECKS)
+             + DECISION_CHECKS + UDP_FAMILY_CHECKS + CHILD_EXCL_CHECKS + AUTH_CHECKS)
     print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 

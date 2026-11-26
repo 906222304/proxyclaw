@@ -27,6 +27,8 @@ namespace clew {
 struct ProxyGroupConfig {
     std::string host;
     uint16_t    port{7890};
+    std::string user;
+    std::string password;
     bool operator==(const ProxyGroupConfig&) const = default;
 };
 

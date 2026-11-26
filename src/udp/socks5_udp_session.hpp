@@ -13,6 +13,7 @@
 #include "config/proxy_host.hpp"
 #include "core/log.hpp"
 #include "proxy/connection_health.hpp"
+#include "proxy/socks5_auth.hpp"
 
 namespace clew {
 using asio::ip::tcp;
@@ -20,9 +21,10 @@ using asio::ip::udp;
 
 class Socks5UdpSession : public std::enable_shared_from_this<Socks5UdpSession> {
 public:
-    Socks5UdpSession(asio::io_context& ioc, const std::string& host, uint16_t port)
+    Socks5UdpSession(asio::io_context& ioc, const std::string& host, uint16_t port,
+                     socks5_credentials creds = {})
         : ioc_(ioc), strand_(asio::make_strand(ioc)), proxy_host_(host), proxy_port_(port),
-          tcp_control_(strand_), udp_data_(strand_) {}
+          creds_(std::move(creds)), tcp_control_(strand_), udp_data_(strand_) {}
 
     ~Socks5UdpSession() { close_sockets(); }
 
@@ -70,6 +72,7 @@ private:
     asio::strand<asio::io_context::executor_type> strand_;
     std::string proxy_host_;
     uint16_t proxy_port_;
+    socks5_credentials creds_;
     tcp::socket tcp_control_;
     udp::socket udp_data_;
     udp::endpoint relay_endpoint_;
@@ -93,12 +96,7 @@ private:
         co_await asio::async_connect(tcp_control_, endpoints, asio::use_awaitable);
         enable_tcp_keepalive(tcp_control_);
 
-        std::array<uint8_t, 3> greeting{5, 1, 0};
-        co_await asio::async_write(tcp_control_, asio::buffer(greeting), asio::use_awaitable);
-        std::array<uint8_t, 2> auth{};
-        co_await asio::async_read(tcp_control_, asio::buffer(auth), asio::use_awaitable);
-        if (auth != std::array<uint8_t, 2>{5, 0})
-            throw std::runtime_error("SOCKS5 UDP auth rejected");
+        co_await socks5_negotiate_auth(tcp_control_, creds_);
 
         std::array<uint8_t, 10> request{5, 3, 0, 1, 0, 0, 0, 0, 0, 0};
         co_await asio::async_write(tcp_control_, asio::buffer(request), asio::use_awaitable);

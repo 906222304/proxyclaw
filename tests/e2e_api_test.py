@@ -1154,7 +1154,9 @@ def test_group_validation():
         ({"host": ""}, "host"),
         ({"host": "127.0.0.1:1080"}, "host"),
         ({"type": "http"}, "type"),
-        ({"user": "alice", "password": "secret"}, "user"),
+        ({"user": "u" * 256}, "user"),
+        ({"password": "p" * 256}, "password"),
+        ({"username": "alice"}, "username"),
     ]
     for extra, field in bad_bodies:
         body = {"name": E2E_GROUP + "_bad", "host": "127.0.0.1", "port": 1080, "type": "socks5"}
@@ -1166,9 +1168,10 @@ def test_group_validation():
     after = requests.get(f"{BASE}/proxy-groups").json()
     assert len(after) == len(before), "a rejected create still added a group"
 
-    # Valid create; IPv6 brackets are normalised away.
+    # Valid create with RFC 1929 credentials; IPv6 brackets are normalised away.
     r = requests.post(f"{BASE}/proxy-groups", json={
-        "name": E2E_GROUP + "_v6", "host": "[::1]", "port": 1080, "type": "socks5"})
+        "name": E2E_GROUP + "_v6", "host": "[::1]", "port": 1080, "type": "socks5",
+        "user": "alice", "password": "secret"})
     assert r.status_code == 200, f"create failed: {r.status_code} {r.text}"
     gid = r.json()["id"]
     try:
@@ -1176,6 +1179,18 @@ def test_group_validation():
         assert r.status_code == 400, f"update port 65536: {r.status_code} {r.text}"
         my = next(g for g in requests.get(f"{BASE}/proxy-groups").json() if g["id"] == gid)
         assert my["host"] == "::1" and my["port"] == 1080, f"unexpected stored group: {my}"
+        assert my.get("user") == "alice" and my.get("password") == "secret", f"missing creds: {my}"
+
+        # Partial update without user/password preserves existing credentials;
+        # explicit empty strings clear them.
+        r = requests.put(f"{BASE}/proxy-groups/{gid}", json={"port": 1081})
+        assert r.status_code == 200, f"partial update failed: {r.status_code} {r.text}"
+        my = next(g for g in requests.get(f"{BASE}/proxy-groups").json() if g["id"] == gid)
+        assert my["port"] == 1081 and my.get("user") == "alice" and my.get("password") == "secret"
+        r = requests.put(f"{BASE}/proxy-groups/{gid}", json={"user": "", "password": ""})
+        assert r.status_code == 200, f"clear creds failed: {r.status_code} {r.text}"
+        my = next(g for g in requests.get(f"{BASE}/proxy-groups").json() if g["id"] == gid)
+        assert "user" not in my and "password" not in my, f"creds not cleared: {my}"
 
         # The settings editor path validates proxy_groups the same way.
         cfg = requests.get(f"{BASE}/config").json()

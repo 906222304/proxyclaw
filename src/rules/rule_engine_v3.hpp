@@ -22,6 +22,7 @@
 #include "core/string_hash.hpp"
 
 #include "process/flat_tree.hpp"
+#include "process/process_info_cache.hpp"
 #include "config/types.hpp"
 #include "core/decision_log.hpp"
 #include "rules/traffic_filter.hpp"
@@ -137,6 +138,9 @@ struct RuleMatchResult {
 class rule_engine_v3 {
 public:
     rule_engine_v3() = default;
+
+    // Attach the process_tree_manager's shared (pid, psn) metadata cache.
+    void set_info_cache(process_info_cache* cache) noexcept { info_cache_ = cache; }
 
     // Load auto rules from config (called on strand). Per-process exclusions
     // are engine-owned runtime state (see exclusions_) and survive a reload
@@ -688,6 +692,7 @@ private:
     std::vector<CidrRange> default_exclude_cidrs_;
     bool any_rule_uses_cmdline_ = false;
     uint64_t config_version_ = 0;
+    process_info_cache* info_cache_ = nullptr;
 
     // Rule id -> runtime policy id. Handed out from 1 (0 is reserved) and never
     // reused: tracker slots hold the number, so recycling it would silently
@@ -713,6 +718,59 @@ private:
             });
     }
 
+    static std::string to_entry_cache_value(std::string s) {
+        return s.empty() ? std::string("\x01") : std::move(s);
+    }
+
+    // Populate entry's local metadata cache from the shared (pid, psn) cache or
+    // via a single PSN-verified OpenProcess handle. Prevents both duplicate OS
+    // handle opens across cmdline/image_path/pfn checks and PID-reuse pollution.
+    void ensure_process_info(process_entry& entry, uint8_t required_mask) {
+        const bool need_path = (required_mask & kFieldImagePath) && entry.image_path_cache.empty();
+        const bool need_cmd  = (required_mask & kFieldCmdline) && entry.cmdline_cache.empty();
+        const bool need_pfn  = (required_mask & kFieldPackageFamily) && entry.package_family_cache.empty();
+        if (!need_path && !need_cmd && !need_pfn) return;
+
+        if (info_cache_ && entry.psn != INVALID_PSN) {
+            if (auto cached = info_cache_->get(entry.pid, entry.psn, required_mask)) {
+                if (cached->has(kFieldImagePath) && entry.image_path_cache.empty())
+                    entry.image_path_cache = to_entry_cache_value(std::move(cached->image_path));
+                if (cached->has(kFieldCmdline) && entry.cmdline_cache.empty())
+                    entry.cmdline_cache = to_entry_cache_value(std::move(cached->cmdline));
+                if (cached->has(kFieldPackageFamily) && entry.package_family_cache.empty())
+                    entry.package_family_cache = to_entry_cache_value(std::move(cached->package_family_name));
+                return;
+            }
+        }
+
+        auto res = query_process_info_verified(entry.pid, entry.psn);
+        if (!res.same_process) {
+            if (info_cache_ && entry.psn != INVALID_PSN) {
+                info_cache_->record_psn_mismatch();
+                info_cache_->erase(entry.pid, entry.psn);
+            }
+            if (need_path) entry.image_path_cache = "\x01";
+            if (need_cmd)  entry.cmdline_cache = "\x01";
+            if (need_pfn)  entry.package_family_cache = "\x01";
+            return;
+        }
+        if (res.opened) {
+            if (info_cache_ && entry.psn != INVALID_PSN) {
+                info_cache_->put(entry.pid, entry.psn, res.info);
+            }
+            if (entry.image_path_cache.empty())
+                entry.image_path_cache = to_entry_cache_value(std::move(res.info.image_path));
+            if (entry.cmdline_cache.empty())
+                entry.cmdline_cache = to_entry_cache_value(std::move(res.info.cmdline));
+            if (entry.package_family_cache.empty())
+                entry.package_family_cache = to_entry_cache_value(std::move(res.info.package_family_name));
+            return;
+        }
+        if (entry.image_path_cache.empty()) entry.image_path_cache = "\x01";
+        if (entry.cmdline_cache.empty()) entry.cmdline_cache = "\x01";
+        if (entry.package_family_cache.empty()) entry.package_family_cache = "\x01";
+    }
+
     // Lazy cmdline check against an arbitrary pattern (shared by rule matching
     // and child_exclusions). Queries OS on first call per process, caches result
     // in entry.cmdline_cache (sentinel "\x01" = queried but failed/empty).
@@ -720,12 +778,7 @@ private:
         if (pattern.empty()) return true;
 
         auto& entry = tree.at(idx);
-        if (entry.cmdline_cache.empty()) {
-            entry.cmdline_cache = query_process_cmdline(entry.pid);
-            if (entry.cmdline_cache.empty()) {
-                entry.cmdline_cache = "\x01";  // sentinel: queried but failed/empty
-            }
-        }
+        ensure_process_info(entry, kFieldCmdline);
         return entry.cmdline_cache[0] != '\x01' &&
                cmdline_match(pattern, entry.cmdline_cache);
     }
@@ -741,12 +794,7 @@ private:
         if (pattern.empty()) return true;
 
         auto& entry = tree.at(idx);
-        if (entry.image_path_cache.empty()) {
-            entry.image_path_cache = query_process_image_path(entry.pid);
-            if (entry.image_path_cache.empty()) {
-                entry.image_path_cache = "\x01";
-            }
-        }
+        ensure_process_info(entry, kFieldImagePath);
         if (entry.image_path_cache[0] == '\x01') return false;
 
         const auto& path = entry.image_path_cache;
@@ -799,21 +847,15 @@ private:
         if (rule.package_family_name.empty()) return true;
 
         auto& entry = tree.at(idx);
-        if (entry.package_family_cache.empty()) {
-            std::string pfn = query_process_package_family(entry.pid);
-            if (pfn.empty()) {
-                if (entry.image_path_cache.empty()) {
-                    entry.image_path_cache = query_process_image_path(entry.pid);
-                    if (entry.image_path_cache.empty()) {
-                        entry.image_path_cache = "\x01";
-                    }
-                }
-                if (entry.image_path_cache[0] != '\x01') {
-                    pfn = extract_package_family_from_path(entry.image_path_cache);
-                }
+        // Preserve unit-test path where image_path_cache is pre-seeded without OS process.
+        if (entry.package_family_cache.empty() && !entry.image_path_cache.empty() &&
+            entry.image_path_cache[0] != '\x01') {
+            std::string pfn = extract_package_family_from_path(entry.image_path_cache);
+            if (!pfn.empty()) {
+                entry.package_family_cache = std::move(pfn);
             }
-            entry.package_family_cache = pfn.empty() ? "\x01" : std::move(pfn);
         }
+        ensure_process_info(entry, kFieldPackageFamily);
         return entry.package_family_cache[0] != '\x01' &&
                wildcard_match(rule.package_family_name, entry.package_family_cache);
     }

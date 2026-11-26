@@ -17,7 +17,9 @@ process_tree_manager::process_tree_manager(asio::io_context& ioc, strand_type& s
     , strand_(strand)
     , rundown_grace_timer_(ioc)
     , lost_debounce_timer_(ioc)
-    , orphan_sweep_timer_(ioc) {}
+    , orphan_sweep_timer_(ioc) {
+    rules_.set_info_cache(&info_cache_);
+}
 
 process_tree_manager::~process_tree_manager() noexcept {
     try {
@@ -270,6 +272,9 @@ bool process_tree_manager::resolve_pid_now(DWORD pid) {
     // only their timing moves earlier.
     for (size_t i = chain.size(); i-- > 0;) {
         const live_process_info& info = chain[i];
+        if (!info.image_path.empty()) {
+            info_cache_.seed_image_path(info.pid, info.psn, info.image_path);
+        }
 
         etw_process_event evt{};
         evt.kind        = etw_process_event_kind::START;
@@ -315,10 +320,12 @@ void process_tree_manager::handle_start_or_rundown(const etw_process_event& evt,
 
     // 2. add_entry handles PID-reuse internally: if pid exists with a
     //    different PSN, it tombstones the old before installing new.
-    //    Drop the old (pid, psn) from rule match / exclusion state right
-    //    away so stale entries do not accumulate if the old STOP is lost.
+    //    Drop the old (pid, psn) from rule match / exclusion / info cache
+    //    state right away so stale entries do not accumulate if STOP is lost.
     if (const uint32_t old_idx = tree_.find_by_pid(evt.pid); old_idx != INVALID_IDX) {
-        rules_.on_process_exit(evt.pid, tree_.at(old_idx).psn);
+        const uint64_t old_psn = tree_.at(old_idx).psn;
+        rules_.on_process_exit(evt.pid, old_psn);
+        info_cache_.erase(evt.pid, old_psn);
     }
     uint32_t new_idx = tree_.add_entry(evt.pid, evt.parent_pid,
                                        evt.psn, evt.parent_psn,
@@ -350,9 +357,11 @@ void process_tree_manager::handle_start_or_rundown(const etw_process_event& evt,
 }
 
 void process_tree_manager::handle_stop(const etw_process_event& evt) {
-    // Drop any rule state tied to this exact (pid, psn). Safe even if the PID
-    // was already recycled to a newer PSN: only the matching pair is removed.
+    // Drop any rule and metadata cache state tied to this exact (pid, psn).
+    // Safe even if the PID was already recycled to a newer PSN: only the
+    // matching pair is removed.
     rules_.on_process_exit(evt.pid, evt.psn);
+    info_cache_.erase(evt.pid, evt.psn);
 
     // PSN verification: stale STOPs (after PID was recycled) silently
     // ignored — find_by_pid_psn returns INVALID_IDX when psn doesn't match.

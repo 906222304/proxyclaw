@@ -27,6 +27,17 @@ nlohmann::json stats_service::get_stats() const {
         out["tree_entries"]     = m.tree().entries().size();
         // Routing configuration version stamped into each decision record.
         out["config_version"]   = m.rules().config_version();
+        const auto cs = m.info_cache().stats();
+        out["process_info_cache"] = {
+            {"entries",        cs.entries},
+            {"capacity",       cs.capacity},
+            {"peak",           cs.peak},
+            {"hits",           cs.hits},
+            {"misses",         cs.misses},
+            {"psn_mismatches", cs.psn_mismatches},
+            {"evictions",      cs.evictions},
+            {"erased_on_exit", cs.erased_on_exit},
+        };
         return out;
     });
     if (traffic_) {

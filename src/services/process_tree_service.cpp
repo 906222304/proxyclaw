@@ -28,28 +28,49 @@ struct process_os_detail {
     std::string package_family_name;
 };
 
-// Opens the process once and keeps the handle for every read: an open handle
-// pins the process object, so its PID cannot be reused mid-query. The PSN is
-// checked first; a mismatch means the tree entry's process has exited and
-// the PID was recycled before its ETW STOP arrived.
-process_os_detail query_process_detail_impl(DWORD pid, uint64_t expected_psn) {
-    auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
-    if (!h) return {};  // gone or protected: tree facts only, as before
-    const uint64_t live = query_process_psn(h.get());
-    if (live != INVALID_PSN && live != expected_psn) return {.same_process = false};
-    auto image_path = query_process_image_path(h.get());
-    auto cmdline    = query_process_cmdline(h.get());
-    auto pfn        = query_process_package_family(h.get());
-    if (pfn.empty() && !image_path.empty()) {
-        pfn = extract_package_family_from_path(image_path);
+// Looks up (pid, expected_psn) in the shared cache when available, still
+// verifying the live process's PSN on a cache hit so a recycled PID before ETW
+// STOP never returns the previous process's cached metadata. On a cache miss,
+// opens one handle, checks PSN, reads all three fields, and populates the cache.
+process_os_detail query_process_detail_impl(DWORD pid, uint64_t expected_psn,
+                                            process_info_cache* cache) {
+    if (cache && expected_psn != INVALID_PSN) {
+        if (auto cached = cache->get(pid, expected_psn, kFieldAll)) {
+            const uint64_t live = query_live_psn(pid);
+            if (live != INVALID_PSN && live != expected_psn) {
+                cache->record_psn_mismatch();
+                cache->erase(pid, expected_psn);
+                return {.same_process = false};
+            }
+            return {true,
+                    std::move(cached->image_path),
+                    std::move(cached->cmdline),
+                    std::move(cached->package_family_name)};
+        }
     }
-    return {true, std::move(image_path), std::move(cmdline), std::move(pfn)};
+
+    auto res = query_process_info_verified(pid, expected_psn);
+    if (!res.same_process) {
+        if (cache && expected_psn != INVALID_PSN) {
+            cache->record_psn_mismatch();
+            cache->erase(pid, expected_psn);
+        }
+        return {.same_process = false};
+    }
+    if (res.opened && cache && expected_psn != INVALID_PSN) {
+        cache->put(pid, expected_psn, res.info);
+    }
+    return {true,
+            std::move(res.info.image_path),
+            std::move(res.info.cmdline),
+            std::move(res.info.package_family_name)};
 }
 
 } // namespace
 
-process_tree_service::process_tree_service(strand_bound_manager& exec)
-    : exec_(exec) {}
+process_tree_service::process_tree_service(strand_bound_manager& exec,
+                                           process_info_cache* info_cache)
+    : exec_(exec), info_cache_(info_cache) {}
 
 nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
     std::optional<hook::status_map> statuses;
@@ -94,7 +115,7 @@ nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid,
         throw api_exception{api_error::not_found, "Process not found"};
     }
     // OS calls run outside the strand.
-    auto os = query_process_detail_impl(static_cast<DWORD>(pid), tree_psn);
+    auto os = query_process_detail_impl(static_cast<DWORD>(pid), tree_psn, info_cache_);
     if (!os.same_process) {
         throw api_exception{api_error::not_found, "Process not found"};
     }

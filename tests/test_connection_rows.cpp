@@ -413,6 +413,88 @@ void test_hook_skip_reason_overrides_fallback() {
           "UDP row also surfaces hook_skip_restricted");
 }
 
+void test_resolve_udp_decision_hook_mode() {
+    DecisionLog log;
+
+    // Hook mode IPv4 proxied UDP record fills remote_ip / remote_addr / remote_port.
+    DecisionRecord d4 = record(decision_verdict::proxied, decision_reason::none, /*pid=*/42);
+    d4.proto          = decision_proto::udp;
+    d4.local_port     = 53000;
+    d4.remote_addr[0] = 0x01010101;
+    d4.remote_port    = 53;
+    log.record(d4);
+
+    connection_row hook4 = udp_row(42, /*with_dest=*/false);
+    hook4.local_port = 53000;
+    resolve_udp_decision(hook4, &log);
+    check(hook4.record.has_value(), "hook udp v4 matched decision");
+    check(hook4.remote_ip == "1.1.1.1" && hook4.remote_port == 53 &&
+          hook4.remote_addr == 0x01010101,
+          "hook udp v4 restored destination: " + hook4.remote_ip + ":" +
+              std::to_string(hook4.remote_port));
+    auto f = alive(true);
+    f.rule_id = "rule-udp";
+    const json j4 = udp_row_to_json(hook4, f);
+    check(j4["proxy_status"] == "PROXIED" && j4["dest"] == "1.1.1.1:53" &&
+          j4["decision"]["rule_id"] == "rule-udp",
+          "hook udp v4 JSON reports PROXIED and real destination: " + j4.dump());
+
+    // Hook mode IPv6 proxied UDP record formats RFC 5952 IPv6 address.
+    DecisionRecord d6 = record(decision_verdict::proxied, decision_reason::none, /*pid=*/42);
+    d6.proto          = decision_proto::udp;
+    d6.local_port     = 53001;
+    d6.flags          = decision_flags::IPV6;
+    d6.remote_addr[3] = 0x26064700u;
+    d6.remote_addr[2] = 0x47000000u;
+    d6.remote_addr[1] = 0x00000000u;
+    d6.remote_addr[0] = 0x00001111u;
+    d6.remote_port    = 443;
+    log.record(d6);
+
+    connection_row hook6 = udp_row(42, /*with_dest=*/false);
+    hook6.local_port = 53001;
+    resolve_udp_decision(hook6, &log);
+    check(hook6.remote_ip == "2606:4700:4700::1111" && hook6.remote_port == 443,
+          "hook udp v6 restored RFC 5952 IPv6: " + hook6.remote_ip);
+
+    // WinDivert row that already got remote_ip from UdpSessionTable is kept.
+    connection_row wd = udp_row(42, /*with_dest=*/true);
+    wd.local_port = 53000;
+    resolve_udp_decision(wd, &log);
+    check(wd.remote_ip == "8.8.8.8" && wd.remote_port == 53,
+          "existing UdpSessionTable destination is not overwritten");
+
+    // WinDivert BIND record (remote_port == 0) leaves remote_ip empty.
+    DecisionRecord bind_rec = d4;
+    bind_rec.local_port  = 53002;
+    bind_rec.remote_port = 0;
+    log.record(bind_rec);
+    connection_row bind_row = udp_row(42, /*with_dest=*/false);
+    bind_row.local_port = 53002;
+    resolve_udp_decision(bind_row, &log);
+    check(bind_row.record.has_value() && bind_row.remote_ip.empty() && bind_row.remote_port == 0,
+          "UDP BIND record with remote_port 0 does not synthesize 0.0.0.0:0");
+
+    // Direct/excluded decision does not populate remote_ip.
+    DecisionRecord direct_rec = record(decision_verdict::direct, decision_reason::rule_exclude_port, 42);
+    direct_rec.proto       = decision_proto::udp;
+    direct_rec.local_port  = 53003;
+    direct_rec.remote_port = 853;
+    log.record(direct_rec);
+    connection_row direct_row = udp_row(42, /*with_dest=*/false);
+    direct_row.local_port = 53003;
+    resolve_udp_decision(direct_row, &log);
+    check(direct_row.record.has_value() && direct_row.remote_ip.empty(),
+          "direct UDP decision leaves remote_ip empty");
+
+    // Mismatched PID rejects the record.
+    connection_row other = udp_row(99, /*with_dest=*/false);
+    other.local_port = 53000;
+    resolve_udp_decision(other, &log);
+    check(!other.record.has_value() && other.remote_ip.empty(),
+          "mismatched PID UDP record rejected");
+}
+
 } // namespace
 
 int main() {
@@ -426,6 +508,7 @@ int main() {
     test_conflict_and_estimate();
     test_resolve_tcp_decision_hook_mode();
     test_hook_skip_reason_overrides_fallback();
+    test_resolve_udp_decision_hook_mode();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

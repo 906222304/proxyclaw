@@ -87,6 +87,12 @@ struct connection_facts {
 void resolve_tcp_decision(connection_row& row, const DecisionLog* decisions,
                           uint16_t hook_relay_port = 0);
 
+// Match an OS UDP row against DecisionLog. When UdpSessionTable did not supply
+// a remote endpoint (e.g. Hook mode, which does not run WinDivert) and the
+// recorded decision is proxied with a non-zero remote port, populate remote_ip
+// / remote_addr / remote_port from the record so /api/udp shows the real peer.
+void resolve_udp_decision(connection_row& row, const DecisionLog* decisions);
+
 // `conflict` object of a row: {"manual", "winner", "shadowed_rule_ids"}.
 // Emitted only when there is a conflict (the key is absent otherwise).
 [[nodiscard]] nlohmann::json conflict_to_json(const rule_conflict& c);

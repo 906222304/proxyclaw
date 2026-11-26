@@ -100,12 +100,9 @@ connection_row udp_row(const udp_endpoint& ep, const UdpPortTracker* tracker,
             r.remote_port = ntohs(session->orig_dst_port);
         }
     }
-    // UDP decisions are per local port (BIND / first CONNECT); per-packet
-    // destination excludes are applied by the NETWORK workers on top.
-    if (decisions && ep.local_port != 0) {
-        r.record = decisions->latest(decision_proto::udp, ep.local_port);
-        if (r.record && !decision_record_fits(*r.record, r.pid)) r.record.reset();
-    }
+    // UDP decisions are per local port (BIND / first CONNECT in WinDivert,
+    // per-flow send/connect in Hook mode).
+    resolve_udp_decision(r, decisions);
     return r;
 }
 

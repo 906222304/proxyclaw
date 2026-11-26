@@ -67,6 +67,42 @@ void set_estimate(nlohmann::json& c, const connection_facts& f) {
     };
 }
 
+std::string format_ipv4_host(uint32_t ip) {
+    return std::format("{}.{}.{}.{}",
+                       (ip >> 24) & 0xFFu, (ip >> 16) & 0xFFu,
+                       (ip >> 8) & 0xFFu, ip & 0xFFu);
+}
+
+// RFC 5952 canonical IPv6 text from DecisionRecord::remote_addr (host-order
+// words, least significant word first).
+std::string format_ipv6_words(const uint32_t w[4]) {
+    uint16_t g[8];
+    for (int i = 0; i < 4; ++i) {
+        g[i * 2]     = static_cast<uint16_t>((w[3 - i] >> 16) & 0xFFFFu);
+        g[i * 2 + 1] = static_cast<uint16_t>(w[3 - i] & 0xFFFFu);
+    }
+    int best_start = -1, best_len = 1;
+    for (int i = 0; i < 8; ) {
+        if (g[i] != 0) { ++i; continue; }
+        int j = i;
+        while (j < 8 && g[j] == 0) ++j;
+        if (j - i > best_len) { best_start = i; best_len = j - i; }
+        i = j;
+    }
+    std::string out;
+    for (int i = 0; i < 8; ) {
+        if (i == best_start) {
+            out += "::";
+            i += best_len;
+            continue;
+        }
+        if (!out.empty() && out.back() != ':') out.push_back(':');
+        out += std::format("{:x}", g[i]);
+        ++i;
+    }
+    return out;
+}
+
 } // namespace
 
 void resolve_tcp_decision(connection_row& row, const DecisionLog* decisions,
@@ -77,11 +113,7 @@ void resolve_tcp_decision(connection_row& row, const DecisionLog* decisions,
         row.remote_port == hook_relay_port) {
         if (auto rec = decisions->find_tcp_v4_proxied(row.local_port, row.pid)) {
             row.remote_addr = rec->remote_addr[0];
-            row.remote_ip   = std::format("{}.{}.{}.{}",
-                                          (row.remote_addr >> 24) & 0xFFu,
-                                          (row.remote_addr >> 16) & 0xFFu,
-                                          (row.remote_addr >> 8) & 0xFFu,
-                                          row.remote_addr & 0xFFu);
+            row.remote_ip   = format_ipv4_host(row.remote_addr);
             row.remote_port = rec->remote_port;
             row.record      = *rec;
             return;
@@ -89,6 +121,25 @@ void resolve_tcp_decision(connection_row& row, const DecisionLog* decisions,
     }
     row.record = decisions->find_tcp_v4(row.local_port, row.remote_addr, row.remote_port);
     if (row.record && !decision_record_fits(*row.record, row.pid)) row.record.reset();
+}
+
+void resolve_udp_decision(connection_row& row, const DecisionLog* decisions) {
+    if (!decisions || row.local_port == 0) return;
+    row.record = decisions->latest(decision_proto::udp, row.local_port);
+    if (row.record && !decision_record_fits(*row.record, row.pid)) {
+        row.record.reset();
+        return;
+    }
+    if (row.remote_ip.empty() && row.record &&
+        row.record->verdict == decision_verdict::proxied && row.record->remote_port != 0) {
+        if (row.record->flags & decision_flags::IPV6) {
+            row.remote_ip = format_ipv6_words(row.record->remote_addr);
+        } else {
+            row.remote_addr = row.record->remote_addr[0];
+            row.remote_ip   = format_ipv4_host(row.remote_addr);
+        }
+        row.remote_port = row.record->remote_port;
+    }
 }
 
 // A direct decision taken for a process that was proxied at the time (a

@@ -126,8 +126,9 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         // Hook mode uses its own loopback relays; leave WinDivert acceptors
         // and driver layers unstarted. ipv6_proxy_ is enabled once hook::mode
         // binds its [::1] relay in start_traffic_layers().
-        hook_ = std::make_unique<hook::mode>(ioc_, strand_, tree_mgr_, tcp_groups_, ipv6_egress_,
-                                             decision_log_.get(), ipv6_block_, ipv6_proxy_);
+        hook_ = std::make_unique<hook::mode>(ioc_, strand_, tree_mgr_, tcp_groups_, socks5_udp_mgr_,
+                                             ipv6_egress_, decision_log_.get(), ipv6_block_,
+                                             ipv6_proxy_);
         auto provider = [h = hook_.get()]() { return h->status_snapshot(); };
         projection_.set_hook_status_provider(provider);
         process_svc_.set_hook_status_provider(provider);

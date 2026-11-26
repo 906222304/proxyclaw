@@ -2,11 +2,16 @@
 
 // interception.mode = "hook": per-process interception without the WinDivert
 // driver. proxyclaw_hook64.dll is loaded into proxied processes and rewrites
-// their TCP connects in user mode:
+// their TCP connects and UDP datagrams in user mode:
 //
-//   app connect(dst) --hook--> pipe: "pid P, port S -> dst?"   (this class)
-//        <- proxy, relay port R (flow S -> dst published first)
-//   app connect(127.0.0.1:R) --> hook::acceptor --> SOCKS5 CONNECT dst
+//   TCP: app connect(dst) --hook--> pipe: "pid P, port S -> dst?" (this class)
+//            <- proxy, relay port R (flow S -> dst published first)
+//        app connect(127.0.0.1:R) --> hook::acceptor --> SOCKS5 CONNECT dst
+//
+//   UDP: app sendto/connect(dst) --hook--> pipe: "pid P, port S -> dst?"
+//            <- proxy, per-flow loopback UDP relay port R
+//        app sendto(127.0.0.1:R) --> hook::udp_relay --> SOCKS5 UDP ASSOCIATE
+//        reply <-- 127.0.0.1:R --hook(recvfrom/IOCP)--> restored orig dst
 //
 // Decisions use the same process tree and rules as the WinDivert path, on
 // the same strand. Getting the DLL in:
@@ -16,10 +21,9 @@
 //     adds itself to the suspended child's imports before it runs, so the
 //     child's first connection is already covered.
 //
-// Not covered in this mode: UDP (goes direct), 32-bit processes, sandboxed
-// (AppContainer / low integrity) processes and those that only load
-// Microsoft-signed images, and programs that make raw syscalls instead of
-// going through ws2_32.
+// Not covered in this mode: 32-bit processes, sandboxed (AppContainer / low
+// integrity) processes and those that only load Microsoft-signed images, and
+// programs that make raw syscalls instead of going through ws2_32.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -50,8 +54,10 @@
 #include "hook/hook_injector.hpp"
 #include "hook/hook_pipe_server.hpp"
 #include "hook/hook_protocol.hpp"
+#include "hook/hook_udp_relay.hpp"
 #include "proxy/ipv6_egress.hpp"
 #include "proxy/proxy_group_table.hpp"
+#include "udp/socks5_udp_manager.hpp"
 
 namespace clew::hook {
 
@@ -60,8 +66,9 @@ public:
     using strand_type = asio::strand<asio::io_context::executor_type>;
 
     mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_manager& tree_mgr,
-         const proxy_group_table& groups, ipv6_egress& egress, DecisionLog* decisions,
-         const std::atomic<bool>& ipv6_block, const std::atomic<bool>& ipv6_proxy);
+         const proxy_group_table& groups, Socks5UdpManager& udp_mgr, ipv6_egress& egress,
+         DecisionLog* decisions, const std::atomic<bool>& ipv6_block,
+         const std::atomic<bool>& ipv6_proxy);
     ~mode();
 
     mode(const mode&) = delete;
@@ -94,9 +101,10 @@ private:
 
     reply on_request(const request& req, DWORD client_pid);   // pipe threads
     reply decide_connect(const request& req, DWORD pid);      // strand
+    reply decide_udp(const request& req, DWORD pid);          // strand
     reply decide_child(DWORD parent, DWORD child);            // strand
     reply on_child_failed(DWORD parent, DWORD child);         // strand
-    void  record(const request& req, DWORD pid, DecisionRecord& rec);
+    void  record(const request& req, DWORD pid, decision_proto proto, DecisionRecord& rec);
     void  notify_status_changed();
 
     void schedule_sweep();                                    // strand
@@ -118,6 +126,7 @@ private:
     flow_table flows_;
     acceptor acceptor_v4_;
     acceptor acceptor_v6_;
+    udp_relay udp_relay_;
     std::atomic<uint16_t> port_v4_{0};
     std::atomic<uint16_t> port_v6_{0};
     std::unique_ptr<pipe_server> pipe_;
@@ -131,9 +140,10 @@ private:
     inject_tracker tracker_;
     std::jthread injector_;
 
-    std::atomic<uint64_t> n_proxy_{0}, n_direct_{0}, n_block_{0}, n_child_inject_{0},
-                          n_child_skip_{0}, n_timeout_{0}, n_inject_ok_{0}, n_inject_skip_{0},
-                          n_inject_fail_{0};
+    std::atomic<uint64_t> n_proxy_{0}, n_direct_{0}, n_block_{0},
+                          n_udp_proxy_{0}, n_udp_direct_{0}, n_udp_block_{0},
+                          n_child_inject_{0}, n_child_skip_{0}, n_timeout_{0},
+                          n_inject_ok_{0}, n_inject_skip_{0}, n_inject_fail_{0};
 };
 
 } // namespace clew::hook

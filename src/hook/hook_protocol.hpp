@@ -32,12 +32,14 @@ enum class msg_type : uint32_t {
     connect      = 1,   // a TCP connect() / WSAConnect / ConnectEx is about to run
     child        = 2,   // a suspended child was just created: inject it?
     child_failed = 3,   // import-table edit failed: let the sweep retry after resume
+    udp_send     = 4,   // a UDP send/connect to (family, dst, dst_port) from src_port
+    udp_close    = 5,   // a proxied UDP socket bound to (family, src_port) is closing
 };
 
 enum class verdict : uint32_t {
-    direct = 0,    // call the real connect unchanged
-    proxy  = 1,    // connect to the loopback relay port instead
-    block  = 2,    // fail the connect with reply.error (IPv6 -> IPv4 fallback)
+    direct = 0,    // call the real connect/send unchanged
+    proxy  = 1,    // redirect to the loopback relay port instead
+    block  = 2,    // fail the call with reply.error (IPv6 -> IPv4 fallback)
 };
 
 struct request {

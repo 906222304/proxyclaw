@@ -2,6 +2,7 @@
 #include "hook/hook_flow_table.hpp"
 #include "hook/hook_inject_tracker.hpp"
 #include "hook/hook_protocol.hpp"
+#include "hook/hook_udp_table.hpp"
 #include "hook/pe32_export.hpp"
 
 #include <cstddef>
@@ -15,6 +16,9 @@ using namespace std::chrono_literals;
 using clew::hook::flow;
 using clew::hook::flow_table;
 using clew::hook::inject_tracker;
+using clew::hook::make_udp_flow_key;
+using clew::hook::udp_flow_key;
+using clew::hook::udp_relay_index;
 
 #define CHECK(expr) do { if (!(expr)) throw std::runtime_error(#expr); } while (false)
 
@@ -76,6 +80,8 @@ static void wire_layout() {
     CHECK(sizeof(clew::hook::reply) == 16);
     CHECK(offsetof(clew::hook::request, dst) == 24);
     CHECK(offsetof(clew::hook::reply, relay_port) == 8);
+    CHECK(static_cast<uint32_t>(clew::hook::msg_type::udp_send) == 4);
+    CHECK(static_cast<uint32_t>(clew::hook::msg_type::udp_close) == 5);
 }
 
 static void child_survives_inflight_sweep() {
@@ -243,6 +249,91 @@ static void pe32_export_lookup() {
     CHECK(!clew::hook::pe32::find_export_rva(reader, "LoadLibraryW").has_value());
 }
 
+static void udp_index_reuse_and_families() {
+    udp_relay_index<int> idx;
+    const uint8_t ip4_a[16] = {1, 1, 1, 1, 0xAA, 0xBB};   // trailing garbage ignored for v4
+    const uint8_t ip4_b[16] = {1, 1, 1, 1, 0, 0};
+    const uint8_t ip6[16]   = {0x26, 0x06, 0x47, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x11};
+
+    const udp_flow_key k4a = make_udp_flow_key(false, 50000, ip4_a, 53);
+    const udp_flow_key k4b = make_udp_flow_key(false, 50000, ip4_b, 53);
+    const udp_flow_key k6  = make_udp_flow_key(true, 50000, ip6, 53);
+    CHECK(k4a == k4b);
+    CHECK(!(k4a == k6));
+
+    std::vector<int> evicted;
+    std::vector<uint16_t> empty_ports;
+    CHECK(idx.make_room(t0, evicted, empty_ports));
+    idx.insert(k4a, 61001, /*group_id=*/1, /*pid=*/42, t0, evicted);
+    CHECK(idx.make_room(t0, evicted, empty_ports));
+    idx.insert(k6, 61002, /*group_id=*/1, /*pid=*/42, t0, evicted);
+    CHECK(evicted.empty() && idx.size() == 2);
+
+    // Lookup with clean v4 key finds the v4 slot and refreshes it.
+    auto* found4 = idx.find_and_touch(k4b, /*group_id=*/2, /*pid=*/42, t0 + 10s);
+    CHECK(found4 && *found4 == 61001);
+    auto* found6 = idx.lookup_inbound(k6, t0 + 10s);
+    CHECK(found6 && *found6 == 61002);
+
+    // Close only family=4; IPv6 slot on the same app_port stays open and
+    // app_port is NOT reported empty while v6 remains.
+    CHECK(idx.mark_socket_closed(/*pid=*/99, 50000, 4, t0 + 11s) == 0);   // wrong pid
+    CHECK(idx.mark_socket_closed(/*pid=*/42, 50000, 4, t0 + 11s) == 1);
+    // Still reachable during the 3s grace window.
+    CHECK(idx.prune(t0 + 13s, evicted, empty_ports) == 0);
+    CHECK(idx.lookup_inbound(k4b, t0 + 13s) != nullptr);
+    // Pruned once grace window elapses.
+    CHECK(idx.prune(t0 + 11s + udp_relay_index<int>::kCloseGrace, evicted, empty_ports) == 1);
+    CHECK(evicted.size() == 1 && evicted[0] == 61001);
+    CHECK(empty_ports.empty());
+    CHECK(idx.has_port(50000));
+
+    // Close family=0 (both) reaps the remaining v6 slot and reports app_port empty.
+    evicted.clear();
+    CHECK(idx.mark_socket_closed(/*pid=*/42, 50000, 0, t0 + 20s) == 1);
+    CHECK(idx.prune(t0 + 20s + udp_relay_index<int>::kCloseGrace, evicted, empty_ports) == 1);
+    CHECK(evicted.size() == 1 && evicted[0] == 61002);
+    CHECK(empty_ports.size() == 1 && empty_ports[0] == 50000);
+    CHECK(!idx.has_port(50000) && idx.size() == 0);
+}
+
+static void udp_index_cap_and_idle_eviction() {
+    udp_relay_index<int> idx(/*max_relays=*/2);
+    const uint8_t d1[4] = {1, 1, 1, 1};
+    const uint8_t d2[4] = {8, 8, 8, 8};
+    const uint8_t d3[4] = {9, 9, 9, 9};
+    const auto k1 = make_udp_flow_key(false, 51001, d1, 53);
+    const auto k2 = make_udp_flow_key(false, 51002, d2, 53);
+    const auto k3 = make_udp_flow_key(false, 51003, d3, 53);
+
+    std::vector<int> evicted;
+    std::vector<uint16_t> empty_ports;
+    CHECK(idx.make_room(t0, evicted, empty_ports));
+    idx.insert(k1, 101, 0, 10, t0, evicted);
+    CHECK(idx.make_room(t0 + 1s, evicted, empty_ports));
+    idx.insert(k2, 102, 0, 10, t0 + 1s, evicted);
+
+    // At cap with both actively open -> refuse rather than killing live flows.
+    CHECK(!idx.make_room(t0 + 2s, evicted, empty_ports));
+
+    // Marking k1 closing allows make_room to evict k1 immediately even inside
+    // the grace window so a new active flow can proceed.
+    CHECK(idx.mark_socket_closed(10, 51001, 4, t0 + 2s) == 1);
+    CHECK(idx.make_room(t0 + 3s, evicted, empty_ports));
+    CHECK(evicted.size() == 1 && evicted[0] == 101);
+    CHECK(empty_ports.size() == 1 && empty_ports[0] == 51001);
+    idx.insert(k3, 103, 0, 10, t0 + 3s, evicted);
+
+    // After idle timeout, k2 expires while k3 (refreshed later) survives.
+    evicted.clear();
+    empty_ports.clear();
+    CHECK(idx.find_and_touch(k3, 0, 10, t0 + 50s) != nullptr);
+    CHECK(idx.prune(t0 + 1s + udp_relay_index<int>::kIdleTimeout, evicted, empty_ports) == 1);
+    CHECK(evicted.size() == 1 && evicted[0] == 102);
+    CHECK(empty_ports.size() == 1 && empty_ports[0] == 51002);
+    CHECK(idx.size() == 1 && idx.has_port(51003));
+}
+
 int main() {
     const std::pair<const char*, void(*)()> cases[] = {
         {"a flow is taken once", taken_once},
@@ -254,6 +345,8 @@ int main() {
         {"child_failed clears only child entries for sweep fallback", child_failed_enables_sweep_fallback},
         {"inject_status tracking, snapshots, and skip reason mapping", status_tracking_and_counts},
         {"PE32 export lookup resolves x86 symbols and rejects forwarded/PE64", pe32_export_lookup},
+        {"udp relay index separates families, reuses slots, and honors close grace", udp_index_reuse_and_families},
+        {"udp relay index enforces cap and idle expiry", udp_index_cap_and_idle_eviction},
     };
     int failures = 0;
     for (const auto& [name, test] : cases) {

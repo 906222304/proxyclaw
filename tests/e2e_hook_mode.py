@@ -68,6 +68,33 @@ def query_api_tcp(local_port, token):
             }
     return None
 
+def query_api_udp(local_port, token):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(
+        f"http://127.0.0.1:18080/api/udp?pid={os.getpid()}",
+        headers={"X-ProxyClaw-Token": token},
+    )
+    with opener.open(req, timeout=5) as resp:
+        rows = json.loads(resp.read())
+    for r in rows:
+        if r.get("local_port") == local_port:
+            return {
+                "remote_ip": r.get("remote_ip"),
+                "remote_port": r.get("remote_port"),
+                "proxy_status": r.get("proxy_status"),
+                "route_reason": r.get("route_reason"),
+                "decision_source": r.get("decision_source"),
+                "rule_id": (r.get("decision") or {}).get("rule_id"),
+            }
+    return None
+
+def dns_query(txid):
+    return (
+        txid.to_bytes(2, "big")
+        + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+        + b"\x07example\x03com\x00\x00\x01\x00\x01"
+    )
+
 def http(host, port=80, check_api=False):
     s = socket.create_connection((host, port), timeout=10)
     peer = list(s.getpeername()[:2])
@@ -117,9 +144,11 @@ def excluded():
 step("excluded", excluded)
 
 def bound_nic():
+    # Port 853 is in exclude_ports, so this UDP connect stays direct and
+    # yields the host's real non-loopback NIC address.
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        u.connect(("1.1.1.1", 80))
+        u.connect(("1.1.1.1", 853))
         nic_ip = u.getsockname()[0]
     finally:
         u.close()
@@ -133,6 +162,77 @@ def bound_nic():
         s.close()
 
 step("bound_nic", bound_nic)
+
+def udp_unconnected():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(10)
+    results = {}
+    try:
+        for txid, resolver in [(0x1234, "1.1.1.1"), (0x5678, "8.8.8.8")]:
+            q = dns_query(txid)
+            s.sendto(q, (resolver, 53))
+            data, src = s.recvfrom(1500)
+            results[resolver] = [
+                list(src[:2]),
+                len(data) >= 12 and int.from_bytes(data[:2], "big") == txid and (data[2] & 0x80) != 0,
+            ]
+        if len(sys.argv) > 2:
+            try:
+                out["api_udp"] = query_api_udp(s.getsockname()[1], sys.argv[2])
+            except Exception as e:
+                out["api_udp"] = {"error": repr(e)}
+    finally:
+        s.close()
+    return results
+
+step("udp_unconnected", udp_unconnected)
+
+def udp_connected():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(10)
+    try:
+        s.connect(("1.0.0.1", 53))
+        peer = list(s.getpeername()[:2])
+        txid = 0x2468
+        s.send(dns_query(txid))
+        data = s.recv(1500)
+        ok = len(data) >= 12 and int.from_bytes(data[:2], "big") == txid and (data[2] & 0x80) != 0
+        return [peer, ok]
+    finally:
+        s.close()
+
+step("udp_connected", udp_connected)
+
+async def udp_proactor():
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    txid = 0x3579
+
+    class Proto(asyncio.DatagramProtocol):
+        def datagram_received(self, data, addr):
+            if not fut.done():
+                fut.set_result((list(addr[:2]), data))
+
+    transport, _ = await loop.create_datagram_endpoint(Proto, local_addr=("0.0.0.0", 0))
+    try:
+        transport.sendto(dns_query(txid), ("1.1.1.1", 53))
+        addr, data = await asyncio.wait_for(fut, 10)
+        ok = len(data) >= 12 and int.from_bytes(data[:2], "big") == txid and (data[2] & 0x80) != 0
+        return [addr, ok]
+    finally:
+        transport.close()
+
+step("udp_proactor", lambda: asyncio.run(udp_proactor()))
+
+def udp_excluded():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.sendto(b"pc-direct-udp", ("1.1.1.1", 853))
+        return True
+    finally:
+        s.close()
+
+step("udp_excluded", udp_excluded)
 
 def child():
     r = subprocess.run([sys.argv[1], "-s", "-k", "-o", "NUL", "-w", "%{http_code}", "--noproxy", "*",
@@ -158,7 +258,7 @@ RULE = {
     "cmdline_pattern": "",
     "image_path_pattern": "",
     "hack_tree": True,
-    "protocol": "tcp",
+    "protocol": "both",
     "proxy_group_id": 0,
     "dst_filter": {"include_cidrs": [], "exclude_cidrs": [], "include_ports": [],
                    "exclude_ports": ["853"]},
@@ -276,12 +376,14 @@ def main() -> int:
               {"ipv6": ipv60, "relay_port_v6": hook0.get("relay_port_v6")})
 
         socks.take()
+        socks.take_udp()
         cmd_args = [str(app), str(script), str(child), token]
         if probe32_cross:
             cmd_args.append(str(probe32_cross))
         res = subprocess.run(cmd_args, capture_output=True, text=True, timeout=120)
         time.sleep(0.5)
         seen = set(socks.take())
+        seen_udp = set(socks.take_udp())
         try:
             out = json.loads(res.stdout.strip().splitlines()[-1])
         except Exception:  # noqa: BLE001
@@ -313,6 +415,27 @@ def main() -> int:
               and not str(bound_out[0]).startswith("127.")
               and ("1.0.0.1", 443) not in seen,
               bound_out)
+        udp_unconn = out.get("udp_unconnected") or {}
+        check("UDP unconnected multi-peer proxied with restored recvfrom",
+              udp_unconn == {"1.1.1.1": [["1.1.1.1", 53], True], "8.8.8.8": [["8.8.8.8", 53], True]}
+              and ("1.1.1.1", 53) in seen_udp and ("8.8.8.8", 53) in seen_udp,
+              {"out": udp_unconn, "seen_udp": sorted(seen_udp)})
+        api_udp = out.get("api_udp") or {}
+        check("/api/udp shows original destination and PROXIED",
+              api_udp.get("remote_ip") in ("1.1.1.1", "8.8.8.8") and api_udp.get("remote_port") == 53
+              and api_udp.get("proxy_status") == "PROXIED"
+              and api_udp.get("decision_source") == "recorded"
+              and api_udp.get("rule_id") == RULE["id"],
+              api_udp)
+        check("UDP connected proxied with original getpeername",
+              out.get("udp_connected") == [["1.0.0.1", 53], True] and ("1.0.0.1", 53) in seen_udp,
+              out.get("udp_connected"))
+        check("UDP IOCP Proactor (WSASendTo/WSARecvFrom) proxied with restored addr",
+              out.get("udp_proactor") == [["1.1.1.1", 53], True] and ("1.1.1.1", 53) in seen_udp,
+              out.get("udp_proactor"))
+        check("UDP excluded port direct",
+              out.get("udp_excluded") is True and ("1.1.1.1", 853) not in seen_udp,
+              {"out": out.get("udp_excluded"), "seen_udp": sorted(seen_udp)})
         child_out = out.get("child")
         check("child injected before its first connect",
               isinstance(child_out, list) and child_out[0] == 0 and ("1.1.1.1", 443) in seen,
@@ -353,9 +476,12 @@ def main() -> int:
 
         hook = api_get("/stats", token).get("interception", {}).get("hook", {})
         skip_reasons = hook.get("skip_reasons") or {}
-        check("stats: injected, children, and skip_reasons reported",
+        check("stats: injected, children, skip_reasons, and UDP counted",
               hook.get("injected", 0) >= 1 and hook.get("children_injected", 0) >= 1
               and hook.get("proxied", 0) >= 3
+              and hook.get("udp_proxied", 0) >= 3
+              and hook.get("udp_packets_up", 0) >= 3
+              and hook.get("udp_packets_down", 0) >= 3
               and set(skip_reasons.keys()) == {"wow64", "restricted", "signed_only", "open_failed", "failed"},
               hook)
     finally:
@@ -368,7 +494,7 @@ def main() -> int:
         if failures and log.exists():
             print("---- proxyclaw.log (HOOK / RELAY lines, last 80) ----")
             lines = [l for l in log.read_text(encoding="utf-8", errors="replace").splitlines()
-                     if "HOOK" in l or "RELAY" in l or "[E]" in l]
+                     if "HOOK" in l or "RELAY" in l or "SOCKS5" in l or "[E]" in l]
             print("\n".join(lines[-80:]))
         app.unlink(missing_ok=True)
         if not args.keep:

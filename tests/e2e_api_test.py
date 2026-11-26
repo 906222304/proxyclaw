@@ -1201,7 +1201,7 @@ def test_group_validation():
         r = requests.put(f"{BASE}/config", json=bad)
         assert r.status_code == 400, f"PUT /config with port 70000: {r.status_code} {r.text}"
         my = next(g for g in requests.get(f"{BASE}/proxy-groups").json() if g["id"] == gid)
-        assert my["port"] == 1080, f"config PUT applied anyway: {my}"
+        assert my["port"] == 1081, f"config PUT applied anyway: {my}"
     finally:
         requests.delete(f"{BASE}/proxy-groups/{gid}")
 

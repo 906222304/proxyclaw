@@ -45,6 +45,7 @@
 #include "proxy/acceptor.hpp"
 #include "proxy/ipv6_egress.hpp"
 #include "proxy/proxy_group_table.hpp"
+#include "proxy/session_limiter.hpp"
 #include "services/config_service.hpp"
 #include "services/connection_service.hpp"
 #include "services/group_service.hpp"
@@ -151,6 +152,7 @@ private:
     ipv6_flow_table<>                                 v6_flows_;        // IPv6 TCP flows (ipv6.mode = proxy)
     ipv6_egress                                       ipv6_egress_;     // groups whose proxy cannot reach IPv6
     ProxyGroupMap                                     last_groups_;     // last synced groups (sync_groups)
+    session_limiter                                   tcp_limiter_;     // cap active TCP relays & pending handshakes
     async_acceptor                                    acceptor_;
     async_acceptor                                    acceptor_v6_;     // [::1], serves v6_flows_
     uint16_t                                          redirect_port_ = 0;

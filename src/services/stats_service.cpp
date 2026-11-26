@@ -57,6 +57,7 @@ nlohmann::json stats_service::get_stats() const {
         if (t.contains("interception")) j["interception"] = t["interception"];
         if (t.contains("decisions")) j["decisions"] = t["decisions"];
         if (t.contains("perf")) j["perf"] = t["perf"];
+        if (t.contains("limits")) j["limits"] = t["limits"];
         j["tcp_syn_parking"] = std::move(t);
     }
     return j;

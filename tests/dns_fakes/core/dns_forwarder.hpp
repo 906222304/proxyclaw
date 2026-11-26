@@ -18,6 +18,16 @@ inline void reset() {
     start_delay_ms = 0; last_creds = {};
 }
 }
+struct DnsForwarderStats {
+    size_t   pending{0};
+    size_t   max_pending{1024};
+    size_t   pending_peak{0};
+    size_t   tcp_active{0};
+    size_t   max_tcp{64};
+    size_t   tcp_peak{0};
+    uint64_t dropped_pending_cap{0};
+    uint64_t dropped_tcp_cap{0};
+};
 class dns_forwarder {
 public:
     dns_forwarder(asio::io_context&, const std::string&, uint16_t,
@@ -36,6 +46,7 @@ public:
         return true;
     }
     bool tcp_only() const { return fake_forwarder::tcp_only; }
+    DnsForwarderStats stats() const { return {}; }
     void stop() {
         if (running_) { --fake_forwarder::active; running_ = false; }
     }

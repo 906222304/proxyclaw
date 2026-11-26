@@ -42,7 +42,7 @@ reply make_reply(verdict v, uint16_t port = 0, uint32_t error = 0) {
 mode::mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_manager& tree_mgr,
            const proxy_group_table& groups, Socks5UdpManager& udp_mgr, ipv6_egress& egress,
            DecisionLog* decisions, const std::atomic<bool>& ipv6_block,
-           const std::atomic<bool>& ipv6_proxy)
+           const std::atomic<bool>& ipv6_proxy, session_limiter* tcp_limiter)
     : ioc_(ioc)
     , strand_(strand)
     , tree_mgr_(tree_mgr)
@@ -52,8 +52,8 @@ mode::mode(asio::io_context& ioc, strand_type& strand, domain::process_tree_mana
     , ipv6_block_(ipv6_block)
     , ipv6_proxy_(ipv6_proxy)
     , self_pid_(GetCurrentProcessId())
-    , acceptor_v4_(ioc, flows_, groups, false)
-    , acceptor_v6_(ioc, flows_, groups, true, &egress)
+    , acceptor_v4_(ioc, flows_, groups, false, nullptr, tcp_limiter)
+    , acceptor_v6_(ioc, flows_, groups, true, &egress, tcp_limiter)
     , udp_relay_(ioc, udp_mgr)
     , sweep_timer_(ioc)
 {}
@@ -227,7 +227,15 @@ reply mode::decide_connect(const request& req, DWORD pid) {
         relay = p6;
     }
 
-    flows_.publish(v6, req.src_port, f);
+    if (!flows_.publish(v6, req.src_port, f)) {
+        if (v6) {
+            rec.reason = decision_reason::ipv6_blocked;
+            record(req, pid, decision_proto::tcp, rec);
+            n_block_.fetch_add(1);
+            return make_reply(verdict::block, 0, WSAENETUNREACH);
+        }
+        return direct(decision_reason::pool_exhausted);
+    }
     rec.verdict = decision_verdict::proxied;
     rec.reason = decision_reason::none;
     rec.group_id = entry.group_id;
@@ -503,6 +511,8 @@ nlohmann::json mode::stats() const {
         {"udp_direct", n_udp_direct_.load()},
         {"udp_blocked", n_udp_block_.load()},
         {"udp_relays_active", udp_relay_.active_relays()},
+        {"udp_relays_max", udp_relay_.max_relays()},
+        {"udp_relays_cap_rejected", udp_relay_.cap_rejected()},
         {"udp_packets_up", udp_relay_.packets_up()},
         {"udp_packets_down", udp_relay_.packets_down()},
         {"udp_packets_dropped", udp_relay_.packets_dropped()},
@@ -516,6 +526,9 @@ nlohmann::json mode::stats() const {
         {"relay_accepted", acceptor_v4_.accepted() + acceptor_v6_.accepted()},
         {"relay_unmatched", acceptor_v4_.unmatched() + acceptor_v6_.unmatched()},
         {"flows_pending", f.pending},
+        {"flows_max", f.max_pending},
+        {"flows_peak", f.peak},
+        {"flows_rejected_cap", f.rejected_cap},
         {"flows_expired", f.expired},
         {"live_injected", live_counts.injected},
         {"skip_reasons", {

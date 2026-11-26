@@ -322,7 +322,10 @@ private:
         std::memcpy(session.app_src_addr6.data(), ip6.SrcAddr, 16);
         session.ifidx6        = addr.Network.IfIdx;
         session.subifidx6     = addr.Network.SubIfIdx;
-        session_table_.upsert(src_port, session);
+        if (!session_table_.upsert(src_port, session)) {
+            drop_count_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
 
         UdpOutbound out;
         out.app_port      = src_port;
@@ -419,7 +422,10 @@ private:
         session.group_id      = te.group_id;
         session.ifidx         = addr.Network.IfIdx;
         session.subifidx      = addr.Network.SubIfIdx;
-        session_table_.upsert(src_port, session);
+        if (!session_table_.upsert(src_port, session)) {
+            drop_count_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
 
         // Hand the datagram, with its own destination, to the relay. The
         // original packet is consumed (not re-injected).

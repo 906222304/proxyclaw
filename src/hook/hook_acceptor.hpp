@@ -18,14 +18,15 @@
 #include "proxy/ipv6_egress.hpp"
 #include "proxy/proxy_group_table.hpp"
 #include "proxy/relay.hpp"
+#include "proxy/session_limiter.hpp"
 
 namespace clew::hook {
 
 class acceptor {
 public:
     acceptor(asio::io_context& ioc, flow_table& flows, const proxy_group_table& groups,
-             bool ipv6, ipv6_egress* egress = nullptr)
-        : ioc_(ioc), flows_(flows), groups_(groups), ipv6_(ipv6), egress_(egress) {}
+             bool ipv6, ipv6_egress* egress = nullptr, session_limiter* limiter = nullptr)
+        : ioc_(ioc), flows_(flows), groups_(groups), ipv6_(ipv6), egress_(egress), limiter_(limiter) {}
 
     // The bound port, or 0 when the listener cannot be opened (no IPv6).
     uint16_t start() {
@@ -67,11 +68,30 @@ private:
                 break;
             }
             accepted_.fetch_add(1);
-            asio::co_spawn(asio::make_strand(ioc_), serve(std::move(sock)), asio::detached);
+            session_limiter::permit active_permit;
+            if (limiter_) {
+                active_permit = limiter_->try_acquire_active();
+                if (!active_permit) {
+                    const auto n = limiter_->stats().rejected_active;
+                    if (n == 1 || n % 100 == 0) {
+                        PC_LOG_WARN("[HOOK-ACCEPT{}] active TCP relay cap reached ({}), rejecting (total={})",
+                                    ipv6_ ? "-V6" : "", limiter_->max_active(), n);
+                    }
+                    std::error_code ep_ec;
+                    const auto peer = sock.remote_endpoint(ep_ec);
+                    if (!ep_ec) (void)flows_.take(ipv6_, peer.port());
+                    std::error_code close_ec;
+                    sock.close(close_ec);
+                    continue;
+                }
+            }
+            asio::co_spawn(asio::make_strand(ioc_),
+                           serve(std::move(sock), std::move(active_permit)), asio::detached);
         }
     }
 
-    asio::awaitable<void> serve(asio::ip::tcp::socket sock) {
+    asio::awaitable<void> serve(asio::ip::tcp::socket sock,
+                                [[maybe_unused]] session_limiter::permit active_permit) {
         std::error_code ec;
         const auto peer = sock.remote_endpoint(ec);
         if (ec) co_return;
@@ -93,7 +113,7 @@ private:
         dest.v6 = f->v6;
         dest.port = f->port;
         co_await relay_through_proxy(sock, *cfg, dest, src_port, [] {},
-                                     std::chrono::seconds(10), egress_, f->group_id);
+                                     std::chrono::seconds(10), egress_, f->group_id, limiter_);
     }
 
     asio::io_context& ioc_;
@@ -101,6 +121,7 @@ private:
     const proxy_group_table& groups_;
     const bool ipv6_;
     ipv6_egress* egress_;
+    session_limiter* limiter_;
     std::unique_ptr<asio::ip::tcp::acceptor> acceptor_;
     uint16_t port_{0};
     std::atomic<bool> running_{false};

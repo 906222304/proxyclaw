@@ -134,6 +134,15 @@ public:
         return status_;
     }
 
+    DnsForwarderStats forwarder_stats() const {
+        std::shared_ptr<dns_forwarder> fwd;
+        {
+            std::lock_guard lk(forwarder_mu_);
+            fwd = forwarder_;
+        }
+        return fwd ? fwd->stats() : DnsForwarderStats{};
+    }
+
     // Push target for `dns_status` (the WebView2 host). Any thread.
     void set_sink(frontend_push_sink* sink) noexcept { sink_.store(sink); }
     void replay_to_frontend() {
@@ -299,7 +308,8 @@ private:
 
     asio::io_context& ioc_;
     std::filesystem::path state_file_;
-    std::unique_ptr<dns_forwarder> forwarder_;
+    mutable std::mutex forwarder_mu_;
+    std::shared_ptr<dns_forwarder> forwarder_;
     DnsConfig current_cfg_{};
     std::string current_proxy_host_;
     uint16_t current_proxy_port_ = 0;
@@ -310,14 +320,18 @@ private:
     bool start_forwarder(const DnsConfig& cfg,
                          const std::string& proxy_host, uint16_t proxy_port,
                          const socks5_credentials& proxy_creds) {
-        forwarder_ = std::make_unique<dns_forwarder>(
+        auto fwd = std::make_shared<dns_forwarder>(
             ioc_, cfg.listen_host, cfg.listen_port,
             proxy_host, proxy_port,
             cfg.upstream_host, cfg.upstream_port,
             proxy_creds);
-        if (forwarder_->start()) {
+        if (fwd->start()) {
+            {
+                std::lock_guard lk(forwarder_mu_);
+                forwarder_ = fwd;
+            }
             PC_LOG_INFO("[DNS-MGR] Forwarder started{}: {}:{} -> SOCKS5 {}:{}{} -> {}:{}",
-                         forwarder_->tcp_only() ? " (TCP only)" : "",
+                         fwd->tcp_only() ? " (TCP only)" : "",
                          cfg.listen_host, cfg.listen_port,
                          proxy_host, proxy_port,
                          proxy_creds.empty() ? "" : " (auth)",
@@ -328,16 +342,19 @@ private:
             return true;
         } else {
             PC_LOG_WARN("[DNS-MGR] Forwarder failed to start");
-            forwarder_->stop();
-            forwarder_.reset();
+            fwd->stop();
             return false;
         }
     }
 
     void stop_forwarder() {
-        if (forwarder_) {
-            forwarder_->stop();
-            forwarder_.reset();
+        std::shared_ptr<dns_forwarder> fwd;
+        {
+            std::lock_guard lk(forwarder_mu_);
+            fwd = std::move(forwarder_);
+        }
+        if (fwd) {
+            fwd->stop();
             PC_LOG_INFO("[DNS-MGR] Forwarder stopped");
         }
     }

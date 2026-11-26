@@ -140,6 +140,8 @@ public:
     uint64_t allowed() const { return allowed_.load(std::memory_order_relaxed); }
     uint64_t parked() const { return parked_.load(std::memory_order_relaxed); }
     uint64_t released_by_watchdog() const { return released_watchdog_.load(std::memory_order_relaxed); }
+    uint64_t park_full() const { return park_full_.load(std::memory_order_relaxed); }
+    std::size_t gate_slots() const { return gate_.slot_count(); }
     uint64_t nat_count() const { return nat_.load(std::memory_order_relaxed); }
 
 private:
@@ -164,6 +166,7 @@ private:
     std::atomic<uint64_t> parked_{0};
     std::atomic<uint64_t> released_decision_{0};
     std::atomic<uint64_t> released_watchdog_{0};
+    std::atomic<uint64_t> park_full_{0};
     std::atomic<uint64_t> nat_{0};
 
     static constexpr uint8_t LOOPBACK6[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1};
@@ -288,6 +291,7 @@ private:
                     parked_.fetch_add(1, std::memory_order_relaxed);
                     return;
                 case udp_park_result::full:
+                    park_full_.fetch_add(1, std::memory_order_relaxed);
                     allow(bytes, len, addr);
                     return;
                 case udp_park_result::decided:

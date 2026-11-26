@@ -18,6 +18,7 @@
 
 #include "core/port_tracker.hpp"
 #include "proxy/relay.hpp"
+#include "proxy/session_limiter.hpp"
 
 namespace clew {
 
@@ -30,13 +31,15 @@ public:
                    asio::strand<asio::io_context::executor_type>& strand,
                    const proxy_group_table& groups,
                    ipv6_flow_table<>* v6_flows = nullptr,
-                   ipv6_egress* egress = nullptr)
+                   ipv6_egress* egress = nullptr,
+                   session_limiter* limiter = nullptr)
         : ioc_(ioc)
         , tracker_(tracker)
         , strand_(strand)
         , groups_(groups)
         , v6_flows_(v6_flows)
         , egress_(egress)
+        , limiter_(limiter)
     {}
 
     // Start listening. Returns the bound port. The IPv6 instance returns 0
@@ -85,6 +88,7 @@ private:
     const proxy_group_table& groups_;
     ipv6_flow_table<>* v6_flows_;
     ipv6_egress* egress_;
+    session_limiter* limiter_;
 
     std::unique_ptr<tcp::acceptor> acceptor_;
     uint16_t port_{0};
@@ -104,16 +108,48 @@ private:
 
             accepted_count_.fetch_add(1);
 
+            session_limiter::permit active_permit;
+            if (limiter_) {
+                active_permit = limiter_->try_acquire_active();
+                if (!active_permit) {
+                    const auto n = limiter_->stats().rejected_active;
+                    if (n == 1 || n % 100 == 0) {
+                        PC_LOG_WARN("[ACCEPTOR{}] Active TCP relay cap reached ({}), rejecting connection (total={})",
+                                    v6_flows_ ? "-V6" : "", limiter_->max_active(), n);
+                    }
+                    std::error_code ep_ec;
+                    const auto peer = sock.remote_endpoint(ep_ec);
+                    if (!ep_ec) {
+                        const uint16_t src_port = peer.port();
+                        if (v6_flows_) {
+                            if (const auto flow = v6_flows_->take(src_port)) {
+                                v6_flows_->retire(src_port, flow->id, std::chrono::steady_clock::now());
+                            }
+                        } else if (const auto taken = tracker_.take(src_port)) {
+                            const int64_t flow_ts = taken->connect_ts;
+                            asio::post(strand_, [this, src_port, flow_ts]() {
+                                tracker_.retire_if(src_port, flow_ts);
+                            });
+                        }
+                    }
+                    std::error_code close_ec;
+                    sock.close(close_ec);
+                    continue;
+                }
+            }
+
             // Spawn relay coroutine for this connection
             // Socket cancellation, deadline and both pipe completions for one
             // connection must be serialized even with multiple IO workers.
             if (v6_flows_)
                 asio::co_spawn(asio::make_strand(ioc_),
-                    handle_connection_v6(std::move(sock), *v6_flows_, groups_, egress_),
+                    handle_connection_v6(std::move(sock), *v6_flows_, groups_, egress_,
+                                         std::chrono::seconds(10), limiter_, std::move(active_permit)),
                     asio::detached);
             else
                 asio::co_spawn(asio::make_strand(ioc_),
-                    handle_connection(std::move(sock), tracker_, strand_, groups_),
+                    handle_connection(std::move(sock), tracker_, strand_, groups_,
+                                      std::chrono::seconds(10), limiter_, std::move(active_permit)),
                     asio::detached);
         }
     }

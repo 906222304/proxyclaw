@@ -317,13 +317,31 @@ TEST(group_type_and_credentials) {
     CHECK(*in.type == "socks5");
     CHECK(group_error({{"type", "http"}}) == "type");
     CHECK(group_error({{"type", "socks4"}}) == "type");
-    CHECK(group_error({{"user", "alice"}}) == "user");
-    CHECK(group_error({{"password", "x"}}) == "password");
-    CHECK(group_error({{"user", ""}, {"password", ""}}).empty());
+
+    // RFC 1929 credentials: optional UTF-8 strings up to 255 bytes each.
+    proxy_group_input cred;
+    CHECK(!parse_proxy_group_input({{"user", "alice"}, {"password", "secret"}}, cred));
+    CHECK(cred.user && *cred.user == "alice");
+    CHECK(cred.password && *cred.password == "secret");
+
+    proxy_group_input cleared;
+    CHECK(!parse_proxy_group_input({{"user", nullptr}, {"password", ""}}, cleared));
+    CHECK(cleared.user && cleared.user->empty());
+    CHECK(cleared.password && cleared.password->empty());
+
+    // Exact 255-byte boundary passes; 256 bytes or non-string rejected.
+    CHECK(group_error({{"user", std::string(255, 'u')}, {"password", std::string(255, 'p')}}).empty());
+    CHECK(group_error({{"user", std::string(256, 'u')}}) == "user");
+    CHECK(group_error({{"password", std::string(256, 'p')}}) == "password");
+    CHECK(group_error({{"user", 123}}) == "user");
+    CHECK(group_error({{"password", true}}) == "password");
+    CHECK(group_error({{"username", "alice"}}) == "username");
     CHECK(parse_proxy_group_input(nlohmann::json::array(), in).has_value());
+
     // A full create body as the UI sends it.
     CHECK(group_error({{"name", "g"}, {"host", "127.0.0.1"}, {"port", 7890},
-                       {"type", "socks5"}, {"test_url", "http://1.1.1.1/"}}).empty());
+                       {"type", "socks5"}, {"test_url", "http://1.1.1.1/"},
+                       {"user", "alice"}, {"password", "s3cr3t"}}).empty());
 }
 
 // ------------------------------------------------------- IPv6, TCP :53 DNS

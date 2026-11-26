@@ -46,6 +46,8 @@ void apply_input(ProxyGroup& g, const proxy_group_input& in) {
     if (in.port)     g.port     = *in.port;
     if (in.type)     g.type     = *in.type;
     if (in.test_url) g.test_url = *in.test_url;
+    if (in.user)     g.user     = *in.user;
+    if (in.password) g.password = *in.password;
 }
 
 } // namespace
@@ -57,14 +59,17 @@ nlohmann::json group_service::list_groups() const {
     const auto cfg = cfg_.get();
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& g : cfg.proxy_groups) {
-        arr.push_back(nlohmann::json{
+        nlohmann::json item{
             {"id",       g.id},
             {"name",     g.name},
             {"host",     g.host},
             {"port",     g.port},
             {"type",     g.type},
             {"test_url", g.test_url},
-        });
+        };
+        if (!g.user.empty())     item["user"]     = g.user;
+        if (!g.password.empty()) item["password"] = g.password;
+        arr.push_back(std::move(item));
     }
     return arr;
 }
@@ -245,7 +250,9 @@ static probe_outcome run_group_probe(const ConfigV2& snapshot, std::uint32_t id,
     // Same normalisation as the relay and the UDP session resolve with.
     const std::string proxy_host = normalize_proxy_host(group->host);
 
-    const auto r = probe::run(proxy_host, static_cast<std::uint16_t>(group->port), *target);
+    const auto r = probe::run(proxy_host, static_cast<std::uint16_t>(group->port), *target,
+                              std::chrono::milliseconds(8000),
+                              socks5_credentials{group->user, group->password});
 
     nlohmann::json stages = nlohmann::json::array();
     for (const auto& st : r.stages) stages.push_back({{"name", st.name}, {"ms", st.ms}});

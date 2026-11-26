@@ -20,6 +20,7 @@
 #include <vector>
 #include "core/dns_wire.hpp"
 #include "core/log.hpp"
+#include "proxy/socks5_auth.hpp"
 #include "udp/socks5_udp_session.hpp"
 #include "udp/socks5_udp_codec.hpp"
 
@@ -59,6 +60,7 @@ class dns_forwarder {
         std::shared_ptr<Socks5UdpSession> session;
         std::string proxy_host;
         uint16_t proxy_port;
+        socks5_credentials proxy_creds;
         uint32_t dns_ip_net;
         uint16_t dns_port;
         std::chrono::milliseconds udp_timeout, tcp_timeout;
@@ -72,8 +74,9 @@ class dns_forwarder {
         std::array<clock::time_point, 65536> reusable_after{};
         state(const std::string& ip, uint16_t port, const std::string& proxy, uint16_t pp,
               const std::string& dns, uint16_t dp, std::chrono::milliseconds ut,
-              std::chrono::milliseconds tt)
+              std::chrono::milliseconds tt, socks5_credentials creds)
             : listen_ep(asio::ip::make_address(ip), port), proxy_host(proxy), proxy_port(pp),
+              proxy_creds(std::move(creds)),
               dns_ip_net(htonl(asio::ip::make_address_v4(dns).to_uint())), dns_port(dp),
               udp_timeout(ut), tcp_timeout(tt) {}
         void shutdown() {
@@ -165,12 +168,7 @@ class dns_forwarder {
             if (done)
                 throw asio::system_error(asio::error::operation_aborted);
             co_await asio::async_connect(socket, eps, asio::use_awaitable);
-            std::array<uint8_t, 3> greeting{5, 1, 0};
-            co_await asio::async_write(socket, asio::buffer(greeting), asio::use_awaitable);
-            std::array<uint8_t, 2> auth{};
-            co_await asio::async_read(socket, asio::buffer(auth), asio::use_awaitable);
-            if (auth[0] != 5 || auth[1] != 0)
-                throw std::runtime_error("SOCKS5 authentication rejected");
+            co_await socks5_negotiate_auth(socket, proxy_creds);
             std::array<uint8_t, 10> request{5, 1, 0, 1};
             std::memcpy(request.data() + 4, &dns_ip_net, 4);
             request[8] = static_cast<uint8_t>(dns_port >> 8);
@@ -333,12 +331,21 @@ class dns_forwarder {
                   uint16_t listen_port, const std::string& proxy_host, uint16_t proxy_port,
                   const std::string& dns_server = "8.8.8.8", uint16_t dns_port = 53,
                   std::chrono::milliseconds udp_timeout = std::chrono::milliseconds(1500),
-                  std::chrono::milliseconds tcp_timeout = std::chrono::milliseconds(3000))
+                  std::chrono::milliseconds tcp_timeout = std::chrono::milliseconds(3000),
+                  socks5_credentials proxy_creds = {})
         : state_(std::make_shared<state>(listen_ip, listen_port, proxy_host, proxy_port, dns_server,
-                                         dns_port, udp_timeout, tcp_timeout)) {
+                                         dns_port, udp_timeout, tcp_timeout,
+                                         std::move(proxy_creds))) {
         if (udp_timeout.count() <= 0 || tcp_timeout.count() <= 0)
             throw std::invalid_argument("DNS timeouts must be positive");
     }
+    dns_forwarder(asio::io_context& application_ioc, const std::string& listen_ip,
+                  uint16_t listen_port, const std::string& proxy_host, uint16_t proxy_port,
+                  const std::string& dns_server, uint16_t dns_port,
+                  socks5_credentials proxy_creds)
+        : dns_forwarder(application_ioc, listen_ip, listen_port, proxy_host, proxy_port,
+                        dns_server, dns_port, std::chrono::milliseconds(1500),
+                        std::chrono::milliseconds(3000), std::move(proxy_creds)) {}
     ~dns_forwarder() { stop(); }
     dns_forwarder(const dns_forwarder&) = delete;
     dns_forwarder& operator=(const dns_forwarder&) = delete;
@@ -349,8 +356,8 @@ class dns_forwarder {
             state_->ioc.restart();
             state_->listener.open(udp::v4());
             state_->listener.bind(state_->listen_ep);
-            state_->session = std::make_shared<Socks5UdpSession>(state_->ioc, state_->proxy_host,
-                                                                 state_->proxy_port);
+            state_->session = std::make_shared<Socks5UdpSession>(
+                state_->ioc, state_->proxy_host, state_->proxy_port, state_->proxy_creds);
             state_->tcp_only = false;
             if (!state_->session->establish()) {
                 state_->session->close();

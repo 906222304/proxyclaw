@@ -112,7 +112,7 @@ private:
             : (redirect_port_v6_ != 0);
     }
     void                                           save_window_geometry(int x, int y, int w, int h) noexcept;
-    [[nodiscard]] static std::pair<std::string, uint16_t> pick_proxy_endpoint(const ConfigV2& cfg);
+    [[nodiscard]] static ProxyGroupConfig          pick_proxy_endpoint(const ConfigV2& cfg);
     [[nodiscard]] std::unique_ptr<webview_app>     create_gui();
     // SOCKET-layer + SYN-parking counters for /api/stats (called off-strand).
     [[nodiscard]] nlohmann::json                   traffic_stats() const;
@@ -150,7 +150,7 @@ private:
     DnsManager                                        dns_mgr_;
     ipv6_flow_table<>                                 v6_flows_;        // IPv6 TCP flows (ipv6.mode = proxy)
     ipv6_egress                                       ipv6_egress_;     // groups whose proxy cannot reach IPv6
-    std::string                                       group_endpoints_; // last synced host:port list (sync_groups)
+    ProxyGroupMap                                     last_groups_;     // last synced groups (sync_groups)
     async_acceptor                                    acceptor_;
     async_acceptor                                    acceptor_v6_;     // [::1], serves v6_flows_
     uint16_t                                          redirect_port_ = 0;

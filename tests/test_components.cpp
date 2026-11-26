@@ -22,6 +22,7 @@
 #include <winsock2.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <atomic>
 #include <filesystem>
@@ -116,8 +117,11 @@ static std::vector<TestEntry> g_tests;
 // captures one UDP datagram, keeping the component test independent of any
 // external proxy or network service.
 struct FakeSocks5UdpPeer {
-    explicit FakeSocks5UdpPeer(bool wildcard_reply)
-        : worker([this, wildcard_reply] { run(wildcard_reply); }) {}
+    explicit FakeSocks5UdpPeer(bool wildcard_reply,
+                               std::string expected_user = {},
+                               std::string expected_pass = {})
+        : worker([this, wildcard_reply, u = std::move(expected_user),
+                  p = std::move(expected_pass)] { run(wildcard_reply, u, p); }) {}
 
     ~FakeSocks5UdpPeer() {
         if (worker.joinable()) worker.join();
@@ -133,7 +137,8 @@ private:
     std::future<std::vector<uint8_t>> received_future = received_promise.get_future();
     std::thread worker;
 
-    void run(bool wildcard_reply) {
+    void run(bool wildcard_reply, const std::string& expected_user,
+             const std::string& expected_pass) {
         try {
             asio::io_context ioc;
             asio::ip::tcp::acceptor acceptor(
@@ -145,10 +150,42 @@ private:
             asio::ip::tcp::socket control(ioc);
             acceptor.accept(control);
 
-            std::array<uint8_t, 3> auth{};
-            asio::read(control, asio::buffer(auth));
-            const std::array<uint8_t, 2> auth_reply{0x05, 0x00};
-            asio::write(control, asio::buffer(auth_reply));
+            std::array<uint8_t, 2> gh{};
+            asio::read(control, asio::buffer(gh));
+            std::vector<uint8_t> methods(gh[1]);
+            if (!methods.empty()) asio::read(control, asio::buffer(methods));
+
+            const bool require_auth = !expected_user.empty() || !expected_pass.empty();
+            if (require_auth) {
+                const bool has_userpass =
+                    std::find(methods.begin(), methods.end(), 0x02) != methods.end();
+                if (!has_userpass) {
+                    const std::array<uint8_t, 2> reject{0x05, 0xFF};
+                    asio::write(control, asio::buffer(reject));
+                    received_promise.set_value({});
+                    return;
+                }
+                const std::array<uint8_t, 2> pick{0x05, 0x02};
+                asio::write(control, asio::buffer(pick));
+                std::array<uint8_t, 2> uh{};
+                asio::read(control, asio::buffer(uh));
+                std::string u(uh[1], '\0');
+                if (uh[1]) asio::read(control, asio::buffer(u));
+                uint8_t plen = 0;
+                asio::read(control, asio::buffer(&plen, 1));
+                std::string p(plen, '\0');
+                if (plen) asio::read(control, asio::buffer(p));
+                const bool ok = (uh[0] == 0x01 && u == expected_user && p == expected_pass);
+                const std::array<uint8_t, 2> arep{0x01, static_cast<uint8_t>(ok ? 0x00 : 0x01)};
+                asio::write(control, asio::buffer(arep));
+                if (!ok) {
+                    received_promise.set_value({});
+                    return;
+                }
+            } else {
+                const std::array<uint8_t, 2> auth_reply{0x05, 0x00};
+                asio::write(control, asio::buffer(auth_reply));
+            }
 
             std::array<uint8_t, 10> associate{};
             asio::read(control, asio::buffer(associate));
@@ -1497,11 +1534,55 @@ TEST(socks5_udp_control_loss_marks_session_dead_and_send_fails) {
     io_thread.join();
 }
 
+TEST(socks5_udp_auth_succeeds) {
+    FakeSocks5UdpPeer peer(false, "bob", "p@ssword!");
+    asio::io_context ioc;
+    auto session = std::make_shared<clew::Socks5UdpSession>(
+        ioc, "127.0.0.1", peer.proxy_port(), clew::socks5_credentials{"bob", "p@ssword!"});
+
+    ASSERT_TRUE(session->establish());
+    const std::vector<uint8_t> frame{0xde, 0xad, 0xbe, 0xef};
+    ASSERT_TRUE(run_udp_send(ioc, session, frame));
+    ASSERT_EQ(peer.received(), frame);
+}
+
+TEST(socks5_udp_auth_wrong_password_fails) {
+    FakeSocks5UdpPeer peer(false, "bob", "p@ssword!");
+    asio::io_context ioc;
+    auto session = std::make_shared<clew::Socks5UdpSession>(
+        ioc, "127.0.0.1", peer.proxy_port(), clew::socks5_credentials{"bob", "wrong"});
+
+    ASSERT_FALSE(session->establish());
+    ASSERT_FALSE(session->is_alive());
+}
+
 // ============================================================
 // 8. JSON round-trip tests
 // ============================================================
 
 using nlohmann::json;
+
+TEST(json_proxy_group_credentials_roundtrip) {
+    clew::ProxyGroup plain;
+    plain.id = 1;
+    plain.name = "plain";
+    plain.host = "127.0.0.1";
+    plain.port = 1080;
+    json jp = plain;
+    ASSERT_FALSE(jp.contains("user"));
+    ASSERT_FALSE(jp.contains("password"));
+
+    clew::ProxyGroup authed = plain;
+    authed.user = "alice";
+    authed.password = "s3cr3t";
+    json ja = authed;
+    ASSERT_EQ(ja["user"].get<std::string>(), std::string("alice"));
+    ASSERT_EQ(ja["password"].get<std::string>(), std::string("s3cr3t"));
+    clew::ProxyGroup back = ja.get<clew::ProxyGroup>();
+    ASSERT_EQ(back.user, std::string("alice"));
+    ASSERT_EQ(back.password, std::string("s3cr3t"));
+    ASSERT_TRUE(back.to_string().find("s3cr3t") == std::string::npos);
+}
 
 TEST(json_autorule_roundtrip) {
     AutoRule r;

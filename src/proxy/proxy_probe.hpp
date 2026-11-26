@@ -22,6 +22,8 @@
 #include <string_view>
 #include <vector>
 
+#include "proxy/socks5_credentials.hpp"
+
 namespace clew::probe {
 
 struct target {
@@ -50,7 +52,8 @@ struct result {
 };
 
 result run(const std::string& proxy_host, std::uint16_t proxy_port, const target& t,
-           std::chrono::milliseconds budget = std::chrono::milliseconds(8000));
+           std::chrono::milliseconds budget = std::chrono::milliseconds(8000),
+           const socks5_credentials& creds = {});
 
 // Exposed for tests.
 std::vector<std::uint8_t> build_client_hello(std::string_view sni);

@@ -237,6 +237,15 @@ static void stop_waits_for_start_and_restores() {
     }
     CHECK(fwd::starts == 1);
 }
+static void proxy_credentials_change_restarts_forwarder() {
+    reset(); asio::io_context ioc; DnsManager mgr(ioc);
+    mgr.apply(enabled(), "127.0.0.1", 7890, {"alice", "pw1"});
+    CHECK(fwd::starts == 1 && fwd::last_creds.user == "alice" && fwd::last_creds.password == "pw1");
+    mgr.apply(enabled(), "127.0.0.1", 7890, {"alice", "pw1"});
+    CHECK(fwd::starts == 1);  // unchanged creds do not restart
+    mgr.apply(enabled(), "127.0.0.1", 7890, {"alice", "pw2"});
+    CHECK(fwd::starts == 2 && fwd::last_creds.password == "pw2");
+}
 
 int main() {
     const std::pair<const char*, void(*)()> cases[] = {
@@ -260,6 +269,7 @@ int main() {
         {"request reports TCP-only and off", request_reports_tcp_only_and_off},
         {"queued requests are coalesced", queued_requests_are_coalesced},
         {"stop waits for start and restores", stop_waits_for_start_and_restores},
+        {"proxy credentials change restarts forwarder", proxy_credentials_change_restarts_forwarder},
     };
     int failures = 0;
     for (const auto& [name, test] : cases) {

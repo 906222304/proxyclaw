@@ -14,6 +14,8 @@ namespace clew {
 struct UdpProxyGroupConfig {
     std::string host;
     uint16_t port{1080};
+    std::string user;
+    std::string password;
     bool operator==(const UdpProxyGroupConfig&) const = default;
 };
 using SessionCreatedCallback = std::function<void(uint16_t, std::shared_ptr<Socks5UdpSession>)>;
@@ -58,7 +60,9 @@ public:
             }
             auto group = groups_.find(group_id);
             if (group == groups_.end()) co_return nullptr;
-            session = std::make_shared<Socks5UdpSession>(ioc_, group->second.host, group->second.port);
+            session = std::make_shared<Socks5UdpSession>(
+                ioc_, group->second.host, group->second.port,
+                socks5_credentials{group->second.user, group->second.password});
             sessions_.emplace(app_port, Entry{session, group_id, true});
         }
 

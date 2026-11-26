@@ -128,7 +128,7 @@ relay_through_proxy(tcp::socket& client_sock, const ProxyGroupConfig& cfg, socks
             co_await asio::async_connect(proxy_sock, eps, asio::use_awaitable);
             enable_tcp_keepalive(proxy_sock);
             t1 = std::chrono::steady_clock::now();
-            co_await socks5_handshake(proxy_sock, dest);
+            co_await socks5_handshake(proxy_sock, dest, socks5_credentials{cfg.user, cfg.password});
         };
         try {
             co_await with_setup_deadline(setup(), setup_timeout);

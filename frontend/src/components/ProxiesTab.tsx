@@ -52,10 +52,12 @@ export function normalizeProxyHost(host: string): string {
   return h.length >= 2 && h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h
 }
 
+const utf8Bytes = (s: string) => new TextEncoder().encode(s).length
+
 /**
  * Same rules as the backend (config/proxy_group_validation.hpp): a usable
- * host, a port 1-65535 and nothing silently defaulted. Only SOCKS5 without
- * authentication is supported, so the form has no type or credentials.
+ * host, a port 1-65535, optional RFC 1929 credentials (<= 255 UTF-8 bytes
+ * each), and nothing silently defaulted.
  */
 export const groupFormSchema = z.object({
   name: z.string(),
@@ -68,9 +70,17 @@ export const groupFormSchema = z.object({
     z.refine(v => /^\d+$/.test(v.trim()) && Number(v.trim()) >= 1 && Number(v.trim()) <= 65535, '端口范围 1–65535'),
   ),
   test_url: z.string(),
+  user: z.string().check(
+    z.refine(v => utf8Bytes(v) <= 255, '用户名不能超过 255 字节'),
+  ),
+  password: z.string().check(
+    z.refine(v => utf8Bytes(v) <= 255, '密码不能超过 255 字节'),
+  ),
 })
 export type GroupForm = z.infer<typeof groupFormSchema>
-const EMPTY_FORM: GroupForm = { name: '', host: '127.0.0.1', port: '7890', test_url: 'https://www.google.com' }
+const EMPTY_FORM: GroupForm = {
+  name: '', host: '127.0.0.1', port: '7890', test_url: 'https://www.google.com', user: '', password: '',
+}
 
 /** Map a validated form to the API payload. */
 export function groupFormToPayload(f: GroupForm): Omit<ProxyGroup, 'id'> {
@@ -80,6 +90,8 @@ export function groupFormToPayload(f: GroupForm): Omit<ProxyGroup, 'id'> {
     port: Number(f.port.trim()),
     type: 'socks5',
     test_url: f.test_url,
+    user: f.user,
+    password: f.password,
   }
 }
 
@@ -189,7 +201,7 @@ function GroupRow({ group, rules, deleting, onTest, onEdit, onDelete, onEditRule
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{group.name}</div>
           <div className="tabular truncate text-2xs text-muted-foreground">
-            SOCKS5 · {group.host}:{group.port} · {rules.length} 条规则
+            SOCKS5{group.user || group.password ? '（已认证）' : ''} · {group.host}:{group.port} · {rules.length} 条规则
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1" onClick={e => e.stopPropagation()}>
@@ -268,7 +280,14 @@ function GroupEditor({ editing, onClose, onSaved }: {
     if (!editing) return
     reset(editing === 'new'
       ? EMPTY_FORM
-      : { name: editing.name, host: editing.host, port: String(editing.port), test_url: editing.test_url })
+      : {
+          name: editing.name,
+          host: editing.host,
+          port: String(editing.port),
+          test_url: editing.test_url,
+          user: editing.user ?? '',
+          password: editing.password ?? '',
+        })
   }, [editing, reset])
 
   const save = useMutation({
@@ -288,7 +307,7 @@ function GroupEditor({ editing, onClose, onSaved }: {
       onOpenChange={o => { if (!o) onClose() }}
       modalLock
       title={existing ? '编辑代理组' : '新建代理组'}
-      description="设置 SOCKS5 代理服务器。仅支持无认证的 SOCKS5，不支持 HTTP 代理和用户名/密码。"
+      description="设置 SOCKS5 代理服务器，可选填写用户名与密码认证（RFC 1929）。暂不支持 HTTP 代理。"
       footer={<>
         <Button onClick={onClose}>取消</Button>
         <Button variant="primary" disabled={save.isPending} onClick={() => void submit()}>
@@ -313,6 +332,18 @@ function GroupEditor({ editing, onClose, onSaved }: {
             <Label htmlFor={`${ids}-p`}>端口</Label>
             <Input id={`${ids}-p`} placeholder="7890" inputMode="numeric" className="tabular" aria-invalid={!!errors.port} {...register('port')} />
             {errors.port && <p className="text-2xs text-destructive" role="alert">{errors.port.message}</p>}
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <div className="flex-1 space-y-1.5">
+            <Label htmlFor={`${ids}-usr`}>用户名（可选）</Label>
+            <Input id={`${ids}-usr`} placeholder="留空表示无认证" autoComplete="off" aria-invalid={!!errors.user} {...register('user')} />
+            {errors.user && <p className="text-2xs text-destructive" role="alert">{errors.user.message}</p>}
+          </div>
+          <div className="flex-1 space-y-1.5">
+            <Label htmlFor={`${ids}-pwd`}>密码（可选）</Label>
+            <Input id={`${ids}-pwd`} type="password" placeholder="留空表示无认证" autoComplete="new-password" aria-invalid={!!errors.password} {...register('password')} />
+            {errors.password && <p className="text-2xs text-destructive" role="alert">{errors.password.message}</p>}
           </div>
         </div>
         <div className="space-y-1.5">

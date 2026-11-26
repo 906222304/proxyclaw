@@ -73,6 +73,37 @@ describe('ProxiesTab group editor', () => {
     const posts = vi.mocked(fetch).mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
     expect(posts).toHaveLength(0)
   })
+
+  it('shows auth badge on authenticated groups and submits credentials', async () => {
+    routes['/api/proxy-groups'] = [
+      { id: 0, name: '默认', host: '127.0.0.1', port: 7890, type: 'socks5', test_url: 'https://www.google.com', user: 'alice', password: 'secret' },
+    ]
+    root = createRoot(host)
+    act(() => root.render(<QueryClientProvider client={createQueryClient()}><ProxiesTab /></QueryClientProvider>))
+    await flush()
+
+    expect(host.textContent).toContain('SOCKS5（已认证）')
+    expect(host.textContent).not.toContain('secret')
+
+    click([...host.querySelectorAll('button')].find(b => b.textContent?.includes('新建代理组'))!)
+    await flush()
+
+    const userInput = document.querySelector<HTMLInputElement>('input[autocomplete="off"]')!
+    const passInput = document.querySelector<HTMLInputElement>('input[type="password"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(userInput, 'bob')
+      userInput.dispatchEvent(new Event('input', { bubbles: true }))
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(passInput, 'pw123')
+      passInput.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const create = [...document.querySelectorAll('button')].find(b => b.textContent === '创建')!
+    click(create)
+    await flush()
+
+    const post = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    expect(post).toBeTruthy()
+    expect(JSON.parse(String((post![1] as RequestInit).body))).toMatchObject({ user: 'bob', password: 'pw123' })
+  })
 })
 
 describe('splitDir', () => {

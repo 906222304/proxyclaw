@@ -2,8 +2,8 @@
 
 // Proxy group input validation and host normalisation.
 //
-// Only SOCKS5 without authentication is implemented (proxy/socks5_async.hpp),
-// so a group is accepted only when it can actually be used:
+// SOCKS5 with optional RFC 1929 username/password authentication is supported
+// (proxy/socks5_auth.hpp), so a group is accepted only when it can be used:
 //   host      non-empty after trimming; "[v6]" brackets are stripped so the
 //             stored value is what the resolver takes (relay, UDP session and
 //             speed test all resolve the same string); "host:port" is
@@ -12,10 +12,9 @@
 //             present but invalid)
 //   type      "socks5" (case-insensitive); anything else, e.g. "http", is
 //             rejected as unsupported
-//   user / username / password
-//             must be absent or empty: SOCKS5 authentication is not
-//             implemented, and accepting credentials that are never sent
-//             would fail every connection silently
+//   user / password
+//             optional UTF-8 strings, each at most 255 bytes (RFC 1929 1-byte
+//             length prefix); null clears the field
 //
 // Pure (no Windows, no config types) so the unit tests and the API share it.
 
@@ -38,6 +37,8 @@ struct proxy_group_input {
     std::optional<std::uint16_t> port;
     std::optional<std::string>   type;      // lower-cased, always "socks5"
     std::optional<std::string>   test_url;
+    std::optional<std::string>   user;
+    std::optional<std::string>   password;
 };
 
 struct proxy_group_error {
@@ -97,17 +98,36 @@ inline std::optional<proxy_group_error> parse_proxy_group_input(const nlohmann::
         for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (t != "socks5") {
             return proxy_group_error{"type", "unsupported proxy type '" + *out.type +
-                                                 "': only socks5 (no authentication) is supported"};
+                                                 "': only socks5 is supported"};
         }
         out.type = t;
     }
 
-    for (const char* key : {"user", "username", "password"}) {
+    auto cred_field = [&body](const char* key, std::optional<std::string>& dst)
+        -> std::optional<proxy_group_error> {
         auto it = body.find(key);
-        if (it == body.end() || it->is_null()) continue;
+        if (it == body.end()) return std::nullopt;
+        if (it->is_null()) {
+            dst = std::string{};
+            return std::nullopt;
+        }
+        if (!it->is_string()) {
+            return proxy_group_error{key, std::string(key) + " must be a string"};
+        }
+        const auto val = it->get<std::string>();
+        if (val.size() > 255) {
+            return proxy_group_error{key, std::string(key) + " must be at most 255 bytes (RFC 1929)"};
+        }
+        dst = val;
+        return std::nullopt;
+    };
+
+    if (auto e = cred_field("user", out.user)) return e;
+    if (auto e = cred_field("password", out.password)) return e;
+
+    if (auto it = body.find("username"); it != body.end() && !it->is_null()) {
         if (!it->is_string() || !it->get<std::string>().empty()) {
-            return proxy_group_error{key, "SOCKS5 authentication is not supported; "
-                                          "leave user and password empty"};
+            return proxy_group_error{"username", "use 'user' instead of 'username'"};
         }
     }
     return std::nullopt;

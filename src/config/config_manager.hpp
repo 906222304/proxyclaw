@@ -209,6 +209,8 @@ private:
         default_group.host = v2_config_.default_proxy.host;
         default_group.port = v2_config_.default_proxy.port;
         default_group.type = v2_config_.default_proxy.type;
+        default_group.user = v2_config_.default_proxy.user;
+        default_group.password = v2_config_.default_proxy.password;
         v2_config_.proxy_groups.push_back(default_group);
 
         for (auto& rule : v2_config_.auto_rules) {
@@ -220,7 +222,8 @@ private:
             bool found = false;
             for (const auto& g : v2_config_.proxy_groups) {
                 if (g.host == rule.proxy.host && g.port == rule.proxy.port &&
-                    g.type == rule.proxy.type) {
+                    g.type == rule.proxy.type && g.user == rule.proxy.user &&
+                    g.password == rule.proxy.password) {
                     rule.proxy_group_id = g.id;
                     found = true;
                     break;
@@ -234,6 +237,8 @@ private:
                 new_group.host = rule.proxy.host;
                 new_group.port = rule.proxy.port;
                 new_group.type = rule.proxy.type;
+                new_group.user = rule.proxy.user;
+                new_group.password = rule.proxy.password;
                 rule.proxy_group_id = new_group.id;
                 v2_config_.proxy_groups.push_back(new_group);
             }

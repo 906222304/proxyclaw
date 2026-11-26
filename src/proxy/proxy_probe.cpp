@@ -14,6 +14,8 @@
 #include <memory>
 #include <random>
 
+#include "proxy/socks5_auth.hpp"
+
 namespace clew::probe {
 
 namespace {
@@ -163,9 +165,10 @@ std::vector<tcp::endpoint> interleave(const tcp::resolver::results_type& results
 class session {
 public:
     session(asio::io_context& ioc, const std::string& host, std::uint16_t port,
-            const target& t, std::chrono::milliseconds budget)
+            const target& t, std::chrono::milliseconds budget, socks5_credentials creds)
         : ioc_(ioc), resolver_(ioc), socket_(ioc), deadline_(ioc),
-          proxy_host_(host), proxy_port_(port), target_(t), budget_(budget) {}
+          proxy_host_(host), proxy_port_(port), target_(t), budget_(budget),
+          creds_(std::move(creds)) {}
 
     result go() {
         start_ = clock::now();
@@ -207,6 +210,7 @@ private:
     std::uint16_t     proxy_port_;
     target            target_;
     std::chrono::milliseconds budget_;
+    socks5_credentials creds_;
     bool              timed_out_{false};
     std::shared_ptr<connect_race> race_;
     clock::time_point start_, mark_;
@@ -246,14 +250,8 @@ private:
         socket_.set_option(tcp::no_delay(true));
         done("handshake");
 
-        // SOCKS5 greeting, no authentication
-        const std::array<std::uint8_t, 3> greeting{0x05, 0x01, 0x00};
-        co_await asio::async_write(socket_, asio::buffer(greeting), asio::use_awaitable);
-        std::array<std::uint8_t, 2> method{};
-        co_await read_exact(method.data(), method.size());
-        if (method[0] != 0x05) throw failure("not a SOCKS5 server");
-        if (method[1] == 0xFF) throw failure("proxy requires authentication");
-        if (method[1] != 0x00) throw failure("proxy chose an unsupported auth method");
+        // SOCKS5 greeting + optional RFC 1929 username/password auth
+        co_await clew::socks5_negotiate_auth(socket_, creds_);
         done("remote");
 
         // SOCKS5 CONNECT to the target
@@ -453,9 +451,9 @@ std::vector<std::uint8_t> build_client_hello(std::string_view sni) {
 }
 
 result run(const std::string& proxy_host, std::uint16_t proxy_port, const target& t,
-           std::chrono::milliseconds budget) {
+           std::chrono::milliseconds budget, const socks5_credentials& creds) {
     asio::io_context ioc(1);
-    session s(ioc, proxy_host, proxy_port, t, budget);
+    session s(ioc, proxy_host, proxy_port, t, budget, creds);
     return s.go();
 }
 

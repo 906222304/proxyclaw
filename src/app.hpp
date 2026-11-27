@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -71,8 +72,8 @@ struct cli_options {
     bool        devtools        = false;  // --devtools: enable WebView2 DevTools (F12)
     bool        start_minimized = false;  // --minimized: hide main window on launch (used by autostart)
     bool        dev_hooks       = false;  // --dev-hooks: honour developer/test env hooks in a release build
-    std::string static_dir;
-    std::string config_path;              // --config: explicit proxyclaw.json path; default = exe_directory()/proxyclaw.json
+    std::filesystem::path static_dir;
+    std::filesystem::path config_path;    // --config: explicit proxyclaw.json path; default = exe_directory()/proxyclaw.json
 };
 
 // Thrown by app's ctor / run() when a critical startup step fails

@@ -15,20 +15,37 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include "scoped_exit.hpp"
 
 namespace clew {
 
-// Absolute path of the running proxyclaw.exe. Falls back to an empty path in
-// the unlikely case GetModuleFileNameW fails — Windows itself only fails
-// this for invalid module handles, which can't happen for the current
-// process.
+// Absolute path of the running proxyclaw.exe. Grows past MAX_PATH so long
+// install paths never silently truncate. Falls back to an empty path only if
+// GetModuleFileNameW itself fails.
 [[nodiscard]] inline std::filesystem::path exe_path() {
-    wchar_t buf[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return {};
-    return std::filesystem::path{std::wstring{buf, len}};
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD cap = static_cast<DWORD>(buf.size());
+        const DWORD len = GetModuleFileNameW(nullptr, buf.data(), cap);
+        if (len == 0) return {};
+        if (len < cap) {
+            buf.resize(len);
+            return std::filesystem::path{std::move(buf)};
+        }
+        if (buf.size() >= 32768) return {};
+        buf.resize(buf.size() * 2);
+    }
+}
+
+// Convert a filesystem path to UTF-8 unconditionally (independent of the
+// process ANSI code page; never throws on non-ASCII characters). Required when
+// passing paths to APIs that always interpret std::string as UTF-8, such as
+// cpp-httplib's set_mount_point() or UTF-8 log sinks.
+[[nodiscard]] inline std::string path_to_utf8(const std::filesystem::path& p) {
+    const auto u8 = p.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
 }
 
 // Directory portion of the running proxyclaw.exe path. Falls back to "." if

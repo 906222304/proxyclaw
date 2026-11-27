@@ -1635,6 +1635,110 @@ def _wait_tree_ready(proc=None, timeout=60.0):
         time.sleep(0.25)
 
 
+def _verify_unicode_install_path(exe: pathlib.Path) -> bool:
+    """Launch a copy of the packaged app from a Chinese directory (non-ASCII
+    on both CP1252 and CP936 Windows) and verify GET / returns HTTP 200 with
+    index.html, proxyclaw.log is written in UTF-8, and diagnostics export works."""
+    root = pathlib.Path(tempfile.mkdtemp(prefix="pc_unicode_"))
+    app_dir = root / "中文目录_代理测试"
+    print(f"\nUnicode install path check: {app_dir}")
+    proc = None
+    ok = False
+    old_log_path = LOG_PATH
+    try:
+        shutil.copytree(exe.parent, app_dir)
+        # Drop any leftover log copied from the previous run.
+        unicode_log = app_dir / "proxyclaw.log"
+        if unicode_log.exists():
+            unicode_log.unlink()
+        unicode_exe = app_dir / exe.name
+        cfg_dir = root / "配置目录_中文"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_path = cfg_dir / "proxyclaw.json"
+        cfg_path.write_text(json.dumps({
+            "version": 2,
+            "default_proxy": {"type": "socks5", "host": "127.0.0.1", "port": PROXY_PORT},
+            "proxy_groups": [
+                {"id": 0, "name": "default", "host": "127.0.0.1", "port": PROXY_PORT,
+                 "type": "socks5", "test_url": "http://1.1.1.1/"},
+            ],
+            "next_group_id": 1,
+            "auto_rules": [],
+            "log_level": "info",
+            "dns": {"enabled": False},
+        }, indent=2), encoding="utf-8")
+
+        globals()["LOG_PATH"] = unicode_log
+        proc = subprocess.Popen(
+            [str(unicode_exe), "--minimized", "--dev-hooks", "--config", str(cfg_path)],
+            cwd=app_dir, env=dict(os.environ),
+        )
+        deadline = time.time() + 30
+        while True:
+            if proc.poll() is not None:
+                raise RuntimeError(f"unicode proxyclaw.exe exited early with {proc.returncode}")
+            try:
+                if requests.get(f"{BASE}/stats", timeout=2).status_code == 200:
+                    break
+            except Exception:
+                pass
+            if time.time() > deadline:
+                raise RuntimeError("unicode proxyclaw API did not come up in 30s")
+            time.sleep(0.5)
+
+        _wait_tree_ready(proc)
+        # Wait briefly for start_traffic_layers() to open WinDivert before
+        # checking stats and graceful shutdown markers.
+        t_ic = time.time() + 15
+        stats = {}
+        while time.time() < t_ic:
+            r_stats = requests.get(f"{BASE}/stats", timeout=5)
+            assert r_stats.status_code == 200, f"GET /api/stats returned {r_stats.status_code}"
+            stats = r_stats.json()
+            if stats.get("interception", {}).get("active"):
+                break
+            time.sleep(0.25)
+        assert stats.get("interception", {}).get("active"), f"interception not active from Chinese path: {stats.get('interception')}"
+
+        r_root = requests.get("http://127.0.0.1:18080/", timeout=5)
+        assert r_root.status_code == 200, f"GET / returned {r_root.status_code} (expected 200, not 404)"
+        assert 'id="root"' in r_root.text, f"GET / body missing #root: {r_root.text[:200]!r}"
+
+        r_diag = requests.get(f"{BASE}/diagnostics/export", timeout=10)
+        assert r_diag.status_code == 200, f"GET /api/diagnostics/export returned {r_diag.status_code}"
+        with zipfile.ZipFile(io.BytesIO(r_diag.content)) as zf:
+            names = set(zf.namelist())
+            assert {"summary.json", "config.sanitized.json", "proxyclaw.log"} <= names, names
+
+        # Wait briefly for Quill backend flush before checking log contents.
+        log_text = ""
+        for _ in range(25):
+            if unicode_log.exists():
+                log_text = unicode_log.read_text(encoding="utf-8", errors="replace")
+                if "serving static files from" in log_text:
+                    break
+            time.sleep(0.2)
+        assert unicode_log.exists(), f"missing log file at {unicode_log}"
+        assert "serving static files from" in log_text, f"static mount log missing:\n{log_text[-800:]}"
+
+        graceful = _graceful_exit(proc)
+        assert graceful, "graceful exit failed from Chinese install path"
+        print("  PASS Unicode install path: GET / -> 200, WinDivert active, UTF-8 log, diagnostics ZIP, graceful exit")
+        ok = True
+    except Exception as e:
+        print(f"  FAIL Unicode install path check: {e!r}")
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        globals()["LOG_PATH"] = old_log_path
+        shutil.rmtree(root, ignore_errors=True)
+    return ok
+
+
 def main() -> int:
     global RECORDER
     import argparse
@@ -1684,6 +1788,9 @@ def main() -> int:
     if not graceful_ok:
         print("FAIL: graceful shutdown via the tray exit command")
         return 1
+    if rc == 0 and args.exe is not None and not name_filter:
+        if not _verify_unicode_install_path(args.exe.resolve()):
+            return 1
     return rc
 
 

@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.18.0 (2026-11-26)
+
+### Added
+
+- Performance baseline & comparison tooling (v0.18 #1, #30):
+  - Lock-free 42-bucket atomic microsecond latency histogram (`src/core/latency_histogram.hpp`)
+    recording CONNECT → publish (`decision_latency_us`), `WinDivertRecv` → publish
+    (`dispatch_latency_us`), and SYN park wait (`park_latency_us`) latencies in
+    `/api/stats.perf`, alongside missed-proxy counters (`late_rejected_proxied`,
+    SYN/IPv6/UDP watchdog releases, pool/park full) and `io_workers`.
+  - Extended `tests/stress_backend.py` with an in-process loopback SOCKS5 stub
+    and live TCP CONNECT probes, process-count-aware RSS sampling, and window-diffed
+    latency/missed-proxy reporting, plus `tests/compare_stress.py` for before/after
+    Markdown/CLI diffs.
+  - Real Windows CI baseline confirmed kernel-to-`WinDivertRecv` overhead is only
+    ~120 µs (<2% of decision latency) with zero pool overflows, so conditional
+    `RecvEx`/`SendEx` batching (#5) was intentionally skipped.
+- Explicit resource caps & overflow counters (v0.18 #2, #31):
+  - Added lock-free RAII `session_limiter` bounding active TCP relays (`2048`)
+    and concurrent in-flight SOCKS5 handshakes (`256`) across WinDivert and Hook
+    acceptors, retiring NAT/flow state immediately on overflow.
+  - Bounded `Socks5UdpManager` (`512` sessions, `64` concurrent handshakes),
+    `UdpSessionTable` (`2048` routes), `UdpRelay` (`1024` distinct ports with
+    per-reason drop counters), `ipv6_flow_table` (`2048` flows, failing closed
+    to `block` / IPv4 fallback on overflow), `ipv6_tcp_gate` (expired slot pruning),
+    `hook::flow_table` (`2048` pending flows), and `dns_forwarder` atomic gauges
+    and cap-drop counters, all surfaced under `/api/stats.limits`.
+- Shared `(pid, psn)` process info cache (v0.18 #3, #32):
+  - Added thread-safe bounded LRU `process_info_cache` (capacity `4096`) shared
+    by `rule_engine_v3` and `process_tree_service`, exposed in
+    `/api/stats.process_info_cache`.
+  - Replaced up to 3 separate unverified `OpenProcess` calls in `rule_engine_v3`
+    with a single PSN-verified handle read (`query_process_info_verified`),
+    seeded `image_path` during `resolve_pid_now`, evicted entries immediately on
+    ETW `STOP` and PID reuse, and preserved live `query_live_psn(pid)` checks on
+    cache hits in `/api/processes/:pid/detail` so recycled PIDs still return 404.
+- One-click diagnostic bundle export (v0.18 #4, #33):
+  - Added dependency-free Store-mode PKZIP writer (`mini_zip.hpp`) and recursive
+    sanitizer (`diagnostics.hpp`) that redacts SOCKS5 passwords, URL credentials,
+    and session tokens across `summary.json`, `config.sanitized.json`, and
+    `proxyclaw.log` (up to 2 MiB / 20,000 recent lines).
+  - Added `GET /api/diagnostics/export` (`application/zip`) and an **导出诊断包**
+    button under Settings → 诊断 for real-machine troubleshooting.
+
 ## v0.17.0 (2026-11-26)
 
 ### Added

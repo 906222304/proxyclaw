@@ -5,13 +5,14 @@
 ## 项目概况
 
 - ProxyClaw：Windows 进程级 SOCKS5 代理。后端 C++23，前端 React 19 + WebView2。
-- 默认分支 `main`，最新发布 **v0.17.0**（2026-11-26）。
+- 默认分支 `main`，最新发布 **v0.18.0**（2026-11-26）。
 - 近期已发布版本：
   - **v0.15.0**（2026-11-22）：可选 Hook 注入拦截模式（#16）、DNS 仅 TCP 启动（#10）与后台异步启用（#11）、全路径图标缓存与退避（#12）、进程树 `psn`（#13）。
   - **v0.15.1**（2026-11-23）：修复连接列表重复行 key 重影，移除规则编辑器禁用开关（#17）。
   - **v0.15.2**（2026-11-24）：修复 Hook 模式 `/api/tcp` 展示、移除控制管道无超时 `FlushFileBuffers`、绑定非回环网卡 IP 直连放行、子进程/巡检代次竞态与 `child_failed` 回退、Hook 与 WinDivert 解耦（#18）。
   - **v0.16.0**（2026-11-25）：CI 拆分与 `/W4` + ESLint（#19）、文档与旧注释清理（#20）、规则匹配状态按 `(pid, psn)` 键控与进程树快捷建规（#21）、子进程树例外（#22）、引擎状态面板与配置导入/导出（#23）、可编辑应用预设与 Store 包身份匹配及网络活动一键建规（#24），v0.14 与 v0.15 路线图全部收口。
   - **v0.17.0**（2026-11-26）：SOCKS5 RFC 1929 用户名/密码认证（#26）、Hook 注入与跳过原因可观测性（#27）、32 位 WOW64 进程注入与跨架构子进程注入及双架构打包（#28）、Hook 模式 UDP 代理（#29），v0.17 路线图全部收口。
+  - **v0.18.0**（2026-11-26）：性能基准与对比工具（#30）、TCP/UDP/IPv6/Hook/DNS 全链路显式资源上限与 `/api/stats.limits`（#31）、共享 `(pid, psn)` 进程信息缓存与单句柄 PSN 校验（#32）、一键脱敏诊断包 ZIP 导出（#33），v0.18 路线图全部收口（`RecvEx`/`SendEx` 批处理经基线验证跳过）。
 - 贡献者只能是 906222304，提交邮箱 `58179067+906222304@users.noreply.github.com`。
 - 流程：功能在分支上做 → 开 draft PR → CI 全绿 → **用户明确同意后**才合并、打 tag、发布。
 
@@ -57,7 +58,7 @@
 
 ### 测试
 
-- 单测：`hook_flow_table_tests`（含 `inject_tracker`、`pe32_export`、`udp_relay_index`）、`hook_pipe_server_tests`、`decision_log_tests`、`connection_rows_tests`、`proxy_probe_tests`、`components_tests`（含 RFC 1929 认证）。
+- 单测：`hook_flow_table_tests`（含 `inject_tracker`、`pe32_export`、`udp_relay_index`）、`hook_pipe_server_tests`、`decision_log_tests`、`connection_rows_tests`、`proxy_probe_tests`、`latency_histogram_tests`、`resource_caps_tests`、`process_info_cache_tests`、`diagnostics_tests`、`components_tests`（含 RFC 1929 认证）。
 - 端到端：`tests/e2e_hook_mode.py`（配合 32 位 `hook32_probe.exe`），在 CI 的 elevated runner 上跑，覆盖 64/32 位 TCP、跨架构 `x64 -> WOW64` 子进程注入、无连接多目标 UDP、已连接 UDP、IOCP Proactor UDP、排除端口直连、`/api/tcp` 与 `/api/udp` 真实目标还原及 `hook_status` / `skip_reasons` 校验。
 
 ### 风险与待办
@@ -69,7 +70,7 @@
 ## 其他未决事项
 
 - **0xD1 蓝屏**：用户机器上 `NETIO.SYS` 出现 0xD1，栈上有 ESET 的 `epfwwfp.sys`，没有 WinDivert 帧。初步判断是 ESET 与 WinDivert 的 WFP 冲突，Hook 模式不加载驱动，作为官方无驱动替代路线已在 v0.17 补齐。
-- **ROADMAP 下一阶段**：见 `docs/ROADMAP.md`——**v0.18**（性能基准 / 资源上限 / 进程信息缓存 / 诊断包一键导出），保持绿色便携包形态。
+- **ROADMAP 下一阶段**：v0.14–v0.18 路线图已全部收口，见 `docs/ROADMAP.md`（仅余低优先级工程维护项，待真机使用反馈后再规划下一里程碑），继续保持绿色便携包形态。
 - **已知 CI 抖动**：WebView2 截图步骤偶发 `process-count` / `#root` 超时，处理方法是重跑失败的 `e2e` job。
 
 ## 硬性规则

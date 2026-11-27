@@ -5,6 +5,7 @@
 #include <future>
 #include <set>
 
+#include "core/exe_paths.hpp"
 #include "core/ip_family.hpp"
 #include "core/log.hpp"
 #include "rules/rule_engine_v3.hpp"
@@ -64,7 +65,7 @@ bool mode::start(const std::filesystem::path& dll64, const std::filesystem::path
     std::error_code ec;
     if (!std::filesystem::is_regular_file(dll64, ec)) {
         PC_LOG_ERROR("[HOOK] {} not found next to proxyclaw.exe: hook mode cannot intercept anything",
-                     dll64.filename().string());
+                     clew::path_to_utf8(dll64.filename()));
         return false;
     }
     dll_path_ = dll64.wstring();
@@ -73,7 +74,7 @@ bool mode::start(const std::filesystem::path& dll64, const std::filesystem::path
         dll32_path_ = dll32.wstring();
     } else if (!dll32.empty()) {
         PC_LOG_WARN("[HOOK] {} not found next to proxyclaw.exe: 32-bit (WOW64) processes will be skipped",
-                    dll32.filename().string());
+                    clew::path_to_utf8(dll32.filename()));
     }
     enable_debug_privilege();
 
@@ -106,7 +107,8 @@ bool mode::start(const std::filesystem::path& dll64, const std::filesystem::path
     injector_ = std::jthread([this](std::stop_token st) { injector_loop(st); });
     asio::post(strand_, [this] { schedule_sweep(); });
     PC_LOG_INFO("[HOOK] interception mode: hook (relay {} / {}, dll64 {}, dll32 {})",
-                p4, p6, dll64.string(), dll32_path_.empty() ? "none" : dll32.string());
+                p4, p6, clew::path_to_utf8(dll64),
+                dll32_path_.empty() ? std::string("none") : clew::path_to_utf8(dll32));
     return true;
 }
 

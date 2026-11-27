@@ -18,6 +18,11 @@ namespace clew {
 
 class config_manager {
 private:
+    static std::string path_utf8(const std::filesystem::path& p) {
+        const auto u8 = p.u8string();
+        return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+    }
+
     ConfigV2 v2_config_;
     std::filesystem::path config_path_;
     std::string last_raw_;
@@ -60,11 +65,11 @@ public:
 
             ensure_proxy_groups();
 
-            PC_LOG_INFO("Config loaded from {}", source_path.string());
+            PC_LOG_INFO("Config loaded from {}", path_utf8(source_path));
             if (source_path != config_path_) {
                 // Keep the original file intact so the upstream build can
                 // still use it. All subsequent writes go to the new name.
-                PC_LOG_INFO("Importing legacy Clew config into {}", config_path_.string());
+                PC_LOG_INFO("Importing legacy Clew config into {}", path_utf8(config_path_));
                 return save();
             }
             return true;
@@ -92,13 +97,13 @@ public:
             {
                 std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
                 if (!file) {
-                    PC_LOG_ERROR("Failed to open {} for writing", tmp_path.string());
+                    PC_LOG_ERROR("Failed to open {} for writing", path_utf8(tmp_path));
                     return false;
                 }
                 file.write(content.data(), static_cast<std::streamsize>(content.size()));
                 file.flush();
                 if (!file) {
-                    PC_LOG_ERROR("Failed to write {}", tmp_path.string());
+                    PC_LOG_ERROR("Failed to write {}", path_utf8(tmp_path));
                     return false;
                 }
             }
@@ -107,13 +112,13 @@ public:
             std::filesystem::rename(tmp_path, config_path_, ec);
             if (ec) {
                 PC_LOG_ERROR("Failed to rename {} -> {}: {}",
-                             tmp_path.string(), config_path_.string(), ec.message());
+                             path_utf8(tmp_path), path_utf8(config_path_), ec.message());
                 std::filesystem::remove(tmp_path, ec);
                 return false;
             }
 
             last_raw_ = std::move(content);
-            PC_LOG_INFO("Config saved to {}", config_path_.string());
+            PC_LOG_INFO("Config saved to {}", path_utf8(config_path_));
             return true;
         } catch (const std::exception& e) {
             PC_LOG_ERROR("Failed to save config: {}", e.what());

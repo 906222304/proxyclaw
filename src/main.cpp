@@ -10,6 +10,7 @@
 #include <WinSock2.h>
 #include <Windows.h>
 #include <ole2.h>
+#include <shellapi.h>
 
 #include <chrono>
 #include <exception>
@@ -56,16 +57,42 @@ static void print_usage() {
     std::cout << "  --help, -h         Show this help message\n\n";
 }
 
-static clew::cli_options parse_args(int argc, char* argv[]) {
+// Parse arguments from the wide command line so --config and --static-dir
+// retain arbitrary Unicode (e.g. Chinese install/temp paths) regardless of
+// the parent console's code page.
+static clew::cli_options parse_args_wide(int argc, wchar_t* argv[]) {
     clew::cli_options opts;
-    std::span         args(argv, argc);
+    if (argc <= 1 || !argv) return opts;
+    std::span         args(argv, static_cast<size_t>(argc));
+    auto              it = args.begin() + 1;
+    while (it != args.end()) {
+        std::wstring_view arg = *it++;
+        if (arg == L"--gui") opts.gui_mode = true;
+        else if (arg == L"--devtools") opts.devtools = true;
+        else if (arg == L"--static-dir" && it != args.end()) opts.static_dir = std::filesystem::path{*it++};
+        else if (arg == L"--config" && it != args.end()) opts.config_path = std::filesystem::path{*it++};
+        else if (arg == L"--minimized") opts.start_minimized = true;
+        else if (arg == L"--dev-hooks") opts.dev_hooks = true;
+        else if (arg == L"--help" || arg == L"-h") opts.help = true;
+    }
+    return opts;
+}
+
+static clew::cli_options parse_args(int argc, char* argv[]) {
+    int wargc = 0;
+    if (LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc); wargv) {
+        clew::scoped_exit free_argv{[&] { LocalFree(wargv); }};
+        return parse_args_wide(wargc, wargv);
+    }
+    clew::cli_options opts;
+    std::span         args(argv, static_cast<size_t>(argc));
     auto              it = args.begin() + 1;
     while (it != args.end()) {
         std::string_view arg = *it++;
         if (arg == "--gui") opts.gui_mode = true;
         else if (arg == "--devtools") opts.devtools = true;
-        else if (arg == "--static-dir" && it != args.end()) opts.static_dir = *it++;
-        else if (arg == "--config" && it != args.end()) opts.config_path = *it++;
+        else if (arg == "--static-dir" && it != args.end()) opts.static_dir = std::filesystem::path{*it++};
+        else if (arg == "--config" && it != args.end()) opts.config_path = std::filesystem::path{*it++};
         else if (arg == "--minimized") opts.start_minimized = true;
         else if (arg == "--dev-hooks") opts.dev_hooks = true;
         else if (arg == "--help" || arg == "-h") opts.help = true;
@@ -78,9 +105,10 @@ static void setup_logger() {
 
     // Always log next to proxyclaw.exe so the file is predictable regardless of
     // launcher cwd (Task Scheduler, double-click, shell — all deposit cwd
-    // somewhere different). Quill takes a UTF-8 string so we go through
-    // .string(), which on Windows narrows from the wide path.
-    auto log_path = clew::exe_relative("proxyclaw.log").string();
+    // somewhere different). Quill v7.5 opens files via fopen(path.string());
+    // assets/proxyclaw.manifest sets activeCodePage=UTF-8 so both .string()
+    // and UCRT fopen() handle arbitrary Unicode install directories.
+    auto log_path = clew::exe_relative(L"proxyclaw.log").string();
 
     auto file_sink = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(
         log_path,

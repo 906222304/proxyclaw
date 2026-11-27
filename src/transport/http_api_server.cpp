@@ -15,9 +15,11 @@
 
 #include "common/api_context.hpp"
 #include "common/dev_hooks.hpp"
+#include "core/exe_paths.hpp"
 #include "core/log.hpp"
 #include "transport/middleware.hpp"
 #include "transport/route_registry.hpp"
+#include "transport/static_files.hpp"
 
 // Handler modules define register_* functions in the ::clew namespace.
 namespace clew {
@@ -61,7 +63,7 @@ std::string generate_session_token() {
 
 } // namespace
 
-http_api_server::http_api_server(int port, api_context& ctx, std::string static_dir)
+http_api_server::http_api_server(int port, api_context& ctx, std::filesystem::path static_dir)
     : port_(port)
     , static_dir_(std::move(static_dir))
     , ctx_(ctx)
@@ -145,43 +147,14 @@ void http_api_server::stop() {
     PC_LOG_INFO("[api] HTTP API server stopped");
 }
 
-std::string http_api_server::get_executable_dir() {
-    char path[MAX_PATH];
-    if (DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH); len > 0 && len < MAX_PATH) {
-        std::string_view sv{path, static_cast<std::size_t>(len)};
-        if (auto last_sep = sv.find_last_of("\\/"); last_sep != std::string_view::npos) {
-            return std::string(sv.substr(0, last_sep));
-        }
-    }
-    return ".";
-}
-
 void http_api_server::setup_static_files() {
-    // All candidates are anchored to either an explicit --static-dir or
-    // the exe directory. We deliberately do NOT include cwd-relative
-    // paths ("./frontend/dist" etc.) anymore — Task Scheduler launches
-    // proxyclaw.exe with cwd=system32 and Explorer double-click uses the
-    // desktop folder, neither of which is reachable from clew's resources.
-    // The two exe_dir candidates cover release zip layout
-    // (exe_dir/frontend/dist) and dev build layout
-    // (build/Release/proxyclaw.exe → exe_dir/../../frontend/dist).
-    const std::vector<std::string> candidates = {
-        static_dir_,
-        get_executable_dir() + "/frontend/dist",
-        get_executable_dir() + "/../../frontend/dist",
-    };
-
-    for (const auto& path : candidates) {
-        if (path.empty()) continue;
-        std::string index_path = path + "/index.html";
-        if (GetFileAttributesA(index_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            if (server_.set_mount_point("/", path)) {
-                PC_LOG_INFO("[api] serving static files from {}", path);
-                return;
-            }
-        }
+    const auto exe_dir = clew::exe_directory();
+    if (const auto mounted = mount_static_files(server_, static_dir_, exe_dir)) {
+        PC_LOG_INFO("[api] serving static files from {}", *mounted);
+        return;
     }
-    PC_LOG_WARN("[api] static files directory not found; web UI unavailable");
+    PC_LOG_WARN("[api] static files directory not found (exe_dir={}); web UI unavailable",
+                clew::path_to_utf8(exe_dir));
 }
 
 } // namespace clew::transport

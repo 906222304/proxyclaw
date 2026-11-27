@@ -7,6 +7,7 @@
 // every service, static_dir is the frontend/dist mount point.
 
 #include <atomic>
+#include <filesystem>
 #include <string>
 
 #ifndef ASIO_STANDALONE
@@ -27,7 +28,7 @@ namespace clew::transport {
 
 class http_api_server {
 public:
-    http_api_server(int port, api_context& ctx, std::string static_dir);
+    http_api_server(int port, api_context& ctx, std::filesystem::path static_dir);
     ~http_api_server();
 
     http_api_server(const http_api_server&)            = delete;
@@ -44,16 +45,15 @@ public:
 
 private:
     void setup_static_files();
-    [[nodiscard]] static std::string get_executable_dir();
 
-    int                 port_;
-    std::string         static_dir_;
-    api_context&        ctx_;
-    api_auth            auth_;
-    httplib::Server     server_;
-    std::jthread        server_thread_;
-    std::atomic<bool>   running_{false};
-    std::atomic<bool>   accept_loop_done_{false};
+    int                   port_;
+    std::filesystem::path static_dir_;
+    api_context&          ctx_;
+    api_auth              auth_;
+    httplib::Server       server_;
+    std::jthread          server_thread_;
+    std::atomic<bool>     running_{false};
+    std::atomic<bool>     accept_loop_done_{false};
 };
 
 } // namespace clew::transport

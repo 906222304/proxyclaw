@@ -1641,7 +1641,7 @@ def _verify_unicode_install_path(exe: pathlib.Path) -> bool:
     index.html, proxyclaw.log is written in UTF-8, and diagnostics export works."""
     root = pathlib.Path(tempfile.mkdtemp(prefix="pc_unicode_"))
     app_dir = root / "中文目录_代理测试"
-    print(f"\nUnicode install path check: {app_dir}")
+    print(f"\nUnicode install path check: {ascii(str(app_dir))}")
     proc = None
     ok = False
     old_log_path = LOG_PATH
@@ -1702,7 +1702,7 @@ def _verify_unicode_install_path(exe: pathlib.Path) -> bool:
 
         r_root = requests.get("http://127.0.0.1:18080/", timeout=5)
         assert r_root.status_code == 200, f"GET / returned {r_root.status_code} (expected 200, not 404)"
-        assert 'id="root"' in r_root.text, f"GET / body missing #root: {r_root.text[:200]!r}"
+        assert 'id="root"' in r_root.text, f"GET / body missing #root: {ascii(r_root.text[:200])}"
 
         r_diag = requests.get(f"{BASE}/diagnostics/export", timeout=10)
         assert r_diag.status_code == 200, f"GET /api/diagnostics/export returned {r_diag.status_code}"
@@ -1718,15 +1718,15 @@ def _verify_unicode_install_path(exe: pathlib.Path) -> bool:
                 if "serving static files from" in log_text:
                     break
             time.sleep(0.2)
-        assert unicode_log.exists(), f"missing log file at {unicode_log}"
-        assert "serving static files from" in log_text, f"static mount log missing:\n{log_text[-800:]}"
+        assert unicode_log.exists(), f"missing log file at {ascii(str(unicode_log))}"
+        assert "serving static files from" in log_text, f"static mount log missing:\n{ascii(log_text[-800:])}"
 
         graceful = _graceful_exit(proc)
         assert graceful, "graceful exit failed from Chinese install path"
         print("  PASS Unicode install path: GET / -> 200, WinDivert active, UTF-8 log, diagnostics ZIP, graceful exit")
         ok = True
     except Exception as e:
-        print(f"  FAIL Unicode install path check: {e!r}")
+        print(f"  FAIL Unicode install path check: {ascii(repr(e))}")
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()

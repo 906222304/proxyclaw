@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.18.1 (2026-11-27)
+
+### Fixed
+
+- Fixed HTTP 404 on `http://127.0.0.1:18080/` when ProxyClaw is unpacked under a
+  directory containing Chinese or other non-ASCII characters (e.g., Chinese user
+  profile names, `桌面`, or `下载`) (#35):
+  - Replaced ANSI `GetModuleFileNameA` / `GetFileAttributesA` in
+    `http_api_server` with wide `std::filesystem::path` discovery (`exe_directory()`)
+    and explicit UTF-8 encoding (`path_to_utf8` via `u8string()`) at the
+    `cpp-httplib` `set_mount_point` boundary (`src/transport/static_files.hpp`),
+    eliminating GBK-vs-UTF-8 mojibake on Chinese Windows.
+  - Made `exe_path()` dynamically resize beyond `MAX_PATH`, parsed `--config`
+    and `--static-dir` from `CommandLineToArgvW(GetCommandLineW())`, logged
+    config and Hook DLL paths as UTF-8, and enabled `<activeCodePage>UTF-8</activeCodePage>`
+    in `assets/proxyclaw.manifest` so Quill `RotatingFileSink` (`fopen`) handles
+    arbitrary Unicode install directories on Windows 10 2004+ / 11.
+  - Added Chinese-directory unit tests (`ui_config_tests`) and elevated Windows
+    E2E coverage (`tests/e2e_api_test.py`) verifying `GET /` returns HTTP 200,
+    WinDivert activates, UTF-8 `proxyclaw.log` is written, and diagnostics ZIP
+    export succeeds from a non-ASCII install path.
+
 ## v0.18.0 (2026-11-26)
 
 ### Added

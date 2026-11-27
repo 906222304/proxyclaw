@@ -70,8 +70,8 @@
 ## 其他未决事项
 
 - **0xD1 蓝屏**：用户机器上 `NETIO.SYS` 出现 0xD1，栈上有 ESET 的 `epfwwfp.sys`，没有 WinDivert 帧。初步判断是 ESET 与 WinDivert 的 WFP 冲突，Hook 模式不加载驱动，作为官方无驱动替代路线已在 v0.17 补齐。
-- **ROADMAP 下一阶段**：v0.14–v0.18 路线图已全部收口，见 `docs/ROADMAP.md`（仅余低优先级工程维护项，待真机使用反馈后再规划下一里程碑），继续保持绿色便携包形态。
-- **已知 CI 抖动**：WebView2 截图步骤偶发 `process-count` / `#root` 超时，处理方法是重跑失败的 `e2e` job。
+- **ROADMAP 下一阶段**：见 `docs/ROADMAP.md`——**v0.19**（不改网卡的新一代 DNS 体系：公共 TTL 解析引擎与按进程 53 端口重写 / Hook 模式按进程真实 IP 解析 / WinDivert 免改网卡系统 DNS 防污染与直连后缀、断线回落，并收口工程维护与文档债），继续保持绿色便携包形态。
+- **已知 CI 抖动**：WebView2 截图步骤偶发 `process-count` / `#root` 超时，临时处理为重跑失败的 `e2e` job，根因排查已排入 `v0.19 #5`。
 
 ## 硬性规则
 
